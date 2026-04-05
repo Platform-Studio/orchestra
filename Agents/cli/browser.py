@@ -106,7 +106,7 @@ class BrowserManager:
 
     def cmd_open(self, params):
         sid = uuid.uuid4().hex[:8]
-        context = self.browser.new_context(
+        ctx_kwargs = dict(
             viewport={"width": 1280, "height": 800},
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -114,6 +114,10 @@ class BrowserManager:
                 "Chrome/131.0.0.0 Safari/537.36"
             ),
         )
+        auth_path = params.get("auth")
+        if auth_path and Path(auth_path).exists():
+            ctx_kwargs["storage_state"] = auth_path
+        context = self.browser.new_context(**ctx_kwargs)
         page = context.new_page()
         url = params.get("url")
         if url:
@@ -169,7 +173,9 @@ class BrowserManager:
         sel = params["selector"]
         text = params["text"]
         if params.get("keys"):
-            page.type(sel, text, timeout=DEFAULT_TIMEOUT)
+            delay = params.get("delay", 0)
+            page.click(sel, timeout=DEFAULT_TIMEOUT)
+            page.type(sel, text, delay=delay, timeout=DEFAULT_TIMEOUT)
         else:
             page.fill(sel, text, timeout=DEFAULT_TIMEOUT)
         return {"typed": len(text), "selector": sel}
@@ -200,6 +206,15 @@ class BrowserManager:
         page = self._page(params)
         result = page.evaluate(params["expression"])
         return {"result": result}
+
+    def cmd_save_auth(self, params):
+        sid = params.get("session")
+        if sid not in self.sessions:
+            return {"error": f"Unknown session: {sid}"}
+        path = params.get("path", f"playwright/.auth/{sid}.json")
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.sessions[sid]["context"].storage_state(path=path)
+        return {"path": path, "session": sid}
 
     def cmd_close(self, params):
         sid = params.get("session")
@@ -345,6 +360,7 @@ def main():
     p = sub.add_parser("open", help="Open a new browser session")
     p.add_argument("url", nargs="?", help="URL to navigate to")
     p.add_argument("--headless", action="store_true", help="Headless mode (no visible window)")
+    p.add_argument("--auth", help="Path to saved auth state JSON file")
 
     p = sub.add_parser("goto", help="Navigate to URL")
     p.add_argument("session", help="Session ID")
@@ -371,6 +387,7 @@ def main():
     p.add_argument("selector", help="CSS selector")
     p.add_argument("text", help="Text to enter")
     p.add_argument("--keys", action="store_true", help="Type key-by-key instead of fill (for autocomplete fields)")
+    p.add_argument("--delay", type=int, default=0, help="Delay in ms between keystrokes (only with --keys)")
 
     p = sub.add_parser("press", help="Press a keyboard key")
     p.add_argument("session", help="Session ID")
@@ -394,6 +411,10 @@ def main():
     p = sub.add_parser("eval", help="Run JavaScript on the page")
     p.add_argument("session", help="Session ID")
     p.add_argument("expression", help="JS expression to evaluate")
+
+    p = sub.add_parser("save-auth", help="Save auth state (cookies/storage) to file")
+    p.add_argument("session", help="Session ID")
+    p.add_argument("--path", default="playwright/.auth/x_auth.json", help="Output file path")
 
     p = sub.add_parser("close", help="Close a session")
     p.add_argument("session", help="Session ID")
@@ -436,6 +457,8 @@ def main():
     if cmd == "open":
         if args.url:
             params["url"] = args.url
+        if args.auth:
+            params["auth"] = args.auth
 
     elif cmd == "goto":
         params["session"] = args.session
@@ -466,6 +489,8 @@ def main():
         params["text"] = args.text
         if args.keys:
             params["keys"] = True
+        if args.delay:
+            params["delay"] = args.delay
 
     elif cmd == "press":
         params["session"] = args.session
@@ -491,6 +516,11 @@ def main():
     elif cmd == "eval":
         params["session"] = args.session
         params["expression"] = args.expression
+
+    elif cmd == "save-auth":
+        cmd = "save_auth"
+        params["session"] = args.session
+        params["path"] = args.path
 
     elif cmd == "close":
         params["session"] = args.session
@@ -552,6 +582,9 @@ def main():
             print(json.dumps(r, indent=2))
         else:
             print(f"Result: {r}")
+
+    elif cmd == "save_auth":
+        print(f"Auth saved: {result['path']}")
 
     elif cmd == "close":
         print(f"Closed: {result['closed']}")
