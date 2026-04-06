@@ -1,0 +1,20 @@
+# Ignore everything
+*
+
+# Allow directories (so git can traverse them)
+!*/
+
+# Allow markdown files
+!*.md
+
+# Allow shell scripts
+!*.sh
+
+# Allow python scripts
+!*.py
+
+# Allow .env.example for onboarding new devs
+!.env.example
+
+# Allow this file itself
+!.gitignore
