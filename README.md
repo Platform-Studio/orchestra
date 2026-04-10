@@ -26,7 +26,7 @@ I want to keep everything as simple and loosely-coupled as possible.
 ## Files
 - `spec.md` - the core specification of the orchestration framework, defining the core concepts
 - `implementation_guidance.md` - guidance for how to implement the orchestration framework, including recommended data schemas and interfaces for some of the key concepts
-- `implementation_plan_python.md` - a specific implementation plan for implementing the orchestration framework in Python, using the local file system for data persistence
+- `implementation_plan_python.md` - a specific implementation plan for implementing the orchestration framework in Python, using the local file system for data persistence. You can see an actual concrete implementation of this plan in https://github.com/Platform-Studio/orchestra-python
 
 ## Hierarchy
 Here's how to think about the hierarchy:
