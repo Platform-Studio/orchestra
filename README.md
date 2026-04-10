@@ -13,7 +13,7 @@ At the time of writing, there are many strong choices, and things are moving qui
 - Ruflo (https://github.com/ruvnet/ruflo) - another open source orchestration framework with a focus on simplicity and flexibility.
 - GasTown (https://github.com/gastownhall/gastown) - a lightweight orchestration framework designed for rapid development.
 
-They all are impressive and different strengths. They each have distinct opinions. There's of course also something to be said for having something concrete that just works.
+They all are impressive and have different strengths. They each have distinct opinions, sometimes strong ones. There's of course also something to be said for having something concrete that just works.
 
 However, I'm realizing that the true spec-driven way to approach this is to define how I think orchestration should work at a high level, and then have the agents actually write the code.
 
@@ -37,6 +37,6 @@ flowchart LR
 ```
 
 ## Writing your own implementation plan
-Of course, you should get the AI to write, or at least review, it's own implementation plan! 
+Of course, you should get the AI to write, or at least review, its own implementation plan! 
 
 Point your agent of choice at `spec.md` and `implementation_guidance.md` and ask it to write an implementation plan for how to implement the orchestration framework defined in the spec using whatever language, persistence layer, etc you wish.

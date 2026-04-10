@@ -104,6 +104,6 @@ They are the container that provides the environment in which the agent runs.
 - exposing the state to the outside world so that the rest of the framework can know if the agent is dead or not
 - ensuring that any Task Locks the agent obtains are released when the agent is done or if it dies
 
-The `Agent Runner` will typically update the `Task` to record retries, errors, etc but implementations may opt to maintain their 
+The `Agent Runner` will typically update the `Task` to record retries, errors, etc., but implementations may opt to maintain their 
 own separate state.
 
