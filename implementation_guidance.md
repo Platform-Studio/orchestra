@@ -23,7 +23,7 @@ The body of the .md file should describe the agent's behavior and how it interac
 - Task state map (dictionary defining each state and the allowed transitions, e.g. {"To Do": ["In Progress", "Invalid"], "In Progress": ["Done", "Invalid"], "Done": [], "Invalid": []})
 - Retry setup (optional, defines if and how tasks in the workstream should be retried on failure), e.g. an array of retry times in seconds, or a string referencing a known retry strategy (e.g. "exponential_backoff")
 - 0-n `Tasks`
-- 0-n `Triggers` (each defining a state that triggers and action and the action - e.g. a command line to run or an agent to run)
+- 0-n `Triggers` (each defining either a state or a schedule that fires an action — e.g. a command line to run or an agent to run)
 
 #### Methods / Tools
 `Workstream` methods/tools might include:
@@ -56,6 +56,8 @@ The body of the .md file should describe the agent's behavior and how it interac
 - Retry setup (optional, overrides workstream retry setup if present, and system defaults if not)
 - Comments (array of strings, optional)
 - Audit trail (array of 0-n events, each event could be a dictionary with fields like timestamp, type, description)
+- Scheduled at (datetime, optional, the time at which the task's scheduled action should fire)
+- Scheduled action (dictionary, optional, the action to fire when the scheduled time is reached — uses the same format as Trigger actions, e.g. {"type": "run_agent", "agent_name": "publisher"})
 
 #### Methods / Tools
 `Task` methods/tools might include:
@@ -79,8 +81,18 @@ The body of the .md file should describe the agent's behavior and how it interac
 `Triggers` will likely have the following attributes:
 - Unique ID (uuid)
 - Workstream ID (uuid)
-- State (string, the state that triggers the action when a task enters it)
+- Condition — one of:
+  - State (string, the state that triggers the action when a task enters it), OR
+  - Schedule expression (string, e.g. a cron expression like `"0 * * * *"` for hourly) plus a Filter (dictionary defining which tasks to match, e.g. `{"state": "waiting_for_reply"}`, `{"state": "done", "older_than_days": 30}`, `{"tags": ["needs-review"]}`)
 - Action (dictionary defining the action to take, e.g. {"type": "run_agent", "agent_name": "SDR Outreach Agent"}, or {"type": "send_notification", "channel": "slack-sales", "message": "A task has been completed in the SDR Outreach workstream!"}, or {"type": "run_script", "script_path": "scripts/update_crm.py"})
+
+For state-based triggers, the action fires once per task state change. For schedule-based triggers, the system evaluates the filter on each tick and fires the action for each matched task. Schedule-based triggers should not fire if the workstream is paused.
+
+#### Methods / Tools
+Trigger-related methods/tools might include:
+- create `Trigger` (state or schedule, action)
+- index `Triggers` (list of triggers on a workstream)
+- delete `Trigger` (id)
 
 ### Artifacts
 #### Persistence

@@ -50,12 +50,35 @@ triggers:
     on_state: "Done"
     action: "run_command"
     command: "python notify.py --channel slack --message 'Task completed'"
+  - id: "t3"
+    on_schedule: "0 * * * *"           # every hour
+    filter:
+      state: "waiting_for_reply"
+    action: "run_agent"
+    agent: "follow_up"
+  - id: "t4"
+    on_schedule: "0 0 * * *"           # daily
+    filter:
+      state: "Done"
+      older_than_days: 30
+    action: "run_agent"
+    agent: "archiver"
 ```
 
 ### Tasks
 Tasks will be persisted as YAML files in a subdirectory of the workstream's directory, named `tasks`. 
 
 Each task will be a separate YAML file named with the task's unique ID (i.e. `workstreams/{workstream_id}/tasks/{task_id}.yaml`).
+
+Task YAML files may include optional scheduling fields:
+```yaml
+scheduled_at: "2026-04-15T09:00:00Z"   # when the scheduled action should fire
+scheduled_action:                        # uses the same format as trigger actions
+  type: "run_agent"
+  agent: "publisher"
+```
+
+When `scheduled_at` is set and the current time reaches or exceeds it (and the workstream is not paused), the system fires the `scheduled_action`. After firing, both fields are cleared from the task. This is a one-shot mechanism.
 
 ### Task Locks
 Locks will be implemented as files in the same directory as the task they are locking, with the same name as the task file but with a `.lock` extension (i.e. `workstreams/{workstream_id}/tasks/{task_id}.yaml.lock`).
@@ -84,11 +107,22 @@ Workstream-level retry strategies can be defined in the workstream YAML file, an
 ## Triggers
 Triggers will be stored in the workstream YAML file as part of the workstream's data.
 
-When a task changes state, the system will check if there are any triggers for that state in the workstream's data and execute the corresponding actions.
+A trigger fires on one of two conditions:
+- **State-based** (`on_state`): fires when a task enters a specific state. The system evaluates these when a task changes state.
+- **Schedule-based** (`on_schedule`): fires on a recurring time-based schedule (cron expression), against tasks matching a filter. The system evaluates these on each scheduler tick (see "Scheduler" section below).
 
-Trigger execution is synchronous by default — the state change completes, triggers are evaluated, and matched triggers are executed sequentially.
+State-based trigger execution is synchronous by default — the state change completes, triggers are evaluated, and matched triggers are executed sequentially.
 
-Triggers support two action types:
+Schedule-based triggers include a `filter` that selects which tasks the action applies to. Supported filter fields:
+- `state` (string) — match tasks in this state
+- `tags` (array of strings) — match tasks with any of these tags
+- `older_than_days` (integer) — match tasks whose `created_at` is older than this many days
+
+When a schedule-based trigger fires, the system queries for all tasks in the workstream matching the filter and executes the action for each matched task.
+
+Schedule-based triggers do not fire if the workstream is paused.
+
+Both trigger types support two action types:
 - `run_agent` — invokes the named agent via CrewAI, passing the task ID as input: `python orchestration.py agent run <agent_name> --task <task_id>`
 - `run_command` — executes an arbitrary shell command, with `{task_id}` and `{workstream_id}` available as template variables
 
@@ -236,7 +270,7 @@ python orchestration.py <concept> <method> [arguments]
 ```
 
 Where:
-- `<concept>` is one of `workstream`, `task`, `lock`, `trigger`, `artifact`, `agent`
+- `<concept>` is one of `workstream`, `task`, `lock`, `trigger`, `artifact`, `agent`, `scheduler`
 - `<method>` is a method defined for that concept (see below)
 - `[arguments]` are the arguments required for that method
 
@@ -263,9 +297,12 @@ Error example:
 - `workstream tree` — pretty-print the hierarchy of all workstreams as an indented tree
 
 #### Task
-- `task create <workstream_id> --title <title> [--description <desc>] [--tags <tags>] [--retry <json>]`
+- `task create <workstream_id> --title <title> [--description <desc>] [--tags <tags>] [--retry <json>] [--scheduled-at <datetime>] [--scheduled-action <json>]`
 - `task read <task_id>`
-- `task update <task_id> [--status <status>] [--description <desc>] [--tags <tags>]`
+- `task update <task_id> [--status <status>] [--description <desc>] [--tags <tags>] [--scheduled-at <datetime>] [--scheduled-action <json>]`
+- `task clear-schedule <task_id>` — clear the `scheduled_at` and `scheduled_action` fields
+
+When `task create` or `task update` is called with `--scheduled-at`, the system will automatically call `Scheduler.ensure_started()` (see "Scheduler" section below) to ensure the scheduler cron job is running.
 - `task list <workstream_id> [--status <status>] [--tags <tags>]`
 - `task comment <task_id> --message <message>`
 - `task archive <task_id>`
@@ -280,8 +317,11 @@ State transitions are validated against the workstream's `task_states` map. Inva
 
 #### Trigger
 - `trigger list <workstream_id>`
-- `trigger create <workstream_id> --on-state <state> --action <type> [--agent <name>] [--command <cmd>]`
+- `trigger create <workstream_id> --on-state <state> --action <type> [--agent <name>] [--command <cmd>]` — create a state-based trigger
+- `trigger create <workstream_id> --on-schedule <cron> --filter <json> --action <type> [--agent <name>] [--command <cmd>]` — create a schedule-based trigger
 - `trigger delete <trigger_id>`
+
+When `trigger create` is called with `--on-schedule`, the system will automatically call `Scheduler.ensure_started()` (see "Scheduler" section below) to ensure the scheduler cron job is running.
 
 #### Agent
 - `agent list` — list available agent definitions
@@ -292,5 +332,45 @@ State transitions are validated against the workstream's `task_states` map. Inva
 - `artifact read <path>`
 - `artifact list [--prefix <prefix>]`
 
+#### Scheduler
+- `scheduler start` — ensure the scheduler cron job is running (idempotent: if already running, responds with a message saying so)
+- `scheduler stop` — remove the scheduler cron job (idempotent: if already stopped, responds with a message saying so)
+- `scheduler status` — report whether the scheduler is currently running and when the last tick occurred
+- `scheduler tick` — execute one scheduler tick immediately (used by the cron job; can also be called manually for testing)
+
+## Scheduler
+Schedule-based triggers and task-level schedules require a periodic process to evaluate them.
+
+### Lifecycle: start, stop, tick
+The scheduler is managed via three CLI commands:
+
+- **`scheduler start`** — installs a system cron job (via `crontab` on macOS/Linux) that runs `python orchestration.py scheduler tick` every minute. The cron entry will be tagged with a unique comment (e.g. `# orchestration-scheduler:<workspace_path>`) so it can be identified. If a cron job with that tag already exists, the command does nothing and responds: `{"status": "ok", "message": "Scheduler is already running"}`.
+
+- **`scheduler stop`** — removes the tagged cron entry. If no matching cron entry exists, the command does nothing and responds: `{"status": "ok", "message": "Scheduler is not running"}`.
+
+- **`scheduler status`** — checks whether the tagged cron entry exists and reports the `last_tick_at` from `scheduler_state.yaml` if available.
+
+- **`scheduler tick`** — executes one evaluation cycle. This is what the cron job calls. It can also be called manually for testing.
+
+### Auto-Start
+The scheduler is automatically started when needed. The system provides a `Scheduler.ensure_started()` method that is called internally by:
+- `trigger create` when the trigger has `on_schedule`
+- `task create` or `task update` when `scheduled_at` is set
+
+`Scheduler.ensure_started()` simply checks if the cron job exists and creates it if not — the same logic as `scheduler start`.
+
+This means users and agents don't need to remember to start the scheduler manually — it activates automatically the first time a schedule is created.
+
+### Tick Behavior
+When `scheduler tick` runs, it will:
+1. Load all workstreams that are not paused
+2. **Task-level schedules**: For each workstream, find all tasks where `scheduled_at` is set and has passed. Fire the `scheduled_action` for each, then clear the `scheduled_at` and `scheduled_action` fields on the task. Add an audit entry.
+3. **Schedule-based triggers**: For each workstream, evaluate each trigger that has `on_schedule`. If the cron expression has matched at any point since the last tick, query for tasks matching the trigger's `filter` and fire the action for each matched task.
+4. Update `last_tick_at` in `scheduler_state.yaml`.
+
+The tick command is stateless apart from `scheduler_state.yaml` — it determines what to fire based on the current time and the data on disk. To avoid duplicate firings of schedule-based triggers, the system stores a `last_tick_at` timestamp in `scheduler_state.yaml` in the workspace root. On each tick, it evaluates whether each cron expression has matched at any point between `last_tick_at` and now.
+
+The cron job runs every minute, matching the minimum cron granularity.
+
 ## No Daemon / Background Process
-This implementation will not include a daemon or background process. Instead, agents will directly invoke the CLI commands to perform actions, and triggers will also invoke CLI commands to run agents or execute commands. Since triggers only run when a Task moves from one state to another, the CLI-based approach will be sufficient for this implementation without needing a continuously running background process.
+This implementation does not include a long-running daemon. Instead, agents directly invoke CLI commands to perform actions, state-based triggers fire synchronously during state changes, and time-based concerns are handled by the system cron job installed via `scheduler start`. The cron job simply calls `scheduler tick` every minute — the tick process runs, evaluates, and exits.

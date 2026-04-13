@@ -1,5 +1,4 @@
-# Orchestration Thoughts
-JB, Apr 9, 2026
+# Orchestra
 
 ## Introduction
 ***tl;dr - let agents write their own orchestration framework.***

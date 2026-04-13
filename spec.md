@@ -40,13 +40,15 @@ There are different types of agents based on their role in the orchestration sys
 
 `Workstreams` are hierarchical in that a `Workstream` can have a parent.
 
-Conceptually, a `Workstream` is like a Kanban / Trello board or a Github project, and `Tasks` are like cards on the board or issues in the project.
+Conceptually, a `Workstream` is like a Kanban board (e.g. Trello) or a Github project, and `Tasks` are like cards on the board or issues in the project.
 
 `Workstreams` define the allowed states for their `Tasks` and the allowed transitions between those states.
 
-Conceptually, a Task's state is like the column that a card is in on a Trello board.
+Conceptually, a Task's state is like the column that a card is in on a Kanban board.
 
-The default states are "pending", "in_progress", and "completed", but a `Workstream` can define any states and transitions it wants.
+The default states are "pending", "in_progress", and "completed", but a `Workstream` can define any `Task` states and transitions it wants.
+
+It is helpful to allow a `Workstream` to be paused and resumed. When a `Workstream` is paused, no `Tasks` in that `Workstream` can be worked on.
 
 ### Tasks
 `Tasks` represent units of work.
@@ -59,21 +61,37 @@ The default states are "pending", "in_progress", and "completed", but a `Workstr
 
 `Tasks` have a title (mandatory) and description (optional).
 
+#### Task Scheduling
+A `Task` can be scheduled to run at a specific future time. 
+
+When the scheduled time arrives, the action fires (e.g. runs an agent), and the agent receives the task and decides what to do with it. This is a one-shot mechanism — once the action fires, the schedule is cleared.
+
+For example, a task representing an article to publish might be scheduled for a specific date and time. When that time arrives, the agent runs and transitions the task to "published". Or a sales lead task might be scheduled for follow-up in 3 days.
+
+Task schedules respect the `Workstream` pause state — if the workstream is paused, no scheduled actions fire. When resumed, tasks that have passed their scheduled time should fire promptly.
+
 ### Task Locks
 To allow for parallelization, it's critical that a safe locking mechanism is provided for tasks so that two instances of an agent don't try to work on or update a task simultaneously.
 
 A particular implementation of the orchestration framework will provide a way for agents to acquire and release locks on tasks, and to handle cases where a lock cannot be acquired (e.g. because another agent has it). The specific locking mechanism used will vary based on implementation.
 
 ### Triggers
-`Triggers` are actions that fire when a `Task` enters a specific state, including when it is initially created.
+`Triggers` are actions defined by the `Workstream` that fire under specific conditions. A `Trigger` can fire on either:
 
-`Triggers` are defined by the `Workstream`.
+- **State change** — when a `Task` enters a specific state, including when it is initially created
+- **Schedule** — on a recurring time-based schedule (e.g. hourly, daily), against tasks matching certain criteria (by state, tags, age, etc.)
 
-The primary use case for a `Trigger` is to run a specific `Agent` when a `Task` enters a specific state, e.g. run the "SDR Outreach Agent" when a `Task` enters the "pending" state in the "SDR Outreach" `Workstream`.
+In both cases, the action is the same — running an agent, running a script, sending a notification, etc. The trigger defines *when* to fire and the action defines *what* to do.
 
-However, `Triggers` can also support a number of other use cases, including:
-- sending a notification (e.g. send a Slack message to the sales channel when a `Task` enters the "completed" state in the "SDR Outreach" `Workstream`)
-- running a script (e.g. run a Python script to update a CRM when a `Task` enters the "completed" state in the "SDR Outreach" `Workstream`)
+For state-based triggers, the primary use case is to run a specific `Agent` when a `Task` enters a specific state, e.g. run the "SDR Outreach Agent" when a `Task` enters the "pending" state in the "SDR Outreach" `Workstream`.
+
+For scheduled triggers, the primary use case is recurring sweeps — e.g. check hourly for all tasks in a "waiting for reply" state and run a follow-up agent against each one, or daily find completed tasks older than 30 days and run an archival agent.
+
+Triggers can also support other actions, including:
+- sending a notification (e.g. send a Slack message to the sales channel when a `Task` enters the "completed" state)
+- running a script (e.g. run a Python script to update a CRM)
+
+Scheduled triggers respect the `Workstream` pause state — if the workstream is paused, no scheduled triggers fire.
 
 ### Retry Strategies
 `Retry Strategies` define if and how `Tasks` should be retried on failure.
