@@ -114,6 +114,10 @@ def cmd_task_create(args):
         kwargs["tags"] = [t.strip() for t in args.tags.split(",")]
     if args.retry:
         kwargs["retry"] = json.loads(args.retry)
+    if args.scheduled_at:
+        kwargs["scheduled_at"] = args.scheduled_at
+    if args.scheduled_action:
+        kwargs["scheduled_action"] = json.loads(args.scheduled_action)
     task = create_task(**kwargs)
     _output(task.to_dict())
 
@@ -133,6 +137,10 @@ def cmd_task_update(args):
         kwargs["description"] = args.description
     if args.tags is not None:
         kwargs["tags"] = [t.strip() for t in args.tags.split(",")]
+    if args.scheduled_at:
+        kwargs["scheduled_at"] = args.scheduled_at
+    if args.scheduled_action:
+        kwargs["scheduled_action"] = json.loads(args.scheduled_action)
     task = update_task(**kwargs)
     _output(task.to_dict())
 
@@ -164,6 +172,12 @@ def cmd_task_audit(args):
     from .tasks import get_audit
     audit = get_audit(args.task_id, base_dir=args.base_dir)
     _output(audit)
+
+
+def cmd_task_clear_schedule(args):
+    from .tasks import clear_schedule
+    task = clear_schedule(args.task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
 
 
 # ── Lock commands ────────────────────────────────────────────────────
@@ -206,10 +220,15 @@ def cmd_trigger_create(args):
     from .triggers import create_trigger
     kwargs = {
         "workstream_id": args.workstream_id,
-        "on_state": args.on_state,
         "action": args.action,
         "base_dir": args.base_dir,
     }
+    if args.on_state:
+        kwargs["on_state"] = args.on_state
+    if args.on_schedule:
+        kwargs["on_schedule"] = args.on_schedule
+    if args.filter:
+        kwargs["filter"] = json.loads(args.filter)
     if args.agent:
         kwargs["agent"] = args.agent
     if args.command:
@@ -235,6 +254,50 @@ def cmd_agent_list(args):
 def cmd_agent_run(args):
     from .agents import run_agent
     result = run_agent(args.agent_name, args.task, base_dir=args.base_dir)
+    _output(result)
+
+
+# ── Workstream pause/resume ──────────────────────────────────────────
+
+def cmd_workstream_pause(args):
+    from .workstreams import read_workstream, save_workstream
+    ws = read_workstream(args.id, base_dir=args.base_dir)
+    ws.paused = True
+    save_workstream(ws, args.base_dir)
+    _output(ws.to_dict())
+
+
+def cmd_workstream_resume(args):
+    from .workstreams import read_workstream, save_workstream
+    ws = read_workstream(args.id, base_dir=args.base_dir)
+    ws.paused = False
+    save_workstream(ws, args.base_dir)
+    _output(ws.to_dict())
+
+
+# ── Scheduler commands ───────────────────────────────────────────────
+
+def cmd_scheduler_start(args):
+    from .scheduler import start
+    result = start(base_dir=args.base_dir)
+    _output(result)
+
+
+def cmd_scheduler_stop(args):
+    from .scheduler import stop
+    result = stop(base_dir=args.base_dir)
+    _output(result)
+
+
+def cmd_scheduler_status(args):
+    from .scheduler import status
+    result = status(base_dir=args.base_dir)
+    _output(result)
+
+
+def cmd_scheduler_tick(args):
+    from .scheduler import tick
+    result = tick(base_dir=args.base_dir)
     _output(result)
 
 
@@ -307,6 +370,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--description")
     p.add_argument("--tags")
     p.add_argument("--retry", help="JSON string of retry config")
+    p.add_argument("--scheduled-at", help="ISO datetime for one-shot schedule")
+    p.add_argument("--scheduled-action", help="JSON string of action to run")
     p.set_defaults(func=cmd_task_create)
 
     p = task_sub.add_parser("read")
@@ -318,6 +383,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status")
     p.add_argument("--description")
     p.add_argument("--tags")
+    p.add_argument("--scheduled-at", help="ISO datetime for one-shot schedule")
+    p.add_argument("--scheduled-action", help="JSON string of action to run")
     p.set_defaults(func=cmd_task_update)
 
     p = task_sub.add_parser("list")
@@ -338,6 +405,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = task_sub.add_parser("audit")
     p.add_argument("task_id")
     p.set_defaults(func=cmd_task_audit)
+
+    p = task_sub.add_parser("clear-schedule")
+    p.add_argument("task_id")
+    p.set_defaults(func=cmd_task_clear_schedule)
 
     # ── Lock ─────────────────────────────────────────────────────────
     lock_parser = subparsers.add_parser("lock")
@@ -368,7 +439,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = trigger_sub.add_parser("create")
     p.add_argument("workstream_id")
-    p.add_argument("--on-state", required=True)
+    p.add_argument("--on-state", help="State transition that fires this trigger")
+    p.add_argument("--on-schedule", help="Cron expression for schedule-based trigger")
+    p.add_argument("--filter", help="JSON string of task filter for schedule triggers")
     p.add_argument("--action", required=True, choices=["run_agent", "run_command"])
     p.add_argument("--agent")
     p.add_argument("--command")
@@ -377,6 +450,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = trigger_sub.add_parser("delete")
     p.add_argument("trigger_id")
     p.set_defaults(func=cmd_trigger_delete)
+
+    p = ws_sub.add_parser("pause")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_workstream_pause)
+
+    p = ws_sub.add_parser("resume")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_workstream_resume)
 
     # ── Agent ────────────────────────────────────────────────────────
     agent_parser = subparsers.add_parser("agent")
@@ -389,6 +470,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("agent_name")
     p.add_argument("--task", required=True)
     p.set_defaults(func=cmd_agent_run)
+
+    # ── Scheduler ────────────────────────────────────────────────────
+    sched_parser = subparsers.add_parser("scheduler")
+    sched_sub = sched_parser.add_subparsers(dest="method", required=True)
+
+    p = sched_sub.add_parser("start")
+    p.set_defaults(func=cmd_scheduler_start)
+
+    p = sched_sub.add_parser("stop")
+    p.set_defaults(func=cmd_scheduler_stop)
+
+    p = sched_sub.add_parser("status")
+    p.set_defaults(func=cmd_scheduler_status)
+
+    p = sched_sub.add_parser("tick")
+    p.set_defaults(func=cmd_scheduler_tick)
 
     # ── Artifact ─────────────────────────────────────────────────────
     artifact_parser = subparsers.add_parser("artifact")

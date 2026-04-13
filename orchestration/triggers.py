@@ -12,10 +12,10 @@ def evaluate_triggers(
     task_id: str,
     base_dir: str = ".",
 ) -> list:
-    """Evaluate and execute triggers for a given state change."""
+    """Evaluate and execute state-based triggers for a given state change."""
     results = []
     for trigger in ws.triggers:
-        if trigger.on_state == new_state:
+        if trigger.on_state is not None and trigger.on_state == new_state:
             result = _execute_trigger(trigger, task_id, ws.id, base_dir)
             results.append(result)
     return results
@@ -62,22 +62,39 @@ def list_triggers(workstream_id: str, base_dir: str = ".") -> list:
 
 def create_trigger(
     workstream_id: str,
-    on_state: str,
     action: str,
+    on_state: str = None,
+    on_schedule: str = None,
+    filter: dict = None,
     agent: str = None,
     command: str = None,
     base_dir: str = ".",
 ) -> Trigger:
+    if on_state is None and on_schedule is None:
+        raise ValueError("Either --on-state or --on-schedule must be specified")
+    if on_state is not None and on_schedule is not None:
+        raise ValueError("Cannot specify both --on-state and --on-schedule")
+    if on_schedule is not None and filter is None:
+        raise ValueError("Schedule-based triggers require a --filter")
+
     ws = read_workstream(workstream_id, base_dir)
     trigger = Trigger(
         id=new_id(),
-        on_state=on_state,
         action=action,
+        on_state=on_state,
+        on_schedule=on_schedule,
+        filter=filter,
         agent=agent,
         command=command,
     )
     ws.triggers.append(trigger)
     save_workstream(ws, base_dir)
+
+    # Auto-start scheduler if this is a schedule-based trigger
+    if on_schedule is not None:
+        from .scheduler import ensure_started
+        ensure_started(base_dir)
+
     return trigger
 
 

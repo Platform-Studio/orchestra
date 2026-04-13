@@ -64,13 +64,21 @@ class AuditEntry:
 @dataclass
 class Trigger:
     id: str
-    on_state: str
     action: str  # "run_agent" or "run_command"
+    on_state: str = None       # state-based trigger
+    on_schedule: str = None    # cron expression for schedule-based trigger
+    filter: dict = None        # filter for schedule-based triggers (state, tags, older_than_days)
     agent: str = None
     command: str = None
 
     def to_dict(self) -> dict:
-        d = {"id": self.id, "on_state": self.on_state, "action": self.action}
+        d = {"id": self.id, "action": self.action}
+        if self.on_state is not None:
+            d["on_state"] = self.on_state
+        if self.on_schedule is not None:
+            d["on_schedule"] = self.on_schedule
+        if self.filter is not None:
+            d["filter"] = self.filter
         if self.agent is not None:
             d["agent"] = self.agent
         if self.command is not None:
@@ -81,8 +89,10 @@ class Trigger:
     def from_dict(cls, data: dict):
         return cls(
             id=data.get("id", new_id()),
-            on_state=data["on_state"],
             action=data["action"],
+            on_state=data.get("on_state"),
+            on_schedule=data.get("on_schedule"),
+            filter=data.get("filter"),
             agent=data.get("agent"),
             command=data.get("command"),
         )
@@ -97,6 +107,7 @@ class Workstream:
     task_states: dict = field(default_factory=lambda: dict(DEFAULT_TASK_STATES))
     retry: RetryConfig = None
     triggers: list = field(default_factory=list)
+    paused: bool = False
 
     def to_dict(self) -> dict:
         d = {
@@ -111,6 +122,8 @@ class Workstream:
             d["parent_id"] = self.parent_id
         if self.retry is not None:
             d["retry"] = self.retry.to_dict()
+        if self.paused:
+            d["paused"] = True
         return d
 
     @classmethod
@@ -125,6 +138,7 @@ class Workstream:
             task_states=data.get("task_states", dict(DEFAULT_TASK_STATES)),
             retry=retry,
             triggers=triggers,
+            paused=data.get("paused", False),
         )
 
     def initial_status(self) -> str:
@@ -149,6 +163,8 @@ class Task:
     retry: RetryConfig = None
     comments: list = field(default_factory=list)
     audit: list = field(default_factory=list)
+    scheduled_at: str = None       # ISO datetime for one-shot scheduled action
+    scheduled_action: dict = None  # {"type": "run_agent", "agent": "..."} or {"type": "run_command", "command": "..."}
 
     def to_dict(self) -> dict:
         d = {
@@ -166,6 +182,10 @@ class Task:
             d["creator"] = self.creator
         if self.retry is not None:
             d["retry"] = self.retry.to_dict()
+        if self.scheduled_at is not None:
+            d["scheduled_at"] = self.scheduled_at
+        if self.scheduled_action is not None:
+            d["scheduled_action"] = self.scheduled_action
         return d
 
     @classmethod
@@ -183,6 +203,8 @@ class Task:
             retry=retry,
             comments=data.get("comments", []),
             audit=audit,
+            scheduled_at=data.get("scheduled_at"),
+            scheduled_action=data.get("scheduled_action"),
         )
 
     def add_audit(self, event_type: str, description: str):

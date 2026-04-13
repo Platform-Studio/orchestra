@@ -205,3 +205,94 @@ class TestCLITrigger:
         # Verify deleted
         result = run_cli("trigger", "list", ws_id, base_dir=workspace)
         assert len(json.loads(result.stdout)["data"]) == 0
+
+
+class TestCLIScheduleTrigger:
+    def test_create_schedule_trigger(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("trigger", "create", ws_id,
+                         "--on-schedule", "0 9 * * 1",
+                         "--filter", '{"state": "To Do"}',
+                         "--action", "run_command",
+                         "--command", "echo weekly",
+                         base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["on_schedule"] == "0 9 * * 1"
+
+    def test_create_trigger_requires_state_or_schedule(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("trigger", "create", ws_id,
+                         "--action", "run_command",
+                         "--command", "echo oops",
+                         base_dir=workspace)
+        assert result.returncode == 1
+        data = json.loads(result.stderr)
+        assert data["status"] == "error"
+
+
+class TestCLITaskSchedule:
+    def test_create_task_with_schedule(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        future = "2030-01-01T00:00:00+00:00"
+        action = '{"type": "run_command", "command": "echo sched"}'
+
+        result = run_cli("task", "create", ws_id,
+                         "--title", "Scheduled Task",
+                         "--scheduled-at", future,
+                         "--scheduled-action", action,
+                         base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["scheduled_at"] == future
+
+    def test_clear_schedule(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        future = "2030-01-01T00:00:00+00:00"
+        action = '{"type": "run_command", "command": "echo sched"}'
+
+        result = run_cli("task", "create", ws_id,
+                         "--title", "T",
+                         "--scheduled-at", future,
+                         "--scheduled-action", action,
+                         base_dir=workspace)
+        task_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("task", "clear-schedule", task_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data.get("scheduled_at") is None
+
+
+class TestCLIWorkstreamPauseResume:
+    def test_pause_and_resume(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        # Pause
+        result = run_cli("workstream", "pause", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["paused"] is True
+
+        # Resume
+        result = run_cli("workstream", "resume", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data.get("paused", False) is False
+
+
+class TestCLIScheduler:
+    def test_scheduler_status(self, workspace):
+        result = run_cli("scheduler", "status", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert "running" in data

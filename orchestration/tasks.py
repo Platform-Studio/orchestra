@@ -45,6 +45,8 @@ def create_task(
     tags: list = None,
     retry: dict = None,
     creator: str = None,
+    scheduled_at: str = None,
+    scheduled_action: dict = None,
     base_dir: str = ".",
 ) -> Task:
     ws = read_workstream(workstream_id, base_dir)
@@ -60,9 +62,18 @@ def create_task(
         creator=creator,
         tags=tags or [],
         retry=RetryConfig.from_dict(retry) if retry else None,
+        scheduled_at=scheduled_at,
+        scheduled_action=scheduled_action,
     )
     task.add_audit("created", f"Task created with status '{initial_status}'")
+    if scheduled_at:
+        task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
     _save_task(task, base_dir)
+
+    # Auto-start scheduler if task has a schedule
+    if scheduled_at:
+        from .scheduler import ensure_started
+        ensure_started(base_dir)
 
     # Evaluate triggers for initial state
     from .triggers import evaluate_triggers
@@ -86,6 +97,8 @@ def update_task(
     status: str = None,
     description: str = None,
     tags: list = None,
+    scheduled_at: str = None,
+    scheduled_action: dict = None,
     base_dir: str = ".",
 ) -> Task:
     task = read_task(task_id, base_dir)
@@ -111,7 +124,17 @@ def update_task(
         task.tags = tags
         task.add_audit("updated", f"Tags updated to {tags}")
 
+    if scheduled_at is not None:
+        task.scheduled_at = scheduled_at
+        task.scheduled_action = scheduled_action
+        task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
+
     _save_task(task, base_dir)
+
+    # Auto-start scheduler if schedule was set
+    if scheduled_at is not None:
+        from .scheduler import ensure_started
+        ensure_started(base_dir)
 
     # Evaluate triggers if status changed
     if status_changed:
@@ -171,3 +194,23 @@ def archive_task(task_id: str, base_dir: str = ".") -> dict:
 def get_audit(task_id: str, base_dir: str = ".") -> list:
     task = read_task(task_id, base_dir)
     return [a.to_dict() for a in task.audit]
+
+
+def clear_schedule(task_id: str, base_dir: str = ".") -> Task:
+    """Clear the scheduled_at and scheduled_action fields from a task."""
+    task = read_task(task_id, base_dir)
+    task.scheduled_at = None
+    task.scheduled_action = None
+    task.add_audit("schedule_cleared", "Scheduled action cleared")
+    _save_task(task, base_dir)
+    return task
+
+
+def clear_schedule(task_id: str, base_dir: str = ".") -> Task:
+    """Clear the scheduled_at and scheduled_action fields from a task."""
+    task = read_task(task_id, base_dir)
+    task.scheduled_at = None
+    task.scheduled_action = None
+    task.add_audit("schedule_cleared", "Scheduled action cleared")
+    _save_task(task, base_dir)
+    return task
