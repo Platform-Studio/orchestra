@@ -16,21 +16,7 @@ from orchestration.scheduler import (
     _task_matches_filter,
     tick,
     status,
-    start,
-    stop,
 )
-import orchestration.scheduler as _sched_mod
-
-
-@pytest.fixture(autouse=True)
-def _reset_scheduler_loop():
-    """Ensure the scheduler loop is stopped between tests."""
-    yield
-    with _sched_mod._loop_lock:
-        _sched_mod._loop_base_dir = None
-        if _sched_mod._loop_timer is not None:
-            _sched_mod._loop_timer.cancel()
-            _sched_mod._loop_timer = None
 
 
 @pytest.fixture
@@ -122,19 +108,19 @@ class TestSchedulerStatus:
         result = status(workspace)
         assert result["running"] is False
 
-    def test_status_running(self, workspace):
-        start(workspace)
+    def test_status_running_with_recent_tick(self, workspace):
+        """Status reports running when last_tick_at is recent."""
+        _save_state({
+            "last_tick_at": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),  # current process, so os.kill(pid, 0) succeeds
+        }, workspace)
         result = status(workspace)
         assert result["running"] is True
-        stop(workspace)
 
     def test_status_with_last_tick(self, workspace):
         _save_state({"last_tick_at": "2026-04-15T10:00:00+00:00"}, workspace)
-        start(workspace)
         result = status(workspace)
-        assert result["running"] is True
         assert result["last_tick_at"] == "2026-04-15T10:00:00+00:00"
-        stop(workspace)
 
 
 # ── Task-level scheduling ───────────────────────────────────────────

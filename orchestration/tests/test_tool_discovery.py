@@ -1,13 +1,13 @@
-"""Tests for dynamic CLI tool discovery and provisioning."""
+"""Tests for dynamic CLI tool discovery and system prompt building."""
 
 import os
 import pytest
 
 from orchestration.agents import (
     discover_cli_tools,
-    _make_cli_tool,
-    _run_cli_tool,
     _parse_agent_md,
+    _build_system_prompt,
+    _get_model,
 )
 
 
@@ -39,38 +39,42 @@ class TestDiscoverCliTools:
         assert discover_cli_tools(str(tmp_path)) == {}
 
 
-class TestRunCliTool:
-    def test_runs_tool_and_returns_stdout(self, workspace):
-        tools = discover_cli_tools(workspace)
-        py = tools["alpha"]["py"]
-        result = _run_cli_tool(py, "hello world", workspace)
-        assert result == "hello world"
+class TestBuildSystemPrompt:
+    def test_includes_agent_body(self, workspace):
+        agent_def = {"body": "You are a test agent.", "tools": []}
+        prompt = _build_system_prompt(agent_def, workspace)
+        assert "You are a test agent." in prompt
 
-    def test_returns_error_on_failure(self, workspace):
-        # Point at a non-existent script
-        result = _run_cli_tool("/nonexistent.py", "", workspace)
-        assert "ERROR" in result
+    def test_includes_orchestration_cli_docs(self, workspace):
+        agent_def = {"body": "Do stuff.", "tools": []}
+        prompt = _build_system_prompt(agent_def, workspace)
+        assert "orchestration.cli" in prompt
+        assert "task update" in prompt
+
+    def test_includes_requested_tool_docs(self, workspace):
+        agent_def = {"body": "Do stuff.", "tools": ["alpha", "beta"]}
+        prompt = _build_system_prompt(agent_def, workspace)
+        assert "Alpha Tool" in prompt
+        assert "Beta Tool" in prompt
+
+    def test_ignores_unknown_tools(self, workspace):
+        agent_def = {"body": "Do stuff.", "tools": ["nonexistent"]}
+        prompt = _build_system_prompt(agent_def, workspace)
+        assert "nonexistent" not in prompt
 
 
-class TestMakeCliTool:
-    def test_creates_tool_with_correct_name(self, workspace):
-        tools = discover_cli_tools(workspace)
-        t = tools["alpha"]
-        tool = _make_cli_tool("alpha", t["py"], t["description"], workspace)
-        assert tool.name == "alpha"
+class TestGetModel:
+    def test_default_is_sonnet(self, monkeypatch):
+        monkeypatch.delenv("DEFAULT_LLM", raising=False)
+        assert _get_model() == "sonnet"
 
-    def test_tool_description_includes_usage(self, workspace):
-        tools = discover_cli_tools(workspace)
-        t = tools["beta"]
-        tool = _make_cli_tool("beta", t["py"], t["description"], workspace)
-        assert "Beta Tool" in tool.description
+    def test_strips_anthropic_prefix(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_LLM", "anthropic/claude-opus-4-6")
+        assert _get_model() == "claude-opus-4-6"
 
-    def test_tool_can_execute(self, workspace):
-        tools = discover_cli_tools(workspace)
-        t = tools["beta"]
-        tool = _make_cli_tool("beta", t["py"], t["description"], workspace)
-        result = tool._run("foo bar")
-        assert result == "beta: foo bar"
+    def test_passes_through_plain_model(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_LLM", "claude-sonnet-4-20250514")
+        assert _get_model() == "claude-sonnet-4-20250514"
 
 
 class TestAgentToolDeclaration:

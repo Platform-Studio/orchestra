@@ -91,6 +91,20 @@ career_pivot (812b23b2-...)
 
 Note: This command prints plain text to stdout (not JSON).
 
+#### workstream pause — Pause a workstream
+
+```bash
+python -m orchestration.cli workstream pause WORKSTREAM_ID
+```
+
+Paused workstreams are skipped by the scheduler — no triggers will fire.
+
+#### workstream resume — Resume a paused workstream
+
+```bash
+python -m orchestration.cli workstream resume WORKSTREAM_ID
+```
+
 ---
 
 #### task create — Create a new task in a workstream
@@ -160,6 +174,12 @@ python -m orchestration.cli task audit TASK_ID
 
 Returns an array of audit entries, each with `timestamp`, `type`, and `description`.
 
+#### task clear-schedule — Remove a task's scheduled action
+
+```bash
+python -m orchestration.cli task clear-schedule TASK_ID
+```
+
 ---
 
 #### lock acquire — Lock a task before working on it
@@ -196,16 +216,24 @@ Returns `{"locked": false}` or `{"locked": true, "agent_id": "...", "acquired_at
 #### trigger create — Add a trigger to a workstream
 
 ```bash
-# Trigger that runs an agent when a task enters a state
+# State-based trigger: runs an agent when a task enters a state
 python -m orchestration.cli trigger create WORKSTREAM_ID --on-state "pending" --action run_agent --agent sdr
 
-# Trigger that runs a shell command
+# State-based trigger: runs a shell command
 python -m orchestration.cli trigger create WORKSTREAM_ID --on-state "Done" --action run_command --command "echo Task {task_id} in {workstream_id} is done"
+
+# Schedule-based trigger: runs every minute on matching tasks
+python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "* * * * *" --action run_command --command "echo tick"
+
+# Schedule-based trigger with task filter and concurrency limit
+python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "*/5 * * * *" --filter '{"status": "pending", "tags": ["batch"]}' --action run_agent --agent sdr --max-concurrent 3
 ```
 
 Template variables `{task_id}` and `{workstream_id}` are replaced in `run_command` commands.
 
-Triggers fire automatically when a task enters the specified state (including on initial creation).
+All triggers are evaluated by the scheduler on each tick (every 60 seconds). State-based triggers match tasks currently in the specified state. Schedule-based triggers match on cron expressions.
+
+The `--max-concurrent` flag (default: 1) limits how many tasks a trigger can process in parallel within the workstream.
 
 #### trigger list — List triggers on a workstream
 
@@ -236,6 +264,63 @@ python -m orchestration.cli agent run AGENT_NAME --task TASK_ID
 ```
 
 Parses the agent's `.md` file, creates a CrewAI agent, and executes it against the specified task. Requires CrewAI and `ANTHROPIC_API_KEY`.
+
+---
+
+#### scheduler run — Start the scheduler process
+
+```bash
+python -m orchestration.cli scheduler run
+```
+
+Runs the scheduler as a **foreground process** that ticks every 60 seconds. Each tick:
+1. Fires past-due task-level schedules
+2. Evaluates schedule-based triggers (cron matches)
+3. Evaluates state-based triggers (tasks in matching state)
+
+The scheduler is a standalone process, independent of the Workstream Manager web server. Stop with `Ctrl+C` or via `scheduler stop`.
+
+#### scheduler stop — Stop the scheduler
+
+```bash
+python -m orchestration.cli scheduler stop
+```
+
+Sends SIGTERM to the running scheduler process (identified by PID stored in `scheduler_state.yaml`).
+
+#### scheduler status — Check scheduler status
+
+```bash
+python -m orchestration.cli scheduler status
+```
+
+Returns `{"running": true, "pid": 12345, "last_tick_at": "..."}` or `{"running": false}`.
+
+#### scheduler tick — Execute a single tick
+
+```bash
+python -m orchestration.cli scheduler tick
+```
+
+Runs one scheduler tick immediately (useful for testing or manual triggering).
+
+---
+
+#### audit log — View workspace audit trail
+
+```bash
+# Recent events
+python -m orchestration.cli audit log
+
+# Filter by workstream
+python -m orchestration.cli audit log --workstream WORKSTREAM_ID
+
+# Filter by event type
+python -m orchestration.cli audit log --type trigger_fired
+
+# Limit results
+python -m orchestration.cli audit log --limit 20
+```
 
 ---
 

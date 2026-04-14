@@ -5,7 +5,7 @@ import yaml
 from datetime import datetime, timezone, timedelta
 
 from .models import Lock, now_iso
-from .tasks import _find_task_file
+from .tasks import _find_task_file, _tasks_dir
 
 DEFAULT_TTL_SECONDS = 900  # 15 minutes
 
@@ -98,3 +98,29 @@ def lock_status(task_id: str, base_dir: str = "."):
         return None  # Treat expired as unlocked
 
     return lock
+
+
+def active_lock_count(workstream_id: str, agent_id: str = None, base_dir: str = ".") -> int:
+    """Count active (non-expired) locks in a workstream, optionally filtered by agent_id."""
+    tasks_dir = _tasks_dir(base_dir, workstream_id)
+    if not os.path.isdir(tasks_dir):
+        return 0
+    count = 0
+    for fname in os.listdir(tasks_dir):
+        if not fname.endswith(".yaml.lock"):
+            continue
+        lock_path = os.path.join(tasks_dir, fname)
+        try:
+            with open(lock_path) as f:
+                data = yaml.safe_load(f)
+            if data is None:
+                continue
+            lock = Lock.from_dict(data)
+            if lock.is_expired():
+                continue
+            if agent_id is not None and lock.agent_id != agent_id:
+                continue
+            count += 1
+        except Exception:
+            continue
+    return count

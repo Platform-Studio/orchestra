@@ -233,6 +233,8 @@ def cmd_trigger_create(args):
         kwargs["agent"] = args.agent
     if args.command:
         kwargs["command"] = args.command
+    if args.max_concurrent is not None:
+        kwargs["max_concurrent"] = args.max_concurrent
     trigger = create_trigger(**kwargs)
     _output(trigger.to_dict())
 
@@ -281,10 +283,9 @@ def cmd_workstream_resume(args):
 
 # ── Scheduler commands ───────────────────────────────────────────────
 
-def cmd_scheduler_start(args):
-    from .scheduler import start
-    result = start(base_dir=args.base_dir)
-    _output(result)
+def cmd_scheduler_run(args):
+    from .scheduler import run
+    run(base_dir=args.base_dir)
 
 
 def cmd_scheduler_stop(args):
@@ -461,6 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--action", required=True, choices=["run_agent", "run_command"])
     p.add_argument("--agent")
     p.add_argument("--command")
+    p.add_argument("--max-concurrent", type=int, default=None, help="Max parallel executions within the workstream (default: 1)")
     p.set_defaults(func=cmd_trigger_create)
 
     p = trigger_sub.add_parser("delete")
@@ -492,16 +494,16 @@ def build_parser() -> argparse.ArgumentParser:
     sched_parser = subparsers.add_parser("scheduler")
     sched_sub = sched_parser.add_subparsers(dest="method", required=True)
 
-    p = sched_sub.add_parser("start")
-    p.set_defaults(func=cmd_scheduler_start)
+    p = sched_sub.add_parser("run", help="Run scheduler as a foreground process (ticks every 60s)")
+    p.set_defaults(func=cmd_scheduler_run)
 
-    p = sched_sub.add_parser("stop")
+    p = sched_sub.add_parser("stop", help="Stop a running scheduler process")
     p.set_defaults(func=cmd_scheduler_stop)
 
     p = sched_sub.add_parser("status")
     p.set_defaults(func=cmd_scheduler_status)
 
-    p = sched_sub.add_parser("tick")
+    p = sched_sub.add_parser("tick", help="Execute a single scheduler tick")
     p.set_defaults(func=cmd_scheduler_tick)
 
     # ── Audit ────────────────────────────────────────────────────────

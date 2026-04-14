@@ -1,14 +1,17 @@
 """Scheduler operations.
 
-Manages schedule-based triggers and task-level schedules via an in-process
-background thread.  The server starts the loop on boot; it calls `tick()`
-every 60 seconds.
+The scheduler is a standalone process that calls `tick()` every 60 seconds.
+Run it via:  python -m orchestration.cli scheduler run
+
+It is decoupled from the workstream manager web server — the web server
+reads scheduler_state.yaml to display status but does not drive ticks.
 """
 
 import os
+import signal
 import subprocess
 import sys
-import threading
+import time
 import yaml
 
 from datetime import datetime, timezone
@@ -16,15 +19,11 @@ from datetime import datetime, timezone
 from .models import now_iso
 from .workstreams import list_workstreams
 from .tasks import list_tasks, read_task, _save_task
-from .triggers import _execute_trigger
+from .triggers import execute_trigger
 
 
 SCHEDULER_STATE_FILE = "scheduler_state.yaml"
-
-# ── In-process scheduler state ──────────────────────────────────────
-_loop_timer = None      # threading.Timer for the next tick
-_loop_base_dir = None   # workspace dir the loop is ticking against
-_loop_lock = threading.Lock()
+TICK_INTERVAL = 60  # seconds
 
 
 def _state_path(base_dir: str) -> str:
@@ -45,100 +44,82 @@ def _save_state(state: dict, base_dir: str) -> None:
         yaml.dump(state, f, default_flow_style=False, sort_keys=False)
 
 
-def _remove_stale_cron_entries():
-    """One-time cleanup: remove any leftover orchestration-scheduler cron entries."""
-    try:
-        result = subprocess.run(
-            ["crontab", "-l"], capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            return
-        crontab = result.stdout
-        if "# orchestration-scheduler:" not in crontab:
-            return
-        lines = [line for line in crontab.splitlines(True)
-                 if "# orchestration-scheduler:" not in line]
-        subprocess.run(
-            ["crontab", "-"], input="".join(lines),
-            capture_output=True, text=True,
-        )
-    except Exception:
-        pass  # Not critical — just cleanup
-
-
-def _tick_loop():
-    """Internal: run one tick, then schedule the next one."""
-    global _loop_timer
-    with _loop_lock:
-        base_dir = _loop_base_dir
-        if base_dir is None:
-            return  # stopped
-    try:
-        tick(base_dir)
-    except Exception as e:
-        import sys
-        print(f"[scheduler] tick error: {e}", file=sys.stderr)
-    with _loop_lock:
-        if _loop_base_dir is not None:
-            _loop_timer = threading.Timer(60.0, _tick_loop)
-            _loop_timer.daemon = True
-            _loop_timer.start()
-
-
-def start(base_dir: str = ".") -> dict:
-    """Start the in-process scheduler loop. Idempotent."""
-    global _loop_timer, _loop_base_dir
+def run(base_dir: str = ".") -> None:
+    """Run the scheduler as a foreground process. Ticks every 60 seconds."""
     abs_dir = os.path.abspath(base_dir)
+    running = True
 
-    # Clean up any old cron entries from the previous approach
-    _remove_stale_cron_entries()
+    def handle_signal(sig, frame):
+        nonlocal running
+        running = False
 
-    with _loop_lock:
-        if _loop_base_dir is not None:
-            return {"message": "Scheduler already running"}
-        _loop_base_dir = abs_dir
-        _loop_timer = threading.Timer(60.0, _tick_loop)
-        _loop_timer.daemon = True
-        _loop_timer.start()
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    # Record that we're running
+    state = _load_state(abs_dir)
+    state["pid"] = os.getpid()
+    _save_state(state, abs_dir)
 
     from .workspace_audit import log_event
-    log_event("scheduler_started", "Scheduler loop started", base_dir)
-    return {"message": "Scheduler started"}
+    log_event("scheduler_started", f"Scheduler process started (pid={os.getpid()})", abs_dir)
+    print(f"Scheduler running (pid={os.getpid()}), ticking every {TICK_INTERVAL}s. Ctrl+C to stop.")
+
+    try:
+        while running:
+            try:
+                tick(abs_dir)
+            except Exception as e:
+                print(f"[scheduler] tick error: {e}", file=sys.stderr)
+            # Sleep in small increments so we can respond to signals promptly
+            for _ in range(TICK_INTERVAL):
+                if not running:
+                    break
+                time.sleep(1)
+    finally:
+        state = _load_state(abs_dir)
+        state.pop("pid", None)
+        _save_state(state, abs_dir)
+        log_event("scheduler_stopped", "Scheduler process stopped", abs_dir)
+        print("Scheduler stopped.")
 
 
 def stop(base_dir: str = ".") -> dict:
-    """Stop the in-process scheduler loop. Idempotent."""
-    global _loop_timer, _loop_base_dir
-    with _loop_lock:
-        if _loop_base_dir is None:
-            return {"message": "Scheduler is not running"}
-        _loop_base_dir = None
-        if _loop_timer is not None:
-            _loop_timer.cancel()
-            _loop_timer = None
-
-    from .workspace_audit import log_event
-    log_event("scheduler_stopped", "Scheduler loop stopped", base_dir)
-    return {"message": "Scheduler stopped"}
+    """Stop a running scheduler process by sending SIGTERM to its PID."""
+    state = _load_state(base_dir)
+    pid = state.get("pid")
+    if pid is None:
+        return {"message": "Scheduler is not running (no pid in state file)"}
+    try:
+        os.kill(pid, 0)  # check if alive
+    except OSError:
+        state.pop("pid", None)
+        _save_state(state, base_dir)
+        return {"message": f"Scheduler pid {pid} is not running (stale)"}
+    os.kill(pid, signal.SIGTERM)
+    return {"message": f"Sent SIGTERM to scheduler (pid={pid})"}
 
 
 def status(base_dir: str = ".") -> dict:
-    """Report scheduler status."""
-    with _loop_lock:
-        running = _loop_base_dir is not None
+    """Report scheduler status by checking state file."""
     state = _load_state(base_dir)
-    result = {"running": running}
+    result = {}
+
+    # Check if the scheduler process is alive via its pid
+    pid = state.get("pid")
+    if pid is not None:
+        try:
+            os.kill(pid, 0)  # signal 0 = check if process exists
+            result["running"] = True
+            result["pid"] = pid
+        except OSError:
+            result["running"] = False  # stale pid
+    else:
+        result["running"] = False
+
     if "last_tick_at" in state:
         result["last_tick_at"] = state["last_tick_at"]
     return result
-
-
-def ensure_started(base_dir: str = ".") -> None:
-    """Ensure the scheduler is running. Called internally."""
-    with _loop_lock:
-        if _loop_base_dir is not None:
-            return
-    start(base_dir)
 
 
 def _cron_matches_between(cron_expr: str, last_tick: datetime, now: datetime) -> bool:
@@ -241,7 +222,7 @@ def tick(base_dir: str = ".") -> dict:
         from datetime import timedelta
         last_tick = now - timedelta(minutes=1)
 
-    results = {"task_schedules_fired": [], "trigger_schedules_fired": []}
+    results = {"task_schedules_fired": [], "trigger_schedules_fired": [], "state_triggers_fired": []}
 
     workstreams = list_workstreams(base_dir)
     for ws in workstreams:
@@ -268,7 +249,7 @@ def tick(base_dir: str = ".") -> dict:
                         agent=action.get("agent"),
                         command=action.get("command"),
                     )
-                    result = _execute_trigger(temp_trigger, task.id, ws.id, base_dir)
+                    result = execute_trigger(temp_trigger, task.id, ws.id, base_dir)
                     results["task_schedules_fired"].append({
                         "task_id": task.id,
                         "result": result,
@@ -288,9 +269,28 @@ def tick(base_dir: str = ".") -> dict:
             if not _cron_matches_between(trigger.on_schedule, last_tick, now):
                 continue
 
+            # Check max_concurrent limit
+            from .locks import active_lock_count
+            current_locks = active_lock_count(ws.id, base_dir=base_dir)
+            if current_locks >= trigger.max_concurrent:
+                from .workspace_audit import log_event as _log_event
+                _log_event(
+                    "trigger_skipped",
+                    f"Scheduled trigger '{trigger.action}' skipped — "
+                    f"{current_locks}/{trigger.max_concurrent} concurrent locks active",
+                    base_dir, trigger_id=trigger.id, workstream_id=ws.id,
+                    status="skipped",
+                )
+                results["trigger_schedules_fired"].append({
+                    "trigger_id": trigger.id,
+                    "status": "skipped",
+                    "message": f"max_concurrent ({trigger.max_concurrent}) reached",
+                })
+                continue
+
             if trigger.filter is None:
                 # No filter — fire once (standalone command, not per-task)
-                result = _execute_trigger(trigger, "", ws.id, base_dir)
+                result = execute_trigger(trigger, "", ws.id, base_dir)
                 _audit_trigger(trigger, result, ws, base_dir)
                 results["trigger_schedules_fired"].append({
                     "trigger_id": trigger.id,
@@ -301,13 +301,48 @@ def tick(base_dir: str = ".") -> dict:
                 filter_def = trigger.filter
                 for task in tasks:
                     if _task_matches_filter(task, filter_def):
-                        result = _execute_trigger(trigger, task.id, ws.id, base_dir)
+                        result = execute_trigger(trigger, task.id, ws.id, base_dir)
                         _audit_trigger(trigger, result, ws, base_dir, task_id=task.id)
                         results["trigger_schedules_fired"].append({
                             "trigger_id": trigger.id,
                             "task_id": task.id,
                             "result": result,
                         })
+
+        # 3. State-based triggers
+        from .locks import active_lock_count, lock_status
+        for trigger in ws.triggers:
+            if trigger.on_state is None:
+                continue
+
+            # Find tasks in the trigger's target state that aren't locked
+            matching_tasks = [t for t in tasks if t.status == trigger.on_state]
+            for task in matching_tasks:
+                # Skip tasks that already have an active lock
+                if lock_status(task.id, base_dir) is not None:
+                    continue
+
+                # Check max_concurrent limit before each fire
+                current = active_lock_count(ws.id, base_dir=base_dir)
+                if current >= trigger.max_concurrent:
+                    from .workspace_audit import log_event as _log_event
+                    _log_event(
+                        "trigger_skipped",
+                        f"State trigger '{trigger.action}' skipped for task {task.id} "
+                        f"— {current}/{trigger.max_concurrent} concurrent locks active",
+                        base_dir, trigger_id=trigger.id, workstream_id=ws.id,
+                        task_id=task.id, status="skipped",
+                    )
+                    break  # At limit — no point checking more tasks
+
+                result = execute_trigger(trigger, task.id, ws.id, base_dir)
+                status = result.get("status", "unknown")
+                _audit_trigger(trigger, result, ws, base_dir, task_id=task.id)
+                results["state_triggers_fired"].append({
+                    "trigger_id": trigger.id,
+                    "task_id": task.id,
+                    "result": result,
+                })
 
     # Update state
     state["last_tick_at"] = now.isoformat()

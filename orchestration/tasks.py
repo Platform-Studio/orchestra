@@ -70,15 +70,6 @@ def create_task(
         task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
     _save_task(task, base_dir)
 
-    # Auto-start scheduler if task has a schedule
-    if scheduled_at:
-        from .scheduler import ensure_started
-        ensure_started(base_dir)
-
-    # Evaluate triggers for initial state
-    from .triggers import evaluate_triggers
-    evaluate_triggers(ws, initial_status, task.id, base_dir)
-
     return task
 
 
@@ -130,16 +121,6 @@ def update_task(
         task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
 
     _save_task(task, base_dir)
-
-    # Auto-start scheduler if schedule was set
-    if scheduled_at is not None:
-        from .scheduler import ensure_started
-        ensure_started(base_dir)
-
-    # Evaluate triggers if status changed
-    if status_changed:
-        from .triggers import evaluate_triggers
-        evaluate_triggers(ws, status, task.id, base_dir)
 
     return task
 

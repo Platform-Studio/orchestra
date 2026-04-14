@@ -9,32 +9,7 @@ from .workstreams import read_workstream, save_workstream
 from .workspace_audit import log_event
 
 
-def evaluate_triggers(
-    ws: Workstream,
-    new_state: str,
-    task_id: str,
-    base_dir: str = ".",
-) -> list:
-    """Evaluate and execute state-based triggers for a given state change."""
-    results = []
-    for trigger in ws.triggers:
-        if trigger.on_state is not None and trigger.on_state == new_state:
-            result = _execute_trigger(trigger, task_id, ws.id, base_dir)
-            status = result.get("status", "unknown")
-            desc = f"State trigger '{trigger.action}' fired on state '{new_state}'"
-            if status == "error":
-                desc += f" — ERROR: {result.get('message', result.get('stderr', ''))}"
-            log_event(
-                "trigger_fired", desc, base_dir,
-                trigger_id=trigger.id, workstream_id=ws.id,
-                task_id=task_id, status=status,
-                agent=trigger.agent, command=trigger.command,
-            )
-            results.append(result)
-    return results
-
-
-def _execute_trigger(trigger: Trigger, task_id: str, workstream_id: str, base_dir: str = ".") -> dict:
+def execute_trigger(trigger: Trigger, task_id: str, workstream_id: str, base_dir: str = ".") -> dict:
     """Execute a single trigger."""
     if trigger.action == "run_agent":
         if trigger.agent is None:
@@ -51,6 +26,18 @@ def _execute_trigger(trigger: Trigger, task_id: str, workstream_id: str, base_di
             return {"trigger_id": trigger.id, "status": "error", "message": "No command specified"}
         # Template variable substitution
         cmd = trigger.command.replace("{task_id}", task_id).replace("{workstream_id}", workstream_id)
+
+        # Acquire lock when running against a specific task
+        lock_agent_id = f"trigger:{trigger.id}"
+        locked = False
+        if task_id:
+            from .locks import acquire_lock, release_lock
+            try:
+                acquire_lock(task_id, agent_id=lock_agent_id, base_dir=base_dir)
+                locked = True
+            except (RuntimeError, FileNotFoundError) as e:
+                return {"trigger_id": trigger.id, "status": "error", "message": f"Could not acquire lock: {e}"}
+
         try:
             # Ensure the same Python that runs the scheduler is available to subprocesses
             env = os.environ.copy()
@@ -69,6 +56,12 @@ def _execute_trigger(trigger: Trigger, task_id: str, workstream_id: str, base_di
             }
         except Exception as e:
             return {"trigger_id": trigger.id, "status": "error", "message": str(e)}
+        finally:
+            if locked:
+                try:
+                    release_lock(task_id, agent_id=lock_agent_id, base_dir=base_dir)
+                except Exception:
+                    pass
 
     return {"trigger_id": trigger.id, "status": "error", "message": f"Unknown action: {trigger.action}"}
 
@@ -86,6 +79,7 @@ def create_trigger(
     filter: dict = None,
     agent: str = None,
     command: str = None,
+    max_concurrent: int = 1,
     base_dir: str = ".",
 ) -> Trigger:
     if on_state is None and on_schedule is None:
@@ -102,14 +96,10 @@ def create_trigger(
         filter=filter,
         agent=agent,
         command=command,
+        max_concurrent=max_concurrent,
     )
     ws.triggers.append(trigger)
     save_workstream(ws, base_dir)
-
-    # Auto-start scheduler if this is a schedule-based trigger
-    if on_schedule is not None:
-        from .scheduler import ensure_started
-        ensure_started(base_dir)
 
     return trigger
 

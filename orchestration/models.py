@@ -70,6 +70,7 @@ class Trigger:
     filter: dict = None        # filter for schedule-based triggers (state, tags, older_than_days)
     agent: str = None
     command: str = None
+    max_concurrent: int = 1    # max parallel executions within the workstream
 
     def to_dict(self) -> dict:
         d = {"id": self.id, "action": self.action}
@@ -83,6 +84,8 @@ class Trigger:
             d["agent"] = self.agent
         if self.command is not None:
             d["command"] = self.command
+        if self.max_concurrent != 1:
+            d["max_concurrent"] = self.max_concurrent
         return d
 
     @classmethod
@@ -95,6 +98,7 @@ class Trigger:
             filter=data.get("filter"),
             agent=data.get("agent"),
             command=data.get("command"),
+            max_concurrent=data.get("max_concurrent", 1),
         )
 
 

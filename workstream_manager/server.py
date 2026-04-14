@@ -340,18 +340,13 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
 
-    # Start the in-process scheduler loop (ticks every 60s)
-    from orchestration.scheduler import start as scheduler_start, stop as scheduler_stop
-    scheduler_start(WORKSPACE_DIR)
-    print("Scheduler started.")
-
     server = HTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Workstream Manager running at http://localhost:{args.port}")
+    print("Note: Start the scheduler separately via: python -m orchestration.cli scheduler run")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down.")
-        scheduler_stop(WORKSPACE_DIR)
         server.shutdown()
 
 

@@ -2,6 +2,7 @@
 
 import os
 import glob
+import shutil
 import subprocess
 import sys
 import yaml
@@ -12,7 +13,20 @@ try:
 except ImportError:
     pass
 
-LLM = os.getenv("CREWAI_LLM", "anthropic/claude-opus-4-6")
+# Maximum bytes of agent output to store in audit trail
+MAX_AUDIT_OUTPUT = 10_000
+
+
+def _get_model() -> str:
+    """Return the model name for Claude Code CLI from DEFAULT_LLM env var.
+
+    Strips 'anthropic/' prefix if present (legacy CrewAI format).
+    Falls back to 'sonnet' if not set.
+    """
+    raw = os.getenv("DEFAULT_LLM", "sonnet")
+    if raw.startswith("anthropic/"):
+        raw = raw[len("anthropic/"):]
+    return raw
 
 
 def _agents_dir(base_dir: str) -> str:
@@ -130,136 +144,50 @@ def discover_cli_tools(base_dir: str = ".") -> dict:
     return tools
 
 
-def _make_cli_tool(tool_name: str, py_path: str, description: str, base_dir: str):
-    """Create a CrewAI BaseTool wrapper for a CLI tool.
+def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
+    """Build the system prompt from the agent body and available tools."""
+    parts = [agent_def["body"]]
 
-    The tool runs `python3 <py_path> <args>` and returns stdout/stderr.
-    The .md content is used as the tool description so the LLM knows usage.
-    """
-    from crewai.tools import BaseTool
-
-    # Truncate description to first 4000 chars to stay within LLM tool limits
-    desc_truncated = description[:4000]
-    abs_base = os.path.abspath(base_dir)
-    abs_py = os.path.abspath(py_path)
-    py_basename = os.path.basename(py_path)
-    tool_desc = (
-        f"Run the {tool_name} CLI tool. Pass the command-line arguments as a "
-        f"single string (everything after 'python3 {py_basename}').\n\n"
-        f"Usage reference:\n{desc_truncated}"
-    )
-
-    # Closure-based approach avoids Pydantic private-attr issues
-    class CLITool(BaseTool):
-        name: str = tool_name
-        description: str = tool_desc
-
-        def _run(self, command: str) -> str:
-            return _run_cli_tool(abs_py, command, abs_base)
-
-    # Give the class a unique name so CrewAI doesn't deduplicate
-    CLITool.__name__ = f"CLITool_{tool_name}"
-    CLITool.__qualname__ = f"CLITool_{tool_name}"
-    return CLITool()
-
-
-def _run_cli_tool(abs_py: str, command: str, cwd: str) -> str:
-    """Execute a CLI tool and return output."""
-    python = sys.executable
-    full = f"{python} {abs_py} {command}"
-    env = os.environ.copy()
-    python_dir = os.path.dirname(python)
-    env["PATH"] = python_dir + os.pathsep + env.get("PATH", "")
-    r = subprocess.run(
-        full, shell=True, capture_output=True, text=True,
-        timeout=120, cwd=cwd, env=env,
-    )
-    out = r.stdout.strip()
-    err = r.stderr.strip()
-    if r.returncode == 0:
-        return out if out else "(no output)"
-    return f"ERROR (exit {r.returncode}):\n{err}\n{out}".strip()
-
-
-def _make_orchestration_tool(base_dir: str):
-    """Create the built-in orchestration CLI tool."""
-    from crewai.tools import BaseTool
-    abs_base = os.path.abspath(base_dir)
-
-    # Read the orchestration CLI docs if available
-    orch_md = os.path.join(_cli_dir(base_dir), "orchestration_cli.md")
-    if os.path.exists(orch_md):
-        with open(orch_md) as f:
-            orch_desc = f.read()[:4000]
-    else:
-        orch_desc = "Manage workstreams, tasks, locks, triggers, artifacts, and agents."
-
-    class OrchestrationTool(BaseTool):
-        name: str = "orchestration"
-        description: str = (
-            "Run an orchestration CLI command. Pass the arguments after "
-            "'python -m orchestration.cli', e.g. "
-            "'task update <task_id> --status veg'.\n\n"
-            f"Usage reference:\n{orch_desc}"
-        )
-
-        def _run(self, command: str) -> str:
-            return _run_orchestration(command, abs_base)
-
-    return OrchestrationTool()
-
-
-def _run_orchestration(command: str, cwd: str) -> str:
-    python = sys.executable
-    full = f"{python} -m orchestration.cli {command}"
-    env = os.environ.copy()
-    python_dir = os.path.dirname(python)
-    env["PATH"] = python_dir + os.pathsep + env.get("PATH", "")
-    r = subprocess.run(
-        full, shell=True, capture_output=True, text=True,
-        timeout=30, cwd=cwd, env=env,
-    )
-    out = r.stdout.strip()
-    err = r.stderr.strip()
-    if r.returncode == 0:
-        return out if out else "(no output)"
-    return f"ERROR (exit {r.returncode}):\n{err}\n{out}".strip()
-
-
-def build_tools_for_agent(agent_def: dict, base_dir: str = ".") -> list:
-    """Build the CrewAI tool list for an agent based on its x-tools declaration.
-
-    - "orchestration" is always included.
-    - Each name in x-tools is matched against Agents/cli/<name>.py + .md.
-    - FileReadTool is always included.
-    """
-    from crewai_tools import FileReadTool
-    tools = [FileReadTool()]
-
-    # Always include orchestration
-    tools.append(_make_orchestration_tool(base_dir))
-
-    # Discover available CLI tools
+    # List available CLI tools so the agent knows what it can run via bash
     requested = agent_def.get("tools", [])
     if requested:
         available = discover_cli_tools(base_dir)
+        tool_docs = []
         for tool_name in requested:
-            if tool_name == "orchestration":
-                continue  # already added
             if tool_name in available:
-                t = available[tool_name]
-                tools.append(_make_cli_tool(tool_name, t["py"], t["description"], base_dir))
+                tool_docs.append(f"### {tool_name}\n```\npython3 {available[tool_name]['py']} <args>\n```\n{available[tool_name]['description']}")
+        if tool_docs:
+            parts.append("\n\n## Available CLI Tools\n" + "\n\n".join(tool_docs))
 
-    return tools
+    # Always document the orchestration CLI
+    parts.append(
+        "\n\n## Orchestration CLI\n"
+        "Use `python -m orchestration.cli <command>` to manage tasks, workstreams, etc.\n"
+        "Key commands:\n"
+        "- `task update <task_id> --status <new_status>` — transition a task\n"
+        "- `task comment <task_id> --message '<msg>'` — add a comment\n"
+        "- `task list <workstream_id>` — list tasks in a workstream\n"
+        "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
+    )
+
+    return "\n".join(parts)
 
 
 def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, base_dir: str = ".") -> dict:
-    """Run an agent, optionally against a specific task.
+    """Run an agent via Claude Code CLI, optionally against a specific task.
 
-    If task_id is provided, the agent processes that task (original behaviour).
+    If task_id is provided, the agent processes that task.
+    A lock is automatically acquired for the task before execution and released
+    afterwards (even on failure). If the task is already locked, raises RuntimeError.
+
     If only workstream_id is provided, the agent runs standalone with workstream
     context but no specific task — useful for generative agents that create tasks.
     """
+    # Ensure claude CLI is available
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        raise RuntimeError("Claude Code CLI not found. Install it from https://docs.anthropic.com/en/docs/claude-code")
+
     agent_file = _resolve_agent_file(agent_name, base_dir)
     agent_def = _parse_agent_md(agent_file)
 
@@ -275,77 +203,109 @@ def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, b
     elif workstream_id:
         ws = read_workstream(workstream_id, base_dir)
 
+    # Acquire lock when running against a specific task
+    lock_agent_id = agent_def["name"]
+    if task_id:
+        from .locks import acquire_lock, release_lock
+        acquire_lock(task_id, agent_id=lock_agent_id, base_dir=base_dir)
+
     try:
-        from crewai import Agent as CrewAgent, Task as CrewTask, Crew
+        # Build system prompt from agent definition + tool docs
+        system_prompt = _build_system_prompt(agent_def, base_dir)
 
-        tools = build_tools_for_agent(agent_def, base_dir)
-
-        agent = CrewAgent(
-            role=agent_def["name"],
-            goal=agent_def["description"],
-            backstory=agent_def["body"],
-            tools=tools,
-            llm=LLM,
-            verbose=False,
-            allow_delegation=False,
-        )
-
-        # Build task description based on context available
+        # Build task prompt based on context available
         if task and ws:
             valid_transitions = ws.task_states.get(task.status, [])
-            task_desc = (
+            task_prompt = (
                 f"You are working on task '{task.title}' (ID: {task.id}) "
                 f"in workstream '{ws.name}' (ID: {ws.id}).\n"
                 f"Current status: {task.status}\n"
                 f"Valid next states: {valid_transitions}\n\n"
-                f"To update the task status, use the orchestration tool with:\n"
-                f"  task update {task.id} --status <new_status>\n\n"
-                f"To add a comment, use the orchestration tool with:\n"
-                f"  task comment {task.id} --message '<your message>'\n\n"
                 f"Working directory: {os.path.abspath(base_dir)}\n\n"
                 f"Follow your instructions and process this task now."
             )
-            expected = "Confirm the task was processed and what action was taken."
         elif ws:
             states = list(ws.task_states.keys())
-            task_desc = (
+            task_prompt = (
                 f"You are running standalone in workstream '{ws.name}' (ID: {ws.id}).\n"
                 f"Available states: {states}\n\n"
-                f"To create a new task, use the orchestration tool with:\n"
-                f"  task create {ws.id} --title '<title>' --description '<desc>' --tags '<tag1>,<tag2>'\n\n"
-                f"To list existing tasks, use:\n"
-                f"  task list {ws.id}\n\n"
                 f"Working directory: {os.path.abspath(base_dir)}\n\n"
                 f"Follow your instructions now."
             )
-            expected = "Confirm what action was taken."
         else:
-            task_desc = (
+            task_prompt = (
                 f"You are running standalone with no specific workstream or task.\n"
                 f"Working directory: {os.path.abspath(base_dir)}\n\n"
                 f"Follow your instructions now."
             )
-            expected = "Confirm what action was taken."
 
-        crew_task = CrewTask(
-            description=task_desc,
-            agent=agent,
-            expected_output=expected,
+        # Add task description/context if available
+        if task and task.description:
+            task_prompt += f"\n\nTask description:\n{task.description}"
+
+        # Log agent_started to audit trail
+        if task:
+            task.add_audit("agent_started", f"Agent '{agent_def['name']}' started processing")
+            _save_task(task, base_dir)
+
+        # Build claude CLI command
+        model = _get_model()
+        cmd = [
+            claude_path,
+            "-p", task_prompt,
+            "--model", model,
+            "--output-format", "text",
+            "--verbose",
+        ]
+
+        # Append system prompt
+        cmd.extend(["--append-system-prompt", system_prompt])
+
+        # Use --dangerously-skip-permissions for headless/automated execution
+        cmd.append("--dangerously-skip-permissions")
+
+        # Run with environment inherited (includes ANTHROPIC_API_KEY from dotenv)
+        env = os.environ.copy()
+        abs_base = os.path.abspath(base_dir)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=abs_base,
+            env=env,
         )
 
-        crew = Crew(agents=[agent], tasks=[crew_task], verbose=False)
-        result = crew.kickoff()
+        output = result.stdout.strip()
+        stderr = result.stderr.strip()
 
-        response = {"agent": agent_def["name"], "result": str(result)}
+        # Log agent output to audit trail
+        if task:
+            task = read_task(task_id, base_dir)  # Re-read in case agent modified it
+            if result.returncode == 0:
+                audit_output = output[:MAX_AUDIT_OUTPUT]
+                if len(output) > MAX_AUDIT_OUTPUT:
+                    audit_output += f"\n... (truncated, {len(output)} total chars)"
+                task.add_audit("agent_completed", f"Agent '{agent_def['name']}' completed.\n\nOutput:\n{audit_output}")
+            else:
+                error_msg = stderr[:MAX_AUDIT_OUTPUT] if stderr else output[:MAX_AUDIT_OUTPUT]
+                task.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {result.returncode}).\n\nError:\n{error_msg}")
+            _save_task(task, base_dir)
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {result.returncode}): {stderr or output}")
+
+        response = {"agent": agent_def["name"], "result": output}
         if task_id:
-            # Re-read task to get the final state (agent may have updated it via CLI)
-            task = read_task(task_id, base_dir)
             response["task_id"] = task_id
         if ws:
             response["workstream_id"] = ws.id
         return response
 
-    except ImportError:
-        raise RuntimeError(
-            "CrewAI is not installed. Install it with: pip install crewai"
-        )
+    finally:
+        if task_id:
+            try:
+                release_lock(task_id, agent_id=lock_agent_id, base_dir=base_dir)
+            except Exception:
+                pass  # Lock may have been released by agent or expired
