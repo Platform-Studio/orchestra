@@ -16,5 +16,14 @@
 # Allow .env.example for onboarding new devs
 !.env.example
 
+# Allow workstreams data (source of truth for task/board state)
+!workstreams/**
+
+# Allow artifacts data
+!artifacts/**
+
+# Allow YAML files (used by workstreams)
+!*.yaml
+
 # Allow this file itself
 !.gitignore
