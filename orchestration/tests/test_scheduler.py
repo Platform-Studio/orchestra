@@ -193,15 +193,17 @@ class TestScheduleTriggers:
         assert trigger.filter == {"state": "To Do"}
         assert trigger.on_state is None
 
-    def test_schedule_trigger_requires_filter(self, workspace, ws):
-        with pytest.raises(ValueError, match="filter"):
-            create_trigger(
-                ws.id,
-                on_schedule="0 9 * * 1",
-                action="run_command",
-                command="echo x",
-                base_dir=workspace,
-            )
+    def test_schedule_trigger_without_filter(self, workspace, ws):
+        """Filterless schedule triggers are allowed — they fire once per tick."""
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="0 9 * * 1",
+            action="run_command",
+            command="echo x",
+            base_dir=workspace,
+        )
+        assert trigger.filter is None
+        assert trigger.on_schedule == "0 9 * * 1"
 
     def test_cannot_set_both_on_state_and_on_schedule(self, workspace, ws):
         with pytest.raises(ValueError, match="Cannot specify both"):

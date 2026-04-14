@@ -253,7 +253,7 @@ def cmd_agent_list(args):
 
 def cmd_agent_run(args):
     from .agents import run_agent
-    result = run_agent(args.agent_name, args.task, base_dir=args.base_dir)
+    result = run_agent(args.agent_name, task_id=args.task or None, workstream_id=args.workstream or None, base_dir=args.base_dir)
     _output(result)
 
 
@@ -468,7 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = agent_sub.add_parser("run")
     p.add_argument("agent_name")
-    p.add_argument("--task", required=True)
+    p.add_argument("--task", default=None)
+    p.add_argument("--workstream", default=None)
     p.set_defaults(func=cmd_agent_run)
 
     # ── Scheduler ────────────────────────────────────────────────────

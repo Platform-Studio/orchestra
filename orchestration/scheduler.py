@@ -84,7 +84,7 @@ def start(base_dir: str = ".") -> dict:
 
     crontab = _get_crontab()
     # Add the cron entry: every minute
-    cron_line = f"* * * * * cd {abs_dir} && {python} -m orchestration.cli scheduler tick --base-dir {abs_dir} {tag}\n"
+    cron_line = f"* * * * * cd {abs_dir} && {python} -m orchestration.cli --base-dir {abs_dir} scheduler tick {tag}\n"
     crontab += cron_line
 
     _set_crontab(crontab)
@@ -247,16 +247,24 @@ def tick(base_dir: str = ".") -> dict:
             if not _cron_matches_between(trigger.on_schedule, last_tick, now):
                 continue
 
-            # Find tasks matching the filter
-            filter_def = trigger.filter or {}
-            for task in tasks:
-                if _task_matches_filter(task, filter_def):
-                    result = _execute_trigger(trigger, task.id, ws.id, base_dir)
-                    results["trigger_schedules_fired"].append({
-                        "trigger_id": trigger.id,
-                        "task_id": task.id,
-                        "result": result,
-                    })
+            if trigger.filter is None:
+                # No filter — fire once (standalone command, not per-task)
+                result = _execute_trigger(trigger, "", ws.id, base_dir)
+                results["trigger_schedules_fired"].append({
+                    "trigger_id": trigger.id,
+                    "result": result,
+                })
+            else:
+                # Find tasks matching the filter
+                filter_def = trigger.filter
+                for task in tasks:
+                    if _task_matches_filter(task, filter_def):
+                        result = _execute_trigger(trigger, task.id, ws.id, base_dir)
+                        results["trigger_schedules_fired"].append({
+                            "trigger_id": trigger.id,
+                            "task_id": task.id,
+                            "result": result,
+                        })
 
     # Update state
     state["last_tick_at"] = now.isoformat()

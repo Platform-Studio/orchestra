@@ -244,16 +244,27 @@ def build_tools_for_agent(agent_def: dict, base_dir: str = ".") -> list:
     return tools
 
 
-def run_agent(agent_name: str, task_id: str, base_dir: str = ".") -> dict:
-    """Run an agent against a specific task using CrewAI."""
+def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, base_dir: str = ".") -> dict:
+    """Run an agent, optionally against a specific task.
+
+    If task_id is provided, the agent processes that task (original behaviour).
+    If only workstream_id is provided, the agent runs standalone with workstream
+    context but no specific task — useful for generative agents that create tasks.
+    """
     agent_file = _resolve_agent_file(agent_name, base_dir)
     agent_def = _parse_agent_md(agent_file)
 
-    # Load the task and its workstream for context
     from .tasks import read_task, _save_task
     from .workstreams import read_workstream
-    task = read_task(task_id, base_dir)
-    ws = read_workstream(task.workstream_id, base_dir)
+
+    # Resolve workstream context
+    task = None
+    ws = None
+    if task_id:
+        task = read_task(task_id, base_dir)
+        ws = read_workstream(task.workstream_id, base_dir)
+    elif workstream_id:
+        ws = read_workstream(workstream_id, base_dir)
 
     try:
         from crewai import Agent as CrewAgent, Task as CrewTask, Crew
@@ -270,34 +281,60 @@ def run_agent(agent_name: str, task_id: str, base_dir: str = ".") -> dict:
             allow_delegation=False,
         )
 
-        # Build a rich task description with context
-        valid_transitions = ws.task_states.get(task.status, [])
-        task_desc = (
-            f"You are working on task '{task.title}' (ID: {task.id}) "
-            f"in workstream '{ws.name}' (ID: {ws.id}).\n"
-            f"Current status: {task.status}\n"
-            f"Valid next states: {valid_transitions}\n\n"
-            f"To update the task status, use the orchestration tool with:\n"
-            f"  task update {task.id} --status <new_status>\n\n"
-            f"To add a comment, use the orchestration tool with:\n"
-            f"  task comment {task.id} --message '<your message>'\n\n"
-            f"Working directory: {os.path.abspath(base_dir)}\n\n"
-            f"Follow your instructions and process this task now."
-        )
+        # Build task description based on context available
+        if task and ws:
+            valid_transitions = ws.task_states.get(task.status, [])
+            task_desc = (
+                f"You are working on task '{task.title}' (ID: {task.id}) "
+                f"in workstream '{ws.name}' (ID: {ws.id}).\n"
+                f"Current status: {task.status}\n"
+                f"Valid next states: {valid_transitions}\n\n"
+                f"To update the task status, use the orchestration tool with:\n"
+                f"  task update {task.id} --status <new_status>\n\n"
+                f"To add a comment, use the orchestration tool with:\n"
+                f"  task comment {task.id} --message '<your message>'\n\n"
+                f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                f"Follow your instructions and process this task now."
+            )
+            expected = "Confirm the task was processed and what action was taken."
+        elif ws:
+            states = list(ws.task_states.keys())
+            task_desc = (
+                f"You are running standalone in workstream '{ws.name}' (ID: {ws.id}).\n"
+                f"Available states: {states}\n\n"
+                f"To create a new task, use the orchestration tool with:\n"
+                f"  task create {ws.id} --title '<title>' --description '<desc>' --tags '<tag1>,<tag2>'\n\n"
+                f"To list existing tasks, use:\n"
+                f"  task list {ws.id}\n\n"
+                f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                f"Follow your instructions now."
+            )
+            expected = "Confirm what action was taken."
+        else:
+            task_desc = (
+                f"You are running standalone with no specific workstream or task.\n"
+                f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                f"Follow your instructions now."
+            )
+            expected = "Confirm what action was taken."
 
         crew_task = CrewTask(
             description=task_desc,
             agent=agent,
-            expected_output="Confirm the task was processed and what action was taken.",
+            expected_output=expected,
         )
 
         crew = Crew(agents=[agent], tasks=[crew_task], verbose=False)
         result = crew.kickoff()
 
-        # Re-read task to get the final state (agent may have updated it via CLI)
-        task = read_task(task_id, base_dir)
-
-        return {"agent": agent_def["name"], "task_id": task_id, "result": str(result)}
+        response = {"agent": agent_def["name"], "result": str(result)}
+        if task_id:
+            # Re-read task to get the final state (agent may have updated it via CLI)
+            task = read_task(task_id, base_dir)
+            response["task_id"] = task_id
+        if ws:
+            response["workstream_id"] = ws.id
+        return response
 
     except ImportError:
         raise RuntimeError(

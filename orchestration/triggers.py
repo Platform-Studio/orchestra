@@ -1,6 +1,8 @@
 """Trigger operations."""
 
+import os
 import subprocess
+import sys
 
 from .models import Trigger, Workstream, new_id
 from .workstreams import read_workstream, save_workstream
@@ -28,7 +30,7 @@ def _execute_trigger(trigger: Trigger, task_id: str, workstream_id: str, base_di
             return {"trigger_id": trigger.id, "status": "error", "message": "No agent specified"}
         try:
             from .agents import run_agent
-            result = run_agent(trigger.agent, task_id, base_dir)
+            result = run_agent(trigger.agent, task_id=task_id or None, workstream_id=workstream_id, base_dir=base_dir)
             return {"trigger_id": trigger.id, "status": "ok", "result": result}
         except Exception as e:
             return {"trigger_id": trigger.id, "status": "error", "message": str(e)}
@@ -39,8 +41,13 @@ def _execute_trigger(trigger: Trigger, task_id: str, workstream_id: str, base_di
         # Template variable substitution
         cmd = trigger.command.replace("{task_id}", task_id).replace("{workstream_id}", workstream_id)
         try:
+            # Ensure the same Python that runs the scheduler is available to subprocesses
+            env = os.environ.copy()
+            python_dir = os.path.dirname(sys.executable)
+            env["PATH"] = python_dir + os.pathsep + env.get("PATH", "")
             result = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True, timeout=300, cwd=base_dir,
+                env=env,
             )
             return {
                 "trigger_id": trigger.id,
@@ -74,8 +81,6 @@ def create_trigger(
         raise ValueError("Either --on-state or --on-schedule must be specified")
     if on_state is not None and on_schedule is not None:
         raise ValueError("Cannot specify both --on-state and --on-schedule")
-    if on_schedule is not None and filter is None:
-        raise ValueError("Schedule-based triggers require a --filter")
 
     ws = read_workstream(workstream_id, base_dir)
     trigger = Trigger(
