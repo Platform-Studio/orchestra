@@ -261,17 +261,21 @@ def cmd_agent_run(args):
 
 def cmd_workstream_pause(args):
     from .workstreams import read_workstream, save_workstream
+    from .workspace_audit import log_event
     ws = read_workstream(args.id, base_dir=args.base_dir)
     ws.paused = True
     save_workstream(ws, args.base_dir)
+    log_event("workstream_paused", f"Workstream '{ws.name}' paused", args.base_dir, workstream_id=ws.id)
     _output(ws.to_dict())
 
 
 def cmd_workstream_resume(args):
     from .workstreams import read_workstream, save_workstream
+    from .workspace_audit import log_event
     ws = read_workstream(args.id, base_dir=args.base_dir)
     ws.paused = False
     save_workstream(ws, args.base_dir)
+    log_event("workstream_resumed", f"Workstream '{ws.name}' resumed", args.base_dir, workstream_id=ws.id)
     _output(ws.to_dict())
 
 
@@ -302,6 +306,18 @@ def cmd_scheduler_tick(args):
 
 
 # ── Artifact commands ────────────────────────────────────────────────
+
+def cmd_audit_log(args):
+    from .workspace_audit import get_audit_log
+    limit = args.limit if args.limit else 50
+    entries = get_audit_log(
+        base_dir=args.base_dir,
+        limit=limit,
+        workstream_id=args.workstream or None,
+        event_type=args.type or None,
+    )
+    _output(entries)
+
 
 def cmd_artifact_create(args):
     from .artifacts import create_artifact
@@ -487,6 +503,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sched_sub.add_parser("tick")
     p.set_defaults(func=cmd_scheduler_tick)
+
+    # ── Audit ────────────────────────────────────────────────────────
+    audit_parser = subparsers.add_parser("audit")
+    audit_sub = audit_parser.add_subparsers(dest="method", required=True)
+
+    p = audit_sub.add_parser("log")
+    p.add_argument("--workstream", default=None, help="Filter by workstream ID")
+    p.add_argument("--type", default=None, help="Filter by event type")
+    p.add_argument("--limit", type=int, default=50, help="Max entries to return")
+    p.set_defaults(func=cmd_audit_log)
 
     # ── Artifact ─────────────────────────────────────────────────────
     artifact_parser = subparsers.add_parser("artifact")

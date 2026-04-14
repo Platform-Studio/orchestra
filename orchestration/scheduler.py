@@ -1,12 +1,14 @@
 """Scheduler operations.
 
-Manages schedule-based triggers and task-level schedules via system cron.
-The scheduler installs a cron job that runs `scheduler tick` every minute.
+Manages schedule-based triggers and task-level schedules via an in-process
+background thread.  The server starts the loop on boot; it calls `tick()`
+every 60 seconds.
 """
 
 import os
 import subprocess
 import sys
+import threading
 import yaml
 
 from datetime import datetime, timezone
@@ -19,11 +21,10 @@ from .triggers import _execute_trigger
 
 SCHEDULER_STATE_FILE = "scheduler_state.yaml"
 
-
-def _cron_tag(base_dir: str) -> str:
-    """Generate a unique cron job tag for this workspace."""
-    abs_dir = os.path.abspath(base_dir)
-    return f"# orchestration-scheduler:{abs_dir}"
+# ── In-process scheduler state ──────────────────────────────────────
+_loop_timer = None      # threading.Timer for the next tick
+_loop_base_dir = None   # workspace dir the loop is ticking against
+_loop_lock = threading.Lock()
 
 
 def _state_path(base_dir: str) -> str:
@@ -44,68 +45,87 @@ def _save_state(state: dict, base_dir: str) -> None:
         yaml.dump(state, f, default_flow_style=False, sort_keys=False)
 
 
-def _get_crontab() -> str:
-    """Get the current crontab content."""
+def _remove_stale_cron_entries():
+    """One-time cleanup: remove any leftover orchestration-scheduler cron entries."""
     try:
         result = subprocess.run(
             ["crontab", "-l"], capture_output=True, text=True
         )
-        if result.returncode == 0:
-            return result.stdout
-        return ""
+        if result.returncode != 0:
+            return
+        crontab = result.stdout
+        if "# orchestration-scheduler:" not in crontab:
+            return
+        lines = [line for line in crontab.splitlines(True)
+                 if "# orchestration-scheduler:" not in line]
+        subprocess.run(
+            ["crontab", "-"], input="".join(lines),
+            capture_output=True, text=True,
+        )
     except Exception:
-        return ""
+        pass  # Not critical — just cleanup
 
 
-def _set_crontab(content: str) -> None:
-    """Set the crontab content."""
-    proc = subprocess.run(
-        ["crontab", "-"], input=content, capture_output=True, text=True
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Failed to set crontab: {proc.stderr}")
-
-
-def _cron_exists(base_dir: str) -> bool:
-    """Check if the scheduler cron job exists for this workspace."""
-    tag = _cron_tag(base_dir)
-    crontab = _get_crontab()
-    return tag in crontab
+def _tick_loop():
+    """Internal: run one tick, then schedule the next one."""
+    global _loop_timer
+    with _loop_lock:
+        base_dir = _loop_base_dir
+        if base_dir is None:
+            return  # stopped
+    try:
+        tick(base_dir)
+    except Exception as e:
+        import sys
+        print(f"[scheduler] tick error: {e}", file=sys.stderr)
+    with _loop_lock:
+        if _loop_base_dir is not None:
+            _loop_timer = threading.Timer(60.0, _tick_loop)
+            _loop_timer.daemon = True
+            _loop_timer.start()
 
 
 def start(base_dir: str = ".") -> dict:
-    """Install the scheduler cron job. Idempotent."""
-    if _cron_exists(base_dir):
-        return {"message": "Scheduler is already running"}
-
+    """Start the in-process scheduler loop. Idempotent."""
+    global _loop_timer, _loop_base_dir
     abs_dir = os.path.abspath(base_dir)
-    python = sys.executable
-    tag = _cron_tag(base_dir)
 
-    crontab = _get_crontab()
-    # Add the cron entry: every minute
-    cron_line = f"* * * * * cd {abs_dir} && {python} -m orchestration.cli --base-dir {abs_dir} scheduler tick {tag}\n"
-    crontab += cron_line
+    # Clean up any old cron entries from the previous approach
+    _remove_stale_cron_entries()
 
-    _set_crontab(crontab)
+    with _loop_lock:
+        if _loop_base_dir is not None:
+            return {"message": "Scheduler already running"}
+        _loop_base_dir = abs_dir
+        _loop_timer = threading.Timer(60.0, _tick_loop)
+        _loop_timer.daemon = True
+        _loop_timer.start()
+
+    from .workspace_audit import log_event
+    log_event("scheduler_started", "Scheduler loop started", base_dir)
     return {"message": "Scheduler started"}
 
 
 def stop(base_dir: str = ".") -> dict:
-    """Remove the scheduler cron job. Idempotent."""
-    if not _cron_exists(base_dir):
-        return {"message": "Scheduler is not running"}
+    """Stop the in-process scheduler loop. Idempotent."""
+    global _loop_timer, _loop_base_dir
+    with _loop_lock:
+        if _loop_base_dir is None:
+            return {"message": "Scheduler is not running"}
+        _loop_base_dir = None
+        if _loop_timer is not None:
+            _loop_timer.cancel()
+            _loop_timer = None
 
-    tag = _cron_tag(base_dir)
-    crontab = _get_crontab()
-    lines = [line for line in crontab.splitlines(True) if tag not in line]
-    _set_crontab("".join(lines))
+    from .workspace_audit import log_event
+    log_event("scheduler_stopped", "Scheduler loop stopped", base_dir)
     return {"message": "Scheduler stopped"}
 
 
 def status(base_dir: str = ".") -> dict:
     """Report scheduler status."""
-    running = _cron_exists(base_dir)
+    with _loop_lock:
+        running = _loop_base_dir is not None
     state = _load_state(base_dir)
     result = {"running": running}
     if "last_tick_at" in state:
@@ -114,9 +134,11 @@ def status(base_dir: str = ".") -> dict:
 
 
 def ensure_started(base_dir: str = ".") -> None:
-    """Ensure the scheduler cron job is running. Called internally."""
-    if not _cron_exists(base_dir):
-        start(base_dir)
+    """Ensure the scheduler is running. Called internally."""
+    with _loop_lock:
+        if _loop_base_dir is not None:
+            return
+    start(base_dir)
 
 
 def _cron_matches_between(cron_expr: str, last_tick: datetime, now: datetime) -> bool:
@@ -178,6 +200,25 @@ def _task_matches_filter(task, filter_def: dict) -> bool:
                 break
 
     return True
+
+
+def _audit_trigger(trigger, result, ws, base_dir, task_id=None):
+    """Log a workspace audit entry for a scheduled trigger fire."""
+    from .workspace_audit import log_event
+    status = result.get("status", "unknown")
+    desc = f"Scheduled trigger '{trigger.action}' fired"
+    if trigger.agent:
+        desc += f" (agent: {trigger.agent})"
+    if trigger.command:
+        desc += f" (command: {trigger.command})"
+    if status == "error":
+        desc += f" — ERROR: {result.get('message', result.get('stderr', ''))}"
+    kwargs = dict(
+        trigger_id=trigger.id, workstream_id=ws.id, status=status,
+    )
+    if task_id:
+        kwargs["task_id"] = task_id
+    log_event("trigger_fired", desc, base_dir, **kwargs)
 
 
 def tick(base_dir: str = ".") -> dict:
@@ -250,6 +291,7 @@ def tick(base_dir: str = ".") -> dict:
             if trigger.filter is None:
                 # No filter — fire once (standalone command, not per-task)
                 result = _execute_trigger(trigger, "", ws.id, base_dir)
+                _audit_trigger(trigger, result, ws, base_dir)
                 results["trigger_schedules_fired"].append({
                     "trigger_id": trigger.id,
                     "result": result,
@@ -260,6 +302,7 @@ def tick(base_dir: str = ".") -> dict:
                 for task in tasks:
                     if _task_matches_filter(task, filter_def):
                         result = _execute_trigger(trigger, task.id, ws.id, base_dir)
+                        _audit_trigger(trigger, result, ws, base_dir, task_id=task.id)
                         results["trigger_schedules_fired"].append({
                             "trigger_id": trigger.id,
                             "task_id": task.id,

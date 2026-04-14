@@ -3,6 +3,7 @@
 import os
 import glob
 import subprocess
+import sys
 import yaml
 
 try:
@@ -164,10 +165,14 @@ def _make_cli_tool(tool_name: str, py_path: str, description: str, base_dir: str
 
 def _run_cli_tool(abs_py: str, command: str, cwd: str) -> str:
     """Execute a CLI tool and return output."""
-    full = f"python3 {abs_py} {command}"
+    python = sys.executable
+    full = f"{python} {abs_py} {command}"
+    env = os.environ.copy()
+    python_dir = os.path.dirname(python)
+    env["PATH"] = python_dir + os.pathsep + env.get("PATH", "")
     r = subprocess.run(
         full, shell=True, capture_output=True, text=True,
-        timeout=120, cwd=cwd,
+        timeout=120, cwd=cwd, env=env,
     )
     out = r.stdout.strip()
     err = r.stderr.strip()
@@ -205,10 +210,14 @@ def _make_orchestration_tool(base_dir: str):
 
 
 def _run_orchestration(command: str, cwd: str) -> str:
-    full = f"python -m orchestration.cli {command}"
+    python = sys.executable
+    full = f"{python} -m orchestration.cli {command}"
+    env = os.environ.copy()
+    python_dir = os.path.dirname(python)
+    env["PATH"] = python_dir + os.pathsep + env.get("PATH", "")
     r = subprocess.run(
         full, shell=True, capture_output=True, text=True,
-        timeout=30, cwd=cwd,
+        timeout=30, cwd=cwd, env=env,
     )
     out = r.stdout.strip()
     err = r.stderr.strip()

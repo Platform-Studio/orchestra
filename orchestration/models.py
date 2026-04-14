@@ -186,6 +186,8 @@ class Task:
             d["scheduled_at"] = self.scheduled_at
         if self.scheduled_action is not None:
             d["scheduled_action"] = self.scheduled_action
+        if hasattr(self, '_parse_error'):
+            d["_error"] = self._parse_error
         return d
 
     @classmethod

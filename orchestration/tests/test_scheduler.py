@@ -3,13 +3,11 @@
 import os
 import pytest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
 
 from orchestration.workstreams import create_workstream, read_workstream
 from orchestration.tasks import create_task, read_task, update_task, clear_schedule
 from orchestration.triggers import create_trigger
 from orchestration.scheduler import (
-    _cron_tag,
     _state_path,
     _load_state,
     _save_state,
@@ -18,7 +16,21 @@ from orchestration.scheduler import (
     _task_matches_filter,
     tick,
     status,
+    start,
+    stop,
 )
+import orchestration.scheduler as _sched_mod
+
+
+@pytest.fixture(autouse=True)
+def _reset_scheduler_loop():
+    """Ensure the scheduler loop is stopped between tests."""
+    yield
+    with _sched_mod._loop_lock:
+        _sched_mod._loop_base_dir = None
+        if _sched_mod._loop_timer is not None:
+            _sched_mod._loop_timer.cancel()
+            _sched_mod._loop_timer = None
 
 
 @pytest.fixture
@@ -102,25 +114,27 @@ class TestSchedulerState:
         path = _state_path(workspace)
         assert path.endswith("scheduler_state.yaml")
 
-    def test_cron_tag(self, workspace):
-        tag = _cron_tag(workspace)
-        assert "orchestration-scheduler:" in tag
-
 
 # ── Scheduler status ────────────────────────────────────────────────
 
 class TestSchedulerStatus:
     def test_status_not_running(self, workspace):
-        with patch("orchestration.scheduler._cron_exists", return_value=False):
-            result = status(workspace)
-            assert result["running"] is False
+        result = status(workspace)
+        assert result["running"] is False
+
+    def test_status_running(self, workspace):
+        start(workspace)
+        result = status(workspace)
+        assert result["running"] is True
+        stop(workspace)
 
     def test_status_with_last_tick(self, workspace):
         _save_state({"last_tick_at": "2026-04-15T10:00:00+00:00"}, workspace)
-        with patch("orchestration.scheduler._cron_exists", return_value=True):
-            result = status(workspace)
-            assert result["running"] is True
-            assert result["last_tick_at"] == "2026-04-15T10:00:00+00:00"
+        start(workspace)
+        result = status(workspace)
+        assert result["running"] is True
+        assert result["last_tick_at"] == "2026-04-15T10:00:00+00:00"
+        stop(workspace)
 
 
 # ── Task-level scheduling ───────────────────────────────────────────
@@ -263,8 +277,7 @@ class TestWorkstreamPause:
 # ── Tick ─────────────────────────────────────────────────────────────
 
 class TestTick:
-    @patch("orchestration.scheduler._cron_exists", return_value=True)
-    def test_tick_fires_past_due_task_schedule(self, mock_cron, workspace, ws):
+    def test_tick_fires_past_due_task_schedule(self, workspace, ws):
         past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         marker = os.path.join(workspace, "sched_fired.txt")
         task = create_task(
@@ -280,8 +293,7 @@ class TestTick:
         assert reloaded.scheduled_at is None
         assert reloaded.scheduled_action is None
 
-    @patch("orchestration.scheduler._cron_exists", return_value=True)
-    def test_tick_skips_future_schedule(self, mock_cron, workspace, ws):
+    def test_tick_skips_future_schedule(self, workspace, ws):
         future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         task = create_task(
             ws.id, title="Future",
@@ -294,8 +306,7 @@ class TestTick:
         reloaded = read_task(task.id, base_dir=workspace)
         assert reloaded.scheduled_at is not None
 
-    @patch("orchestration.scheduler._cron_exists", return_value=True)
-    def test_tick_fires_schedule_trigger(self, mock_cron, workspace, ws):
+    def test_tick_fires_schedule_trigger(self, workspace, ws):
         marker = os.path.join(workspace, "trigger_sched.txt")
         create_trigger(
             ws.id,
@@ -314,8 +325,7 @@ class TestTick:
         result = tick(workspace)
         assert len(result["trigger_schedules_fired"]) >= 1
 
-    @patch("orchestration.scheduler._cron_exists", return_value=True)
-    def test_tick_skips_paused_workstream(self, mock_cron, workspace, ws):
+    def test_tick_skips_paused_workstream(self, workspace, ws):
         from orchestration.workstreams import save_workstream
         ws.paused = True
         save_workstream(ws, workspace)
@@ -330,14 +340,12 @@ class TestTick:
         result = tick(workspace)
         assert len(result["task_schedules_fired"]) == 0
 
-    @patch("orchestration.scheduler._cron_exists", return_value=True)
-    def test_tick_updates_last_tick_at(self, mock_cron, workspace, ws):
+    def test_tick_updates_last_tick_at(self, workspace, ws):
         tick(workspace)
         state = _load_state(workspace)
         assert "last_tick_at" in state
 
-    @patch("orchestration.scheduler._cron_exists", return_value=True)
-    def test_tick_trigger_filter_excludes_non_matching(self, mock_cron, workspace, ws):
+    def test_tick_trigger_filter_excludes_non_matching(self, workspace, ws):
         create_trigger(
             ws.id,
             on_schedule="* * * * *",

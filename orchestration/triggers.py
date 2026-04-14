@@ -6,6 +6,7 @@ import sys
 
 from .models import Trigger, Workstream, new_id
 from .workstreams import read_workstream, save_workstream
+from .workspace_audit import log_event
 
 
 def evaluate_triggers(
@@ -19,6 +20,16 @@ def evaluate_triggers(
     for trigger in ws.triggers:
         if trigger.on_state is not None and trigger.on_state == new_state:
             result = _execute_trigger(trigger, task_id, ws.id, base_dir)
+            status = result.get("status", "unknown")
+            desc = f"State trigger '{trigger.action}' fired on state '{new_state}'"
+            if status == "error":
+                desc += f" — ERROR: {result.get('message', result.get('stderr', ''))}"
+            log_event(
+                "trigger_fired", desc, base_dir,
+                trigger_id=trigger.id, workstream_id=ws.id,
+                task_id=task_id, status=status,
+                agent=trigger.agent, command=trigger.command,
+            )
             results.append(result)
     return results
 

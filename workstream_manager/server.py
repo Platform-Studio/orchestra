@@ -56,6 +56,10 @@ def handle_board(parts, params):
     task_dicts = []
     for t in tasks:
         td = t.to_dict()
+        if td.get("_error"):
+            td["lock"] = {"locked": False}
+            task_dicts.append(td)
+            continue
         lock = lock_status(t.id, base_dir=WORKSPACE_DIR)
         if lock and not lock.is_expired():
             td["lock"] = lock.to_dict()
@@ -87,11 +91,15 @@ def handle_workstream(method, parts, params):
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         ws.paused = True
         save_workstream(ws, WORKSPACE_DIR)
+        from orchestration.workspace_audit import log_event
+        log_event("workstream_paused", f"Workstream '{ws.name}' paused", WORKSPACE_DIR, workstream_id=ws.id)
         return _ok(ws.to_dict())
     elif m == "resume" and parts:
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         ws.paused = False
         save_workstream(ws, WORKSPACE_DIR)
+        from orchestration.workspace_audit import log_event
+        log_event("workstream_resumed", f"Workstream '{ws.name}' resumed", WORKSPACE_DIR, workstream_id=ws.id)
         return _ok(ws.to_dict())
     elif m == "create":
         kwargs = {"name": params["name"], "base_dir": WORKSPACE_DIR}
@@ -212,6 +220,17 @@ def handle_scheduler(method, parts, params):
     return _err(f"Unknown scheduler method: {method}")
 
 
+def handle_audit(method, parts, params):
+    from orchestration.workspace_audit import get_audit_log
+    if method == "log":
+        limit = int(params.get("limit", "50"))
+        ws_id = params.get("workstream") or None
+        event_type = params.get("type") or None
+        entries = get_audit_log(base_dir=WORKSPACE_DIR, limit=limit, workstream_id=ws_id, event_type=event_type)
+        return _ok(entries)
+    return _err(f"Unknown audit method: {method}")
+
+
 ROUTE_MAP = {
     "board": lambda m, p, q: handle_board(p, q),
     "workstream": handle_workstream,
@@ -219,6 +238,7 @@ ROUTE_MAP = {
     "lock": handle_lock,
     "trigger": handle_trigger,
     "scheduler": handle_scheduler,
+    "audit": handle_audit,
 }
 
 
@@ -320,12 +340,18 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
 
+    # Start the in-process scheduler loop (ticks every 60s)
+    from orchestration.scheduler import start as scheduler_start, stop as scheduler_stop
+    scheduler_start(WORKSPACE_DIR)
+    print("Scheduler started.")
+
     server = HTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Workstream Manager running at http://localhost:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down.")
+        scheduler_stop(WORKSPACE_DIR)
         server.shutdown()
 
 

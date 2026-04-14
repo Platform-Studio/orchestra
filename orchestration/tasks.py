@@ -158,10 +158,37 @@ def list_tasks(
         if not fname.endswith(".yaml"):
             continue
         path = os.path.join(tasks_dir, fname)
-        with open(path) as f:
-            data = yaml.safe_load(f)
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except Exception as e:
+            # Corrupt YAML — return a placeholder so the UI can show it
+            task_id = fname.replace(".yaml", "")
+            broken = Task(
+                id=task_id,
+                workstream_id=workstream_id,
+                title=f"[CORRUPT] {fname}",
+                status="_error",
+                tags=["_error"],
+            )
+            broken._parse_error = str(e)
+            result.append(broken)
+            continue
         if data:
-            task = Task.from_dict(data)
+            try:
+                task = Task.from_dict(data)
+            except Exception as e:
+                task_id = data.get("id", fname.replace(".yaml", ""))
+                broken = Task(
+                    id=task_id,
+                    workstream_id=workstream_id,
+                    title=f"[CORRUPT] {data.get('title', fname)}",
+                    status="_error",
+                    tags=["_error"],
+                )
+                broken._parse_error = str(e)
+                result.append(broken)
+                continue
             if status and task.status != status:
                 continue
             if tags and not all(t in task.tags for t in tags):
