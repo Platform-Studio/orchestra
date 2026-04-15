@@ -255,7 +255,8 @@ def cmd_agent_list(args):
 
 def cmd_agent_run(args):
     from .agents import run_agent
-    result = run_agent(args.agent_name, task_id=args.task or None, workstream_id=args.workstream or None, base_dir=args.base_dir)
+    task_ids = [args.task] if args.task else []
+    result = run_agent(args.agent_name, task_ids=task_ids, workstream_id=args.workstream or None, base_dir=args.base_dir)
     _output(result)
 
 

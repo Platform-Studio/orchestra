@@ -1,10 +1,12 @@
 """Agent operations."""
 
+import json
 import os
 import glob
 import shutil
 import subprocess
 import sys
+import tempfile
 import yaml
 
 try:
@@ -173,16 +175,24 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
     return "\n".join(parts)
 
 
-def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, base_dir: str = ".") -> dict:
-    """Run an agent via Claude Code CLI, optionally against a specific task.
+def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, base_dir: str = ".") -> dict:
+    """Run an agent via Claude Code CLI against 0-N tasks.
 
-    If task_id is provided, the agent processes that task.
-    A lock is automatically acquired for the task before execution and released
-    afterwards (even on failure). If the task is already locked, raises RuntimeError.
+    Callers are responsible for locking/unlocking tasks. This function
+    does not acquire or release locks.
 
-    If only workstream_id is provided, the agent runs standalone with workstream
-    context but no specific task — useful for generative agents that create tasks.
+    Task IDs are written to a temporary JSON file and passed to the agent
+    via the prompt so the agent knows which tasks to work on.
+
+    Args:
+        agent_name: Agent reference (bare name, filename, or path).
+        task_ids: List of task IDs to process. May be None or empty.
+        workstream_id: Workstream context. Inferred from first task if not provided.
+        base_dir: Workspace root.
     """
+    if task_ids is None:
+        task_ids = []
+
     # Ensure claude CLI is available
     claude_path = shutil.which("claude")
     if not claude_path:
@@ -194,36 +204,56 @@ def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, b
     from .tasks import read_task, _save_task
     from .workstreams import read_workstream
 
-    # Resolve workstream context
-    task = None
+    # Load tasks and resolve workstream context
+    tasks = []
     ws = None
-    if task_id:
-        task = read_task(task_id, base_dir)
-        ws = read_workstream(task.workstream_id, base_dir)
-    elif workstream_id:
+    for tid in task_ids:
+        tasks.append(read_task(tid, base_dir))
+
+    if tasks and not workstream_id:
+        workstream_id = tasks[0].workstream_id
+    if workstream_id:
         ws = read_workstream(workstream_id, base_dir)
 
-    # Acquire lock when running against a specific task
-    lock_agent_id = agent_def["name"]
-    if task_id:
-        from .locks import acquire_lock, release_lock
-        acquire_lock(task_id, agent_id=lock_agent_id, base_dir=base_dir)
+    # Write task IDs to a temp file for the agent to reference
+    task_file_path = None
+    if task_ids:
+        fd, task_file_path = tempfile.mkstemp(suffix=".json", prefix="agent_tasks_")
+        with os.fdopen(fd, "w") as f:
+            json.dump({"task_ids": task_ids, "workstream_id": workstream_id}, f)
 
     try:
         # Build system prompt from agent definition + tool docs
         system_prompt = _build_system_prompt(agent_def, base_dir)
 
         # Build task prompt based on context available
-        if task and ws:
-            valid_transitions = ws.task_states.get(task.status, [])
-            task_prompt = (
-                f"You are working on task '{task.title}' (ID: {task.id}) "
-                f"in workstream '{ws.name}' (ID: {ws.id}).\n"
-                f"Current status: {task.status}\n"
-                f"Valid next states: {valid_transitions}\n\n"
-                f"Working directory: {os.path.abspath(base_dir)}\n\n"
-                f"Follow your instructions and process this task now."
-            )
+        if tasks and ws:
+            if len(tasks) == 1:
+                task = tasks[0]
+                valid_transitions = ws.task_states.get(task.status, [])
+                task_prompt = (
+                    f"You are working on task '{task.title}' (ID: {task.id}) "
+                    f"in workstream '{ws.name}' (ID: {ws.id}).\n"
+                    f"Current status: {task.status}\n"
+                    f"Valid next states: {valid_transitions}\n\n"
+                    f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                    f"Follow your instructions and process this task now."
+                )
+                if task.description:
+                    task_prompt += f"\n\nTask description:\n{task.description}"
+            else:
+                task_lines = []
+                for t in tasks:
+                    transitions = ws.task_states.get(t.status, [])
+                    task_lines.append(f"- '{t.title}' (ID: {t.id}, status: {t.status}, valid next: {transitions})")
+                task_prompt = (
+                    f"You are working on {len(tasks)} tasks "
+                    f"in workstream '{ws.name}' (ID: {ws.id}).\n\n"
+                    f"Tasks:\n" + "\n".join(task_lines) + "\n\n"
+                    f"Task IDs file: {task_file_path}\n\n"
+                    f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                    f"Follow your instructions and process these tasks now."
+                )
         elif ws:
             states = list(ws.task_states.keys())
             task_prompt = (
@@ -239,14 +269,10 @@ def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, b
                 f"Follow your instructions now."
             )
 
-        # Add task description/context if available
-        if task and task.description:
-            task_prompt += f"\n\nTask description:\n{task.description}"
-
-        # Log agent_started to audit trail
-        if task:
-            task.add_audit("agent_started", f"Agent '{agent_def['name']}' started processing")
-            _save_task(task, base_dir)
+        # Log agent_started to audit trail for each task
+        for t in tasks:
+            t.add_audit("agent_started", f"Agent '{agent_def['name']}' started processing")
+            _save_task(t, base_dir)
 
         # Build claude CLI command
         model = _get_model()
@@ -278,10 +304,10 @@ def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, b
             env=env,
         )
 
-        # Store subprocess PID in lock file for dead-process detection
-        if task_id:
-            from .locks import update_lock_pid
-            update_lock_pid(task_id, proc.pid, base_dir=base_dir)
+        # Store subprocess PID in lock files for dead-process detection
+        from .locks import update_lock_pid
+        for tid in task_ids:
+            update_lock_pid(tid, proc.pid, base_dir=base_dir)
 
         try:
             stdout, stderr = proc.communicate(timeout=600)
@@ -294,35 +320,33 @@ def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, b
         stderr = stderr.strip()
         returncode = proc.returncode
 
-        # Log agent output to audit trail
-        if task:
-            task = read_task(task_id, base_dir)  # Re-read in case agent modified it
+        # Log agent output to audit trail for each task
+        for tid in task_ids:
+            t = read_task(tid, base_dir)  # Re-read in case agent modified it
             if returncode == 0:
                 audit_output = output[:MAX_AUDIT_OUTPUT]
                 if len(output) > MAX_AUDIT_OUTPUT:
                     audit_output += f"\n... (truncated, {len(output)} total chars)"
-                task.add_audit("agent_completed", f"Agent '{agent_def['name']}' completed.\n\nOutput:\n{audit_output}")
+                t.add_audit("agent_completed", f"Agent '{agent_def['name']}' completed.\n\nOutput:\n{audit_output}")
                 # Reset retry count on success
-                task.retry_count = 0
-                task.last_failure_at = None
+                t.retry_count = 0
+                t.last_failure_at = None
             else:
                 error_msg = stderr[:MAX_AUDIT_OUTPUT] if stderr else output[:MAX_AUDIT_OUTPUT]
-                task.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
-            _save_task(task, base_dir)
+                t.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
+            _save_task(t, base_dir)
 
         if returncode != 0:
             raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {returncode}): {stderr or output}")
 
         response = {"agent": agent_def["name"], "result": output}
-        if task_id:
-            response["task_id"] = task_id
+        if task_ids:
+            response["task_ids"] = task_ids
         if ws:
             response["workstream_id"] = ws.id
         return response
 
     finally:
-        if task_id:
-            try:
-                release_lock(task_id, agent_id=lock_agent_id, base_dir=base_dir)
-            except Exception:
-                pass  # Lock may have been released by agent or expired
+        # Clean up temp file
+        if task_file_path and os.path.exists(task_file_path):
+            os.remove(task_file_path)

@@ -183,7 +183,7 @@ def _task_matches_filter(task, filter_def: dict) -> bool:
     return True
 
 
-def _audit_trigger(trigger, result, ws, base_dir, task_id=None):
+def _audit_trigger(trigger, result, ws, base_dir, task_ids=None):
     """Log a workspace audit entry for a scheduled trigger fire."""
     from .workspace_audit import log_event
     status = result.get("status", "unknown")
@@ -197,9 +197,69 @@ def _audit_trigger(trigger, result, ws, base_dir, task_id=None):
     kwargs = dict(
         trigger_id=trigger.id, workstream_id=ws.id, status=status,
     )
-    if task_id:
-        kwargs["task_id"] = task_id
+    if task_ids and len(task_ids) == 1:
+        kwargs["task_id"] = task_ids[0]
+    elif task_ids:
+        kwargs["task_ids"] = task_ids
     log_event("trigger_fired", desc, base_dir, **kwargs)
+
+
+def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str) -> dict:
+    """Lock all task_ids, invoke the trigger, then unlock all.
+
+    This is the single code path for all trigger execution. Every agent
+    invocation goes through here so locking is always handled by the
+    scheduler, never by the agent or trigger execution layer.
+
+    Args:
+        trigger: The Trigger to execute.
+        task_ids: List of task IDs (may be empty for standalone triggers).
+        ws: The Workstream context.
+        base_dir: Workspace root.
+
+    Returns:
+        The result dict from execute_trigger.
+    """
+    from .locks import acquire_lock, release_lock, active_lock_count
+
+    agent_id = trigger.agent or f"trigger:{trigger.id}"
+
+    # Check max_concurrent before locking
+    if task_ids:
+        current = active_lock_count(ws.id, base_dir=base_dir)
+        if current >= trigger.max_concurrent:
+            from .workspace_audit import log_event as _log_event
+            _log_event(
+                "trigger_skipped",
+                f"Trigger '{trigger.action}' skipped — "
+                f"{current}/{trigger.max_concurrent} concurrent locks active",
+                base_dir, trigger_id=trigger.id, workstream_id=ws.id,
+                status="skipped",
+            )
+            return {"trigger_id": trigger.id, "status": "skipped",
+                    "message": f"max_concurrent ({trigger.max_concurrent}) reached"}
+
+    # Lock all tasks
+    locked_ids = []
+    try:
+        for tid in task_ids:
+            try:
+                acquire_lock(tid, agent_id=agent_id, base_dir=base_dir)
+                locked_ids.append(tid)
+            except (RuntimeError, FileNotFoundError):
+                # Task already locked or not found — skip it
+                continue
+
+        # Invoke with whatever tasks we successfully locked
+        result = execute_trigger(trigger, locked_ids, ws.id, base_dir)
+        return result
+    finally:
+        # Always unlock everything we locked
+        for tid in locked_ids:
+            try:
+                release_lock(tid, agent_id=agent_id, base_dir=base_dir)
+            except Exception:
+                pass  # Lock may have been released by agent or expired
 
 
 def tick(base_dir: str = ".") -> dict:
@@ -249,7 +309,9 @@ def tick(base_dir: str = ".") -> dict:
                         agent=action.get("agent"),
                         command=action.get("command"),
                     )
-                    result = execute_trigger(temp_trigger, task.id, ws.id, base_dir)
+                    result = _lock_invoke_unlock(
+                        temp_trigger, [task.id], ws, base_dir
+                    )
                     results["task_schedules_fired"].append({
                         "task_id": task.id,
                         "result": result,
@@ -269,80 +331,51 @@ def tick(base_dir: str = ".") -> dict:
             if not _cron_matches_between(trigger.on_schedule, last_tick, now):
                 continue
 
-            # Check max_concurrent limit
-            from .locks import active_lock_count
-            current_locks = active_lock_count(ws.id, base_dir=base_dir)
-            if current_locks >= trigger.max_concurrent:
-                from .workspace_audit import log_event as _log_event
-                _log_event(
-                    "trigger_skipped",
-                    f"Scheduled trigger '{trigger.action}' skipped — "
-                    f"{current_locks}/{trigger.max_concurrent} concurrent locks active",
-                    base_dir, trigger_id=trigger.id, workstream_id=ws.id,
-                    status="skipped",
-                )
-                results["trigger_schedules_fired"].append({
-                    "trigger_id": trigger.id,
-                    "status": "skipped",
-                    "message": f"max_concurrent ({trigger.max_concurrent}) reached",
-                })
-                continue
-
             if trigger.filter is None:
-                # No filter — fire once (standalone command, not per-task)
-                result = execute_trigger(trigger, "", ws.id, base_dir)
-                _audit_trigger(trigger, result, ws, base_dir)
+                # No filter — fire once with no tasks (standalone)
+                result = _lock_invoke_unlock(trigger, [], ws, base_dir)
+                _audit_trigger(trigger, result, ws, base_dir, task_ids=[])
                 results["trigger_schedules_fired"].append({
                     "trigger_id": trigger.id,
                     "result": result,
                 })
             else:
-                # Find tasks matching the filter
-                filter_def = trigger.filter
-                for task in tasks:
-                    if _task_matches_filter(task, filter_def):
-                        result = execute_trigger(trigger, task.id, ws.id, base_dir)
-                        _audit_trigger(trigger, result, ws, base_dir, task_id=task.id)
-                        results["trigger_schedules_fired"].append({
-                            "trigger_id": trigger.id,
-                            "task_id": task.id,
-                            "result": result,
-                        })
+                # Find all tasks matching the filter, lock them all, invoke once
+                matching_ids = [
+                    t.id for t in tasks
+                    if _task_matches_filter(t, trigger.filter)
+                ]
+                if not matching_ids:
+                    continue
+                result = _lock_invoke_unlock(trigger, matching_ids, ws, base_dir)
+                _audit_trigger(trigger, result, ws, base_dir, task_ids=matching_ids)
+                results["trigger_schedules_fired"].append({
+                    "trigger_id": trigger.id,
+                    "task_ids": matching_ids,
+                    "result": result,
+                })
 
         # 3. State-based triggers
-        from .locks import active_lock_count, lock_status
+        from .locks import lock_status
         for trigger in ws.triggers:
             if trigger.on_state is None:
                 continue
 
-            # Find tasks in the trigger's target state that aren't locked
-            matching_tasks = [t for t in tasks if t.status == trigger.on_state]
-            for task in matching_tasks:
-                # Skip tasks that already have an active lock
-                if lock_status(task.id, base_dir) is not None:
-                    continue
+            # Find tasks in the trigger's target state that aren't already locked
+            matching_ids = [
+                t.id for t in tasks
+                if t.status == trigger.on_state and lock_status(t.id, base_dir) is None
+            ]
+            if not matching_ids:
+                continue
 
-                # Check max_concurrent limit before each fire
-                current = active_lock_count(ws.id, base_dir=base_dir)
-                if current >= trigger.max_concurrent:
-                    from .workspace_audit import log_event as _log_event
-                    _log_event(
-                        "trigger_skipped",
-                        f"State trigger '{trigger.action}' skipped for task {task.id} "
-                        f"— {current}/{trigger.max_concurrent} concurrent locks active",
-                        base_dir, trigger_id=trigger.id, workstream_id=ws.id,
-                        task_id=task.id, status="skipped",
-                    )
-                    break  # At limit — no point checking more tasks
-
-                result = execute_trigger(trigger, task.id, ws.id, base_dir)
-                status = result.get("status", "unknown")
-                _audit_trigger(trigger, result, ws, base_dir, task_id=task.id)
-                results["state_triggers_fired"].append({
-                    "trigger_id": trigger.id,
-                    "task_id": task.id,
-                    "result": result,
-                })
+            result = _lock_invoke_unlock(trigger, matching_ids, ws, base_dir)
+            _audit_trigger(trigger, result, ws, base_dir, task_ids=matching_ids)
+            results["state_triggers_fired"].append({
+                "trigger_id": trigger.id,
+                "task_ids": matching_ids,
+                "result": result,
+            })
 
     # Update state
     state["last_tick_at"] = now.isoformat()

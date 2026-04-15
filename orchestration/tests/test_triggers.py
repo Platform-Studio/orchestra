@@ -80,14 +80,14 @@ class TestExecuteTrigger:
     def test_run_command(self, workspace, ws):
         trigger = create_trigger(ws.id, on_state="Done", action="run_command", command="echo hello", base_dir=workspace)
         task = create_task(ws.id, title="T", base_dir=workspace)
-        result = execute_trigger(trigger, task.id, ws.id, base_dir=workspace)
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace)
         assert result["status"] == "ok"
         assert "hello" in result["stdout"]
 
     def test_run_command_without_task(self, workspace, ws):
-        """run_command with empty task_id skips locking."""
+        """run_command with empty task_ids list."""
         trigger = create_trigger(ws.id, on_state="Done", action="run_command", command="echo hello", base_dir=workspace)
-        result = execute_trigger(trigger, "", ws.id, base_dir=workspace)
+        result = execute_trigger(trigger, [], ws.id, base_dir=workspace)
         assert result["status"] == "ok"
         assert "hello" in result["stdout"]
 
@@ -100,7 +100,7 @@ class TestExecuteTrigger:
             base_dir=workspace,
         )
         task = create_task(ws.id, title="T", base_dir=workspace)
-        result = execute_trigger(trigger, task.id, ws.id, base_dir=workspace)
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace)
         assert task.id in result["stdout"]
         assert ws.id in result["stdout"]
 
@@ -191,8 +191,9 @@ class TestMaxConcurrent:
         create_task(ws.id, title="Trigger", base_dir=workspace)
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
-        # locked_task is skipped (already locked), Trigger task is skipped (at max_concurrent)
-        assert len(result["state_triggers_fired"]) == 0
+        # Trigger fires but returns skipped status due to max_concurrent
+        assert len(result["state_triggers_fired"]) == 1
+        assert result["state_triggers_fired"][0]["result"]["status"] == "skipped"
 
     def test_trigger_fires_when_below_max_concurrent(self, workspace, ws):
         """Trigger should fire when active locks < max_concurrent."""
@@ -228,7 +229,9 @@ class TestMaxConcurrent:
         create_task(ws.id, title="Trigger", base_dir=workspace)
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
-        assert len(result["state_triggers_fired"]) == 0
+        # Trigger fires but returns skipped status due to max_concurrent
+        assert len(result["state_triggers_fired"]) == 1
+        assert result["state_triggers_fired"][0]["result"]["status"] == "skipped"
 
     def test_max_concurrent_serialization_roundtrip(self, workspace, ws):
         """max_concurrent should survive YAML serialization."""
@@ -257,46 +260,21 @@ class TestMaxConcurrent:
 class TestTriggerLocking:
     """Verify that execute_trigger acquires and releases locks for task-bound actions."""
 
-    def test_run_command_acquires_and_releases_lock(self, workspace, ws):
-        """Lock is held during command execution and released afterwards."""
+    def test_run_command_no_locking_in_execute_trigger(self, workspace, ws):
+        """execute_trigger does NOT lock — callers are responsible."""
         from orchestration.locks import lock_status
         trigger = create_trigger(
             ws.id, on_state="To Do", action="run_command",
-            command="echo locked", base_dir=workspace,
+            command="echo hello", base_dir=workspace,
         )
         task = create_task(ws.id, title="T", base_dir=workspace)
-        result = execute_trigger(trigger, task.id, ws.id, base_dir=workspace)
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace)
         assert result["status"] == "ok"
-        # Lock should be released after execution
-        assert lock_status(task.id, base_dir=workspace) is None
-
-    def test_run_command_fails_if_already_locked(self, workspace, ws):
-        """Cannot run a command on a task that is already locked."""
-        from orchestration.locks import acquire_lock
-        trigger = create_trigger(
-            ws.id, on_state="To Do", action="run_command",
-            command="echo x", base_dir=workspace,
-        )
-        task = create_task(ws.id, title="T", base_dir=workspace)
-        acquire_lock(task.id, "other_agent", base_dir=workspace)
-        result = execute_trigger(trigger, task.id, ws.id, base_dir=workspace)
-        assert result["status"] == "error"
-        assert "lock" in result["message"].lower()
-
-    def test_run_command_releases_lock_on_failure(self, workspace, ws):
-        """Lock is released even when the command fails."""
-        from orchestration.locks import lock_status
-        trigger = create_trigger(
-            ws.id, on_state="To Do", action="run_command",
-            command="exit 1", base_dir=workspace,
-        )
-        task = create_task(ws.id, title="T", base_dir=workspace)
-        result = execute_trigger(trigger, task.id, ws.id, base_dir=workspace)
-        assert result["status"] == "error"
+        # No lock was acquired by execute_trigger
         assert lock_status(task.id, base_dir=workspace) is None
 
     def test_state_trigger_tick_acquires_and_releases_lock(self, workspace, ws):
-        """State trigger via tick acquires lock during execution and releases after."""
+        """Scheduler locks tasks before trigger, unlocks after."""
         from orchestration.locks import lock_status
         create_trigger(
             ws.id, on_state="To Do", action="run_command",
