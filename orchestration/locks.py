@@ -24,6 +24,7 @@ def acquire_lock(
     agent_id: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     base_dir: str = ".",
+    pid: int = None,
 ) -> Lock:
     lock_path = _lock_path_for_task(task_id, base_dir)
     if lock_path is None:
@@ -46,6 +47,7 @@ def acquire_lock(
         agent_id=agent_id,
         acquired_at=now.isoformat(),
         expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat(),
+        pid=pid or os.getpid(),
     )
 
     try:
@@ -124,3 +126,65 @@ def active_lock_count(workstream_id: str, agent_id: str = None, base_dir: str = 
         except Exception:
             continue
     return count
+
+
+def update_lock_pid(task_id: str, subprocess_pid: int, base_dir: str = ".") -> None:
+    """Update the subprocess_pid field in an existing lock file."""
+    lock_path = _lock_path_for_task(task_id, base_dir)
+    if lock_path is None or not os.path.exists(lock_path):
+        return
+    with open(lock_path) as f:
+        data = yaml.safe_load(f)
+    if data is None:
+        return
+    data["subprocess_pid"] = subprocess_pid
+    with open(lock_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def force_release_lock(task_id: str, base_dir: str = ".") -> bool:
+    """Remove a lock file regardless of ownership. Used for expired lock cleanup."""
+    lock_path = _lock_path_for_task(task_id, base_dir)
+    if lock_path is None:
+        return False
+    if not os.path.exists(lock_path):
+        return False
+    os.remove(lock_path)
+    return True
+
+
+def find_expired_locks(base_dir: str = ".") -> list:
+    """Scan all workstreams for expired lock files.
+
+    Returns list of dicts: {task_id, workstream_id, lock, lock_path}
+    """
+    ws_dir = os.path.join(base_dir, "workstreams")
+    if not os.path.isdir(ws_dir):
+        return []
+    expired = []
+    for ws_name in os.listdir(ws_dir):
+        ws_path = os.path.join(ws_dir, ws_name)
+        tasks_dir = os.path.join(ws_path, "tasks")
+        if not os.path.isdir(tasks_dir):
+            continue
+        for fname in os.listdir(tasks_dir):
+            if not fname.endswith(".yaml.lock"):
+                continue
+            lock_path = os.path.join(tasks_dir, fname)
+            try:
+                with open(lock_path) as f:
+                    data = yaml.safe_load(f)
+                if data is None:
+                    continue
+                lock = Lock.from_dict(data)
+                if lock.is_expired():
+                    task_id = fname.replace(".yaml.lock", "")
+                    expired.append({
+                        "task_id": task_id,
+                        "workstream_id": ws_name,
+                        "lock": lock,
+                        "lock_path": lock_path,
+                    })
+            except Exception:
+                continue
+    return expired

@@ -17,7 +17,7 @@ def now_iso() -> str:
 
 DEFAULT_TASK_STATES = {
     "pending": ["in_progress"],
-    "in_progress": ["completed", "failed"],
+    "in_progress": ["completed", "failed", "pending"],
     "completed": [],
     "failed": ["pending"],
 }
@@ -169,6 +169,8 @@ class Task:
     audit: list = field(default_factory=list)
     scheduled_at: str = None       # ISO datetime for one-shot scheduled action
     scheduled_action: dict = None  # {"type": "run_agent", "agent": "..."} or {"type": "run_command", "command": "..."}
+    retry_count: int = 0
+    last_failure_at: str = None
 
     def to_dict(self) -> dict:
         d = {
@@ -190,6 +192,10 @@ class Task:
             d["scheduled_at"] = self.scheduled_at
         if self.scheduled_action is not None:
             d["scheduled_action"] = self.scheduled_action
+        if self.retry_count > 0:
+            d["retry_count"] = self.retry_count
+        if self.last_failure_at is not None:
+            d["last_failure_at"] = self.last_failure_at
         if hasattr(self, '_parse_error'):
             d["_error"] = self._parse_error
         return d
@@ -211,6 +217,8 @@ class Task:
             audit=audit,
             scheduled_at=data.get("scheduled_at"),
             scheduled_action=data.get("scheduled_action"),
+            retry_count=data.get("retry_count", 0),
+            last_failure_at=data.get("last_failure_at"),
         )
 
     def add_audit(self, event_type: str, description: str):
@@ -227,9 +235,20 @@ class Lock:
     agent_id: str
     acquired_at: str
     expires_at: str
+    pid: int = None
+    subprocess_pid: int = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = {
+            "agent_id": self.agent_id,
+            "acquired_at": self.acquired_at,
+            "expires_at": self.expires_at,
+        }
+        if self.pid is not None:
+            d["pid"] = self.pid
+        if self.subprocess_pid is not None:
+            d["subprocess_pid"] = self.subprocess_pid
+        return d
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -237,6 +256,8 @@ class Lock:
             agent_id=data["agent_id"],
             acquired_at=data["acquired_at"],
             expires_at=data["expires_at"],
+            pid=data.get("pid"),
+            subprocess_pid=data.get("subprocess_pid"),
         )
 
     def is_expired(self) -> bool:

@@ -125,9 +125,12 @@ def api(tmp_path):
     mocks["list_triggers"].return_value = []
     mocks["scheduler_status"].return_value = {"running": False, "last_tick": None}
 
-    from workstream_manager.server import Handler
+    # Default for lock_status (used by board/poll)
+    mocks["lock_status"].return_value = None
 
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+    from workstream_manager.server import Handler, ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -513,6 +516,136 @@ class TestScheduler:
         code, body = api.get("/api/scheduler/status")
         assert code == 200
         assert body["data"]["running"] is True
+
+
+# ── Poll endpoint ───────────────────────────────────────────────
+
+class TestPoll:
+    def test_poll_returns_workstreams_counts_scheduler(self, api):
+        ws = _fake_workstream()
+        api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["list_tasks"].return_value = [_fake_task(), _fake_task()]
+        api.mocks["scheduler_status"].return_value = {"running": True, "last_tick": "2026-01-01"}
+
+        code, body = api.get("/api/poll/all")
+        assert code == 200
+        data = body["data"]
+        assert len(data["workstreams"]) == 1
+        assert data["counts"]["ws-1"] == 2
+        assert data["scheduler"]["running"] is True
+        assert "board" not in data
+
+    def test_poll_with_board_id(self, api):
+        ws = _fake_workstream()
+        t = _fake_task()
+        api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["list_tasks"].return_value = [t]
+        api.mocks["read_workstream"].return_value = ws
+        api.mocks["lock_status"].return_value = None
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        code, body = api.get("/api/poll/ws-1")
+        assert code == 200
+        data = body["data"]
+        assert "board" in data
+        assert data["board"]["workstream"]["id"] == "ws-1"
+        assert len(data["board"]["tasks"]) == 1
+        assert data["board"]["tasks"][0]["lock"]["locked"] is False
+
+    def test_poll_with_missing_board_skips_board(self, api):
+        api.mocks["list_workstreams"].return_value = []
+        api.mocks["read_workstream"].side_effect = FileNotFoundError("nope")
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        code, body = api.get("/api/poll/nonexistent-ws")
+        assert code == 200
+        assert "board" not in body["data"]
+
+    def test_poll_board_includes_lock(self, api):
+        ws = _fake_workstream()
+        t = _fake_task()
+        lock = _fake_lock(expired=False)
+        api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["list_tasks"].return_value = [t]
+        api.mocks["read_workstream"].return_value = ws
+        api.mocks["lock_status"].return_value = lock
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        code, body = api.get("/api/poll/ws-1")
+        assert code == 200
+        assert body["data"]["board"]["tasks"][0]["lock"]["locked"] is True
+
+
+# ── Concurrency / resilience tests ──────────────────────────────
+
+class TestConcurrency:
+    def test_concurrent_requests_all_succeed(self, api):
+        """Verify the threaded server handles multiple simultaneous requests."""
+        import concurrent.futures
+
+        api.mocks["list_workstreams"].return_value = [_fake_workstream()]
+        api.mocks["list_tasks"].return_value = []
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        def do_request(_):
+            return api.get("/api/poll/all")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            futures = [pool.submit(do_request, i) for i in range(10)]
+            results = [f.result(timeout=10) for f in futures]
+
+        assert all(code == 200 for code, _ in results)
+        assert all(body["status"] == "ok" for _, body in results)
+
+    def test_slow_handler_does_not_block_other_requests(self, api):
+        """A slow endpoint should not prevent other endpoints from responding."""
+        import concurrent.futures
+        import time
+
+        original_return = [_fake_workstream()]
+
+        def slow_list(*args, **kwargs):
+            time.sleep(1)
+            return original_return
+
+        api.mocks["list_workstreams"].side_effect = slow_list
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            # Start a slow request
+            slow_future = pool.submit(api.get, "/api/poll/all")
+            time.sleep(0.1)  # let it start
+            # A fast request should still complete quickly
+            fast_future = pool.submit(api.get, "/api/scheduler/status")
+            fast_code, fast_body = fast_future.result(timeout=2)
+            slow_code, slow_body = slow_future.result(timeout=5)
+
+        assert fast_code == 200
+        assert slow_code == 200
+
+    def test_abandoned_connection_does_not_block(self, api):
+        """Opening a TCP connection and abandoning it should not block the server."""
+        import socket
+        import concurrent.futures
+
+        api.mocks["list_workstreams"].return_value = []
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        # Parse port from api.base
+        port = int(api.base.rsplit(":", 1)[1])
+
+        # Open a connection and just leave it (simulates stale browser connection)
+        stale = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        stale.connect(("127.0.0.1", port))
+        # Don't send anything — just hold it open
+
+        # The server should still handle other requests
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(api.get, "/api/poll/all")
+            code, body = future.result(timeout=5)
+
+        assert code == 200
+        stale.close()
 
 
 # ── Request parsing ─────────────────────────────────────────────

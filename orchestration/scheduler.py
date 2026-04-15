@@ -348,5 +348,10 @@ def tick(base_dir: str = ".") -> dict:
     state["last_tick_at"] = now.isoformat()
     _save_state(state, base_dir)
 
+    # 4. Expired lock cleanup + retry
+    from .retry import cleanup_expired_locks
+    expired_results = cleanup_expired_locks(base_dir)
+    results["expired_locks_cleaned"] = expired_results
+
     results["last_tick_at"] = now.isoformat()
     return results

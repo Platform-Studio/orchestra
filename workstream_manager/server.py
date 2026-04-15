@@ -13,7 +13,14 @@ import json
 import os
 import sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    request_queue_size = 32  # increase listen backlog from default 5
+    allow_reuse_address = True
 
 # Resolve paths
 WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -220,6 +227,43 @@ def handle_scheduler(method, parts, params):
     return _err(f"Unknown scheduler method: {method}")
 
 
+def handle_poll(method, parts, params):
+    """Combined polling endpoint — returns workstreams, counts, scheduler, and optionally board in one call."""
+    wss = list_workstreams(base_dir=WORKSPACE_DIR)
+    counts = {}
+    for ws in wss:
+        counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
+    result = {
+        "workstreams": [w.to_dict() for w in wss],
+        "counts": counts,
+        "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
+    }
+    # If a board ID is requested, include it
+    ws_id = params.get("board") or (method if method != "all" else None)
+    if ws_id:
+        try:
+            ws = read_workstream(ws_id, base_dir=WORKSPACE_DIR)
+            tasks = list_tasks(ws_id, base_dir=WORKSPACE_DIR)
+            task_dicts = []
+            for t in tasks:
+                td = t.to_dict()
+                if td.get("_error"):
+                    td["lock"] = {"locked": False}
+                    task_dicts.append(td)
+                    continue
+                lock = lock_status(t.id, base_dir=WORKSPACE_DIR)
+                if lock and not lock.is_expired():
+                    td["lock"] = lock.to_dict()
+                    td["lock"]["locked"] = True
+                else:
+                    td["lock"] = {"locked": False}
+                task_dicts.append(td)
+            result["board"] = {"workstream": ws.to_dict(), "tasks": task_dicts}
+        except FileNotFoundError:
+            pass
+    return _ok(result)
+
+
 def handle_audit(method, parts, params):
     from orchestration.workspace_audit import get_audit_log
     if method == "log":
@@ -231,28 +275,45 @@ def handle_audit(method, parts, params):
     return _err(f"Unknown audit method: {method}")
 
 
+def handle_retry(method, parts, params):
+    from orchestration.retry import manual_retry
+    if method == "task" and parts:
+        result = manual_retry(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(result)
+    return _err(f"Unknown retry method: {method}")
+
+
 ROUTE_MAP = {
     "board": lambda m, p, q: handle_board(p, q),
+    "poll": lambda m, p, q: handle_poll(m, p, q),
     "workstream": handle_workstream,
     "task": handle_task,
     "lock": handle_lock,
     "trigger": handle_trigger,
     "scheduler": handle_scheduler,
     "audit": handle_audit,
+    "retry": handle_retry,
 }
 
 
 class Handler(SimpleHTTPRequestHandler):
     """Handles static files and /api/ routes."""
 
+    protocol_version = "HTTP/1.1"  # keep-alive: browser reuses connections
+    timeout = 30  # close idle keep-alive connections after 30s
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
 
     def _send_json(self, code: int, body: str):
+        encoded = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        self.wfile.write(encoded)
+        return  # don't close — let keep-alive reuse the connection
         self.wfile.write(body.encode())
 
     def _handle_api(self, http_method: str):
@@ -325,6 +386,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = "/"
         super().do_GET()
 
+    def end_headers(self):
+        # Prevent browser caching of static files so code changes take effect
+        if not hasattr(self, '_json_response'):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        super().end_headers()
+
     def do_POST(self):
         self._handle_api("POST")
 
@@ -340,7 +407,7 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
 
-    server = HTTPServer(("127.0.0.1", args.port), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Workstream Manager running at http://localhost:{args.port}")
     print("Note: Start the scheduler separately via: python -m orchestration.cli scheduler run")
     try:

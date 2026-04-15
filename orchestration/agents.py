@@ -268,33 +268,50 @@ def run_agent(agent_name: str, task_id: str = None, workstream_id: str = None, b
         env = os.environ.copy()
         abs_base = os.path.abspath(base_dir)
 
-        result = subprocess.run(
+        # Use Popen so we can capture and store the subprocess PID in the lock
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=600,
             cwd=abs_base,
             env=env,
         )
 
-        output = result.stdout.strip()
-        stderr = result.stderr.strip()
+        # Store subprocess PID in lock file for dead-process detection
+        if task_id:
+            from .locks import update_lock_pid
+            update_lock_pid(task_id, proc.pid, base_dir=base_dir)
+
+        try:
+            stdout, stderr = proc.communicate(timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+
+        output = stdout.strip()
+        stderr = stderr.strip()
+        returncode = proc.returncode
 
         # Log agent output to audit trail
         if task:
             task = read_task(task_id, base_dir)  # Re-read in case agent modified it
-            if result.returncode == 0:
+            if returncode == 0:
                 audit_output = output[:MAX_AUDIT_OUTPUT]
                 if len(output) > MAX_AUDIT_OUTPUT:
                     audit_output += f"\n... (truncated, {len(output)} total chars)"
                 task.add_audit("agent_completed", f"Agent '{agent_def['name']}' completed.\n\nOutput:\n{audit_output}")
+                # Reset retry count on success
+                task.retry_count = 0
+                task.last_failure_at = None
             else:
                 error_msg = stderr[:MAX_AUDIT_OUTPUT] if stderr else output[:MAX_AUDIT_OUTPUT]
-                task.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {result.returncode}).\n\nError:\n{error_msg}")
+                task.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
             _save_task(task, base_dir)
 
-        if result.returncode != 0:
-            raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {result.returncode}): {stderr or output}")
+        if returncode != 0:
+            raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {returncode}): {stderr or output}")
 
         response = {"agent": agent_def["name"], "result": output}
         if task_id:
