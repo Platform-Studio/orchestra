@@ -41,11 +41,13 @@ import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime
+import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-SERVER_INFO = Path("/tmp/browser_server.json")
-SERVER_LOG = Path("/tmp/browser_server.log")
+_TMPDIR = Path(tempfile.gettempdir())
+SERVER_INFO = _TMPDIR / "browser_server.json"
+SERVER_LOG = _TMPDIR / "browser_server.log"
 DEFAULT_TIMEOUT = 30000  # ms
 
 
@@ -192,7 +194,8 @@ class BrowserManager:
 
     def cmd_screenshot(self, params):
         page = self._page(params)
-        path = params.get("path", f"/tmp/browser_{params['session']}.png")
+        path = params.get("path", str(_TMPDIR / f"browser_{params['session']}.png"))
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=path, full_page=params.get("full_page", False))
         return {"path": path}
 
@@ -246,6 +249,8 @@ manager = None
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"   # close connection after each response
+
     def log_message(self, _fmt, *_args):
         pass
 
@@ -306,7 +311,6 @@ def get_server_port():
         return None
     try:
         info = json.loads(SERVER_INFO.read_text())
-        os.kill(info["pid"], 0)
         urllib.request.urlopen(
             f"http://127.0.0.1:{info['port']}/", timeout=2
         )
@@ -324,13 +328,17 @@ def ensure_server(headless=False):
     if headless:
         cmd.append("--headless")
     with open(SERVER_LOG, "w") as log:
-        subprocess.Popen(cmd, stdout=log, stderr=log, start_new_session=True)
+        subprocess.Popen(
+            cmd, stdout=log, stderr=log,
+            stdin=subprocess.DEVNULL, close_fds=True,
+            start_new_session=True,
+        )
     for _ in range(30):
         time.sleep(0.5)
         port = get_server_port()
         if port:
             return port
-    print("Error: server failed to start. Check /tmp/browser_server.log", file=sys.stderr)
+    print(f"Error: server failed to start. Check {SERVER_LOG}", file=sys.stderr)
     sys.exit(1)
 
 
