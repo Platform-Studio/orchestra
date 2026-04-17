@@ -235,6 +235,10 @@ def cmd_trigger_create(args):
         kwargs["command"] = args.command
     if args.max_concurrent is not None:
         kwargs["max_concurrent"] = args.max_concurrent
+    if args.prompt:
+        kwargs["prompt"] = args.prompt
+    if args.timeout is not None:
+        kwargs["timeout"] = args.timeout
     trigger = create_trigger(**kwargs)
     _output(trigger.to_dict())
 
@@ -464,6 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent")
     p.add_argument("--command")
     p.add_argument("--max-concurrent", type=int, default=None, help="Max parallel executions within the workstream (default: 1)")
+    p.add_argument("--prompt", help="Custom prompt to inject into the agent when this trigger fires")
+    p.add_argument("--timeout", type=int, default=None, help="Agent execution timeout in seconds (overrides agent x-timeout)")
     p.set_defaults(func=cmd_trigger_create)
 
     p = trigger_sub.add_parser("delete")

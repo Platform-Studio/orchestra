@@ -244,7 +244,19 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str) -> dict:
     try:
         for tid in task_ids:
             try:
-                acquire_lock(tid, agent_id=agent_id, base_dir=base_dir)
+                # Lock TTL matches the agent execution timeout
+                # Priority: trigger.timeout > agent x-timeout > DEFAULT_AGENT_TIMEOUT
+                from .agents import DEFAULT_AGENT_TIMEOUT, _resolve_agent_file, _parse_agent_md
+                lock_ttl = trigger.timeout
+                if not lock_ttl and trigger.agent:
+                    try:
+                        afile = _resolve_agent_file(trigger.agent, base_dir)
+                        adef = _parse_agent_md(afile)
+                        lock_ttl = adef.get("timeout")
+                    except FileNotFoundError:
+                        pass
+                lock_ttl = lock_ttl or DEFAULT_AGENT_TIMEOUT
+                acquire_lock(tid, agent_id=agent_id, ttl_seconds=lock_ttl, base_dir=base_dir)
                 locked_ids.append(tid)
             except (RuntimeError, FileNotFoundError):
                 # Task already locked or not found — skip it

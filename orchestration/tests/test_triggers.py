@@ -257,6 +257,92 @@ class TestMaxConcurrent:
         assert "max_concurrent" not in trigger_data
 
 
+class TestTriggerPrompt:
+    def test_create_trigger_with_prompt(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", prompt="skip the survey step",
+            base_dir=workspace,
+        )
+        assert trigger.prompt == "skip the survey step"
+
+    def test_prompt_persisted_in_workstream(self, workspace, ws):
+        create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", prompt="custom instructions",
+            base_dir=workspace,
+        )
+        reloaded = read_workstream(ws.id, base_dir=workspace)
+        assert reloaded.triggers[0].prompt == "custom instructions"
+
+    def test_prompt_none_not_serialized(self, workspace, ws):
+        import yaml
+        create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", base_dir=workspace,
+        )
+        ws_file = os.path.join(workspace, "workstreams", f"{ws.id}.yaml")
+        with open(ws_file) as f:
+            data = yaml.safe_load(f)
+        trigger_data = data["triggers"][0]
+        assert "prompt" not in trigger_data
+
+    def test_prompt_serialization_roundtrip(self, workspace, ws):
+        create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", prompt="do something special",
+            base_dir=workspace,
+        )
+        reloaded = read_workstream(ws.id, base_dir=workspace)
+        assert reloaded.triggers[0].prompt == "do something special"
+        assert reloaded.triggers[0].to_dict()["prompt"] == "do something special"
+
+
+class TestTriggerTimeout:
+    def test_create_trigger_with_timeout(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id, on_state="Done", action="run_command",
+            command="echo x", timeout=3600, base_dir=workspace,
+        )
+        assert trigger.timeout == 3600
+
+    def test_timeout_persisted_in_workstream(self, workspace, ws):
+        create_trigger(
+            ws.id, on_state="Done", action="run_command",
+            command="echo x", timeout=900, base_dir=workspace,
+        )
+        reloaded = read_workstream(ws.id, base_dir=workspace)
+        assert reloaded.triggers[0].timeout == 900
+
+    def test_default_timeout_is_none(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id, on_state="Done", action="run_command",
+            command="echo x", base_dir=workspace,
+        )
+        assert trigger.timeout is None
+
+    def test_timeout_none_not_serialized(self, workspace, ws):
+        import yaml
+        create_trigger(
+            ws.id, on_state="Done", action="run_command",
+            command="echo x", base_dir=workspace,
+        )
+        ws_file = os.path.join(workspace, "workstreams", f"{ws.id}.yaml")
+        with open(ws_file) as f:
+            data = yaml.safe_load(f)
+        trigger_data = data["triggers"][0]
+        assert "timeout" not in trigger_data
+
+    def test_timeout_serialization_roundtrip(self, workspace, ws):
+        create_trigger(
+            ws.id, on_state="Done", action="run_command",
+            command="echo x", timeout=1200, base_dir=workspace,
+        )
+        reloaded = read_workstream(ws.id, base_dir=workspace)
+        assert reloaded.triggers[0].timeout == 1200
+        assert reloaded.triggers[0].to_dict()["timeout"] == 1200
+
+
 class TestTriggerLocking:
     """Verify that execute_trigger acquires and releases locks for task-bound actions."""
 

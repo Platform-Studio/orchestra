@@ -26,7 +26,7 @@ def execute_trigger(trigger: Trigger, task_ids: list, workstream_id: str, base_d
             return {"trigger_id": trigger.id, "status": "error", "message": "No agent specified"}
         try:
             from .agents import run_agent
-            result = run_agent(trigger.agent, task_ids=task_ids, workstream_id=workstream_id, base_dir=base_dir)
+            result = run_agent(trigger.agent, task_ids=task_ids, workstream_id=workstream_id, prompt=trigger.prompt, timeout=trigger.timeout, base_dir=base_dir)
             return {"trigger_id": trigger.id, "status": "ok", "result": result}
         except Exception as e:
             return {"trigger_id": trigger.id, "status": "error", "message": str(e)}
@@ -74,6 +74,8 @@ def create_trigger(
     agent: str = None,
     command: str = None,
     max_concurrent: int = 1,
+    prompt: str = None,
+    timeout: int = None,
     base_dir: str = ".",
 ) -> Trigger:
     if on_state is None and on_schedule is None:
@@ -91,6 +93,8 @@ def create_trigger(
         agent=agent,
         command=command,
         max_concurrent=max_concurrent,
+        prompt=prompt,
+        timeout=timeout,
     )
     ws.triggers.append(trigger)
     save_workstream(ws, base_dir)

@@ -235,6 +235,35 @@ class TestCLIScheduleTrigger:
         assert data["status"] == "error"
 
 
+class TestCLITriggerPrompt:
+    def test_create_trigger_with_prompt(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("trigger", "create", ws_id,
+                         "--on-state", "pending",
+                         "--action", "run_agent",
+                         "--agent", "test_agent",
+                         "--prompt", "skip the survey step",
+                         base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["prompt"] == "skip the survey step"
+
+    def test_create_trigger_without_prompt(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("trigger", "create", ws_id,
+                         "--on-state", "pending",
+                         "--action", "run_command",
+                         "--command", "echo hi",
+                         base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert "prompt" not in data
+
+
 class TestCLITaskSchedule:
     def test_create_task_with_schedule(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)

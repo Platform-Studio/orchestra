@@ -22,7 +22,7 @@ MAX_AUDIT_OUTPUT = 10_000
 def _get_model() -> str:
     """Return the model name for Claude Code CLI from DEFAULT_LLM env var.
 
-    Strips 'anthropic/' prefix if present (legacy CrewAI format).
+    Strips 'anthropic/' prefix if present (legacy format).
     Falls back to 'sonnet' if not set.
     """
     raw = os.getenv("DEFAULT_LLM", "sonnet")
@@ -68,10 +68,16 @@ def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
     if os.path.exists(candidate):
         return candidate
 
-    # Case-insensitive fallback
+    # Normalize spaces to underscores (agent names use spaces, filenames use underscores)
+    bare_underscore = bare.replace(" ", "_")
+    candidate = os.path.join(agents_dir, f"{bare_underscore}.md")
+    if os.path.exists(candidate):
+        return candidate
+
+    # Case-insensitive fallback (try both space and underscore variants)
     if os.path.exists(agents_dir):
         for fname in os.listdir(agents_dir):
-            if fname.lower() == f"{bare.lower()}.md":
+            if fname.lower() == f"{bare.lower()}.md" or fname.lower() == f"{bare_underscore.lower()}.md":
                 return os.path.join(agents_dir, fname)
 
     raise FileNotFoundError(f"Agent '{agent_ref}' not found in {agents_dir}")
@@ -95,6 +101,7 @@ def _parse_agent_md(path: str) -> dict:
         "description": header.get("description", ""),
         "agent_type": header.get("x-agent-type", "worker"),
         "tools": header.get("x-tools", []),
+        "timeout": header.get("x-timeout"),
         "file": path,
         "body": body,
     }
@@ -164,18 +171,29 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
     # Always document the orchestration CLI
     parts.append(
         "\n\n## Orchestration CLI\n"
-        "Use `python -m orchestration.cli <command>` to manage tasks, workstreams, etc.\n"
+        "Use `python -m orchestration.cli <command>` to manage tasks, workstreams, artifacts, etc.\n"
         "Key commands:\n"
+        "- `workstream find --query '<name>'` — find a workstream by name\n"
+        "- `workstream read <workstream_id>` — read workstream details\n"
+        "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
         "- `task update <task_id> --status <new_status>` — transition a task\n"
         "- `task comment <task_id> --message '<msg>'` — add a comment\n"
         "- `task list <workstream_id>` — list tasks in a workstream\n"
-        "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
+        "- `artifact create --path '<path>' --content '<content>'` — save an artifact\n"
+        "- `artifact read '<path>'` — read an artifact\n"
+        "- `artifact list` — list all artifacts\n"
+        "- `artifact list --prefix '<prefix>'` — list artifacts under a path\n"
+        "\nFull CLI reference: Agents/cli/orchestration_cli.md\n"
     )
 
     return "\n".join(parts)
 
 
-def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, base_dir: str = ".") -> dict:
+# Default agent execution timeout in seconds (30 minutes)
+DEFAULT_AGENT_TIMEOUT = 1800
+
+
+def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".") -> dict:
     """Run an agent via Claude Code CLI against 0-N tasks.
 
     Callers are responsible for locking/unlocking tasks. This function
@@ -188,6 +206,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         agent_name: Agent reference (bare name, filename, or path).
         task_ids: List of task IDs to process. May be None or empty.
         workstream_id: Workstream context. Inferred from first task if not provided.
+        prompt: Optional custom prompt from trigger, appended to the task prompt.
+        timeout: Execution timeout in seconds. Overrides agent x-timeout. Defaults to DEFAULT_AGENT_TIMEOUT.
         base_dir: Workspace root.
     """
     if task_ids is None:
@@ -269,6 +289,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 f"Follow your instructions now."
             )
 
+        # Append custom trigger prompt if provided
+        if prompt:
+            task_prompt += f"\n\nAdditional instructions:\n{prompt}"
+
         # Log agent_started to audit trail for each task
         for t in tasks:
             t.add_audit("agent_started", f"Agent '{agent_def['name']}' started processing")
@@ -310,7 +334,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             update_lock_pid(tid, proc.pid, base_dir=base_dir)
 
         try:
-            stdout, stderr = proc.communicate(timeout=600)
+            # Resolve timeout: caller override > agent x-timeout > default
+            effective_timeout = timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
+            stdout, stderr = proc.communicate(timeout=effective_timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()

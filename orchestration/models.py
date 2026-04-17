@@ -71,6 +71,8 @@ class Trigger:
     agent: str = None
     command: str = None
     max_concurrent: int = 1    # max parallel executions within the workstream
+    prompt: str = None         # custom prompt injected into agent when trigger fires
+    timeout: int = None        # override agent timeout (seconds); None = use agent default
 
     def to_dict(self) -> dict:
         d = {"id": self.id, "action": self.action}
@@ -86,6 +88,10 @@ class Trigger:
             d["command"] = self.command
         if self.max_concurrent != 1:
             d["max_concurrent"] = self.max_concurrent
+        if self.prompt is not None:
+            d["prompt"] = self.prompt
+        if self.timeout is not None:
+            d["timeout"] = self.timeout
         return d
 
     @classmethod
@@ -99,6 +105,8 @@ class Trigger:
             agent=data.get("agent"),
             command=data.get("command"),
             max_concurrent=data.get("max_concurrent", 1),
+            prompt=data.get("prompt"),
+            timeout=data.get("timeout"),
         )
 
 

@@ -100,3 +100,26 @@ class TestAgentToolDeclaration:
             )
         agent_def = _parse_agent_md(agent_path)
         assert agent_def["tools"] == []
+
+    def test_x_timeout_parsed_from_frontmatter(self, workspace):
+        agent_path = os.path.join(workspace, "Agents", "slow_agent.md")
+        with open(agent_path, "w") as f:
+            f.write(
+                "---\n"
+                "name: Slow Agent\n"
+                "description: Takes a while\n"
+                "x-timeout: 3600\n"
+                "---\n"
+                "Do slow stuff.\n"
+            )
+        agent_def = _parse_agent_md(agent_path)
+        assert agent_def["timeout"] == 3600
+
+    def test_no_x_timeout_defaults_none(self, workspace):
+        agent_path = os.path.join(workspace, "Agents", "fast_agent.md")
+        with open(agent_path, "w") as f:
+            f.write(
+                "---\nname: Fast\ndescription: Quick\n---\nDo stuff.\n"
+            )
+        agent_def = _parse_agent_md(agent_path)
+        assert agent_def["timeout"] is None

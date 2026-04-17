@@ -8,7 +8,7 @@ All commands output **JSON** to stdout on success, and a JSON error object to st
 
 - Python 3.x
 - `pip install pyyaml` (already in project)
-- For agent execution: `pip install crewai` and `ANTHROPIC_API_KEY` set in `.env`
+- For agent execution: Claude Code CLI (`claude`) installed and `ANTHROPIC_API_KEY` set in `.env`
 
 ### General Usage
 
@@ -263,7 +263,7 @@ Lists all `.md` files in the `Agents/` directory, showing name, description, and
 python -m orchestration.cli agent run AGENT_NAME --task TASK_ID
 ```
 
-Parses the agent's `.md` file, creates a CrewAI agent, and executes it against the specified task. Requires CrewAI and `ANTHROPIC_API_KEY`.
+Parses the agent's `.md` file and executes it via Claude Code CLI against the specified task. Requires `claude` CLI and `ANTHROPIC_API_KEY`.
 
 ---
 

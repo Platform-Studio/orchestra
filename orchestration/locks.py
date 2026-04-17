@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from .models import Lock, now_iso
 from .tasks import _find_task_file, _tasks_dir
 
-DEFAULT_TTL_SECONDS = 900  # 15 minutes
+DEFAULT_TTL_SECONDS = 1800  # 30 minutes
 
 
 def _lock_path_for_task(task_id: str, base_dir: str = "."):
