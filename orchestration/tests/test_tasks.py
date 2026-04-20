@@ -136,7 +136,8 @@ class TestCommentTask:
     def test_add_comment(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = comment_task(task.id, "This is a comment", base_dir=workspace)
-        assert "This is a comment" in updated.comments
+        assert updated.comments[0]["message"] == "This is a comment"
+        assert "timestamp" in updated.comments[0]
         assert len(updated.audit) == 2  # created + comment
 
     def test_multiple_comments(self, workspace, ws):
@@ -144,6 +145,13 @@ class TestCommentTask:
         comment_task(task.id, "First", base_dir=workspace)
         updated = comment_task(task.id, "Second", base_dir=workspace)
         assert len(updated.comments) == 2
+        assert updated.comments[0]["message"] == "First"
+        assert updated.comments[1]["message"] == "Second"
+
+    def test_comment_with_explicit_author(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = comment_task(task.id, "Hello", author="SDR Agent", base_dir=workspace)
+        assert updated.comments[0]["author"] == "SDR Agent"
 
 
 class TestArchiveTask:

@@ -158,8 +158,10 @@ def _cron_matches_time(parts: list, dt: datetime) -> bool:
 
 def _task_matches_filter(task, filter_def: dict) -> bool:
     """Check if a task matches a trigger filter."""
-    if "state" in filter_def:
-        if task.status != filter_def["state"]:
+    # Accept both "state" and "status" as aliases for the task state field
+    state_filter = filter_def.get("state") or filter_def.get("status")
+    if state_filter is not None:
+        if task.status != state_filter:
             return False
 
     if "tags" in filter_def:
@@ -381,13 +383,28 @@ def tick(base_dir: str = ".") -> dict:
             if not matching_ids:
                 continue
 
-            result = _lock_invoke_unlock(trigger, matching_ids, ws, base_dir)
-            _audit_trigger(trigger, result, ws, base_dir, task_ids=matching_ids)
-            results["state_triggers_fired"].append({
-                "trigger_id": trigger.id,
-                "task_ids": matching_ids,
-                "result": result,
-            })
+            # Respect max_concurrent: invoke the agent once per task, up to
+            # the number of free concurrency slots available right now.
+            from .locks import active_lock_count
+            current_locks = active_lock_count(ws.id, base_dir=base_dir)
+            free_slots = max(0, trigger.max_concurrent - current_locks)
+            ids_to_run = matching_ids[:free_slots]
+            if not ids_to_run:
+                results["state_triggers_fired"].append({
+                    "trigger_id": trigger.id,
+                    "task_ids": [],
+                    "result": {"status": "skipped", "reason": "max_concurrent reached"},
+                })
+                continue
+
+            for task_id in ids_to_run:
+                result = _lock_invoke_unlock(trigger, [task_id], ws, base_dir)
+                _audit_trigger(trigger, result, ws, base_dir, task_ids=[task_id])
+                results["state_triggers_fired"].append({
+                    "trigger_id": trigger.id,
+                    "task_ids": [task_id],
+                    "result": result,
+                })
 
     # Update state
     state["last_tick_at"] = now.isoformat()

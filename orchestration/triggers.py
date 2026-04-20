@@ -3,10 +3,21 @@
 import os
 import subprocess
 import sys
+import threading
 
 from .models import Trigger, Workstream, new_id
 from .workstreams import read_workstream, save_workstream
 from .workspace_audit import log_event
+
+# Thread-safe set of currently-executing trigger IDs
+_active_triggers_lock = threading.Lock()
+_active_triggers: set = set()
+
+
+def get_active_triggers() -> list:
+    """Return list of trigger IDs currently executing."""
+    with _active_triggers_lock:
+        return list(_active_triggers)
 
 
 def execute_trigger(trigger: Trigger, task_ids: list, workstream_id: str, base_dir: str = ".") -> dict:
@@ -21,6 +32,16 @@ def execute_trigger(trigger: Trigger, task_ids: list, workstream_id: str, base_d
         workstream_id: The workstream context.
         base_dir: Workspace root.
     """
+    with _active_triggers_lock:
+        _active_triggers.add(trigger.id)
+    try:
+        return _execute_trigger_inner(trigger, task_ids, workstream_id, base_dir)
+    finally:
+        with _active_triggers_lock:
+            _active_triggers.discard(trigger.id)
+
+
+def _execute_trigger_inner(trigger: Trigger, task_ids: list, workstream_id: str, base_dir: str = ".") -> dict:
     if trigger.action == "run_agent":
         if trigger.agent is None:
             return {"trigger_id": trigger.id, "status": "error", "message": "No agent specified"}
@@ -111,4 +132,54 @@ def delete_trigger(trigger_id: str, base_dir: str = ".") -> bool:
         if len(ws.triggers) < original_len:
             save_workstream(ws, base_dir)
             return True
+    raise FileNotFoundError(f"Trigger {trigger_id} not found")
+
+
+def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
+    """Kick off a schedule-based trigger immediately in a background thread.
+
+    Validates the trigger exists and is schedule-based, then spawns a
+    daemon thread to execute it. Returns immediately with an acknowledgement.
+    Results are visible in the audit log.
+    """
+    import threading
+    from .workstreams import list_workstreams
+
+    for ws in list_workstreams(base_dir):
+        for trigger in ws.triggers:
+            if trigger.id != trigger_id:
+                continue
+            if trigger.on_schedule is None:
+                raise ValueError("Run Now is only supported for schedule-based triggers")
+
+            # Capture references for the background thread
+            _trigger, _ws = trigger, ws
+
+            def _run():
+                from .tasks import list_tasks
+                from .scheduler import _lock_invoke_unlock, _task_matches_filter, _audit_trigger
+                try:
+                    if _trigger.filter is None:
+                        result = _lock_invoke_unlock(_trigger, [], _ws, base_dir)
+                    else:
+                        tasks = list_tasks(_ws.id, base_dir=base_dir)
+                        matching_ids = [
+                            t.id for t in tasks
+                            if _task_matches_filter(t, _trigger.filter)
+                        ]
+                        result = _lock_invoke_unlock(_trigger, matching_ids, _ws, base_dir)
+                    _audit_trigger(_trigger, result, _ws, base_dir,
+                                   task_ids=(matching_ids if _trigger.filter else []))
+                except Exception as e:
+                    from .workspace_audit import log_event
+                    log_event("trigger_fired",
+                              f"Run Now trigger '{_trigger.action}' failed — {e}",
+                              base_dir, trigger_id=_trigger.id,
+                              workstream_id=_ws.id, status="error")
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            return {"trigger_id": trigger_id, "status": "started",
+                    "message": "Trigger kicked off in background"}
+
     raise FileNotFoundError(f"Trigger {trigger_id} not found")

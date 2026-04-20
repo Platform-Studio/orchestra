@@ -3,7 +3,7 @@
 import os
 import yaml
 
-from .models import Task, RetryConfig, new_id
+from .models import Task, RetryConfig, new_id, now_iso
 from .workstreams import read_workstream
 
 
@@ -178,10 +178,33 @@ def list_tasks(
     return result
 
 
-def comment_task(task_id: str, message: str, base_dir: str = ".") -> Task:
+def comment_task(task_id: str, message: str, author: str = None, base_dir: str = ".") -> Task:
     task = read_task(task_id, base_dir)
-    task.comments.append(message)
-    task.add_audit("comment", f"Comment added: {message}")
+
+    comment_author = author
+    if comment_author is None:
+        # If an agent lock is present, infer author from lock owner.
+        try:
+            from .locks import lock_status
+            lock = lock_status(task_id, base_dir)
+            if lock is not None:
+                comment_author = lock.agent_id
+        except Exception:
+            comment_author = None
+
+    comment = {
+        "message": message,
+        "timestamp": now_iso(),
+    }
+    if comment_author:
+        comment["author"] = comment_author
+
+    task.comments.append(comment)
+
+    if comment_author:
+        task.add_audit("comment", f"Comment added by {comment_author}: {message}")
+    else:
+        task.add_audit("comment", f"Comment added: {message}")
     _save_task(task, base_dir)
     return task
 

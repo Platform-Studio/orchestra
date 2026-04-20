@@ -91,6 +91,23 @@ career_pivot (812b23b2-...)
 
 Note: This command prints plain text to stdout (not JSON).
 
+#### workstream descendants — Return all descendant workstreams as JSON
+
+```bash
+python -m orchestration.cli workstream descendants WORKSTREAM_ID
+
+# Include the root workstream in the output
+python -m orchestration.cli workstream descendants WORKSTREAM_ID --include-self
+```
+
+Returns JSON rows with:
+- `id`
+- `name`
+- `parent_id`
+- `depth` (1 = direct child, 2 = grandchild, etc.; 0 for root when `--include-self` is used)
+
+This is the recommended command for director-style agents that need to traverse a workstream subtree.
+
 #### workstream pause — Pause a workstream
 
 ```bash

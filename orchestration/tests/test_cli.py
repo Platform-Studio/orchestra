@@ -79,6 +79,47 @@ class TestCLIWorkstream:
         assert "└── Child" in result.stdout
         assert "└── Grandchild" in result.stdout
 
+    def test_descendants(self, workspace):
+        # Create root -> child -> grandchild
+        result = run_cli("workstream", "create", "--name", "Root", base_dir=workspace)
+        root_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("workstream", "create", "--name", "Child", "--parent", root_id, base_dir=workspace)
+        child_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("workstream", "create", "--name", "Grandchild", "--parent", child_id, base_dir=workspace)
+        grandchild_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("workstream", "descendants", root_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        rows = data["data"]
+
+        assert len(rows) == 2
+        ids = {r["id"] for r in rows}
+        assert child_id in ids
+        assert grandchild_id in ids
+        depths = {r["id"]: r["depth"] for r in rows}
+        assert depths[child_id] == 1
+        assert depths[grandchild_id] == 2
+
+    def test_descendants_include_self(self, workspace):
+        result = run_cli("workstream", "create", "--name", "Root", base_dir=workspace)
+        root_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("workstream", "create", "--name", "Child", "--parent", root_id, base_dir=workspace)
+        child_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("workstream", "descendants", root_id, "--include-self", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        rows = data["data"]
+
+        assert len(rows) == 2
+        depths = {r["id"]: r["depth"] for r in rows}
+        assert depths[root_id] == 0
+        assert depths[child_id] == 1
+
 
 class TestCLITask:
     def test_full_lifecycle(self, workspace):

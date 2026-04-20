@@ -5,7 +5,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from orchestration.workstreams import create_workstream, read_workstream
 from orchestration.tasks import create_task, read_task, update_task
-from orchestration.triggers import create_trigger, list_triggers, delete_trigger, execute_trigger
+from orchestration.triggers import create_trigger, list_triggers, delete_trigger, execute_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import tick, _save_state
 
 
@@ -373,3 +373,69 @@ class TestTriggerLocking:
         assert result["state_triggers_fired"][0]["result"]["status"] == "ok"
         # Lock released after tick
         assert lock_status(task.id, base_dir=workspace) is None
+
+
+class TestRunTriggerNow:
+    def test_run_now_schedule_trigger_no_filter(self, workspace, ws):
+        """Run Now kicks off a schedule trigger and returns immediately."""
+        trigger = create_trigger(
+            ws.id, on_schedule="0 9 * * *", action="run_command",
+            command="echo hello", base_dir=workspace,
+        )
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+        assert result["status"] == "started"
+        assert result["trigger_id"] == trigger.id
+
+    def test_run_now_schedule_trigger_with_filter(self, workspace, ws):
+        """Run Now kicks off a schedule trigger with filter."""
+        trigger = create_trigger(
+            ws.id, on_schedule="0 9 * * *", action="run_command",
+            command="echo {task_id}", filter={"state": "To Do"},
+            base_dir=workspace,
+        )
+        create_task(ws.id, title="Filterable", base_dir=workspace)
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+        assert result["status"] == "started"
+
+    def test_run_now_rejects_state_trigger(self, workspace, ws):
+        """Run Now should reject state-based triggers."""
+        trigger = create_trigger(
+            ws.id, on_state="To Do", action="run_command",
+            command="echo nope", base_dir=workspace,
+        )
+        with pytest.raises(ValueError, match="schedule-based"):
+            run_trigger_now(trigger.id, base_dir=workspace)
+
+    def test_run_now_not_found(self, workspace, ws):
+        """Run Now raises FileNotFoundError for unknown trigger ID."""
+        with pytest.raises(FileNotFoundError):
+            run_trigger_now("nonexistent-id", base_dir=workspace)
+
+
+class TestActiveTriggers:
+    def test_active_triggers_empty_by_default(self):
+        assert isinstance(get_active_triggers(), list)
+
+    def test_trigger_tracked_during_execution(self, workspace, ws):
+        """execute_trigger adds/removes trigger ID from active set."""
+        import threading
+        from orchestration.triggers import _active_triggers_lock, _active_triggers
+        from orchestration.models import Trigger, new_id
+
+        seen_active = []
+        trigger = Trigger(
+            id=new_id(), action="run_command", command="sleep 0.2",
+        )
+
+        def check():
+            import time
+            time.sleep(0.05)
+            seen_active.extend(get_active_triggers())
+
+        checker = threading.Thread(target=check)
+        checker.start()
+        execute_trigger(trigger, [], ws.id, base_dir=workspace)
+        checker.join()
+        assert trigger.id in seen_active
+        # After execution, no longer active
+        assert trigger.id not in get_active_triggers()

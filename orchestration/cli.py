@@ -99,6 +99,45 @@ def cmd_workstream_tree(args):
     print(tree)
 
 
+def cmd_workstream_descendants(args):
+    from .workstreams import list_workstreams
+
+    root_id = args.id
+    include_self = args.include_self
+    workstreams = list_workstreams(base_dir=args.base_dir)
+
+    # Build parent -> children mapping and id -> workstream lookup.
+    children = {}
+    by_id = {}
+    for ws in workstreams:
+        by_id[ws.id] = ws
+        if ws.parent_id is not None:
+            children.setdefault(ws.parent_id, []).append(ws)
+
+    if root_id not in by_id:
+        raise FileNotFoundError(f"Workstream {root_id} not found")
+
+    # DFS from the requested root. Return deterministic sibling ordering.
+    result = []
+    stack = [(root_id, 0)]
+    while stack:
+        ws_id, depth = stack.pop()
+        ws = by_id[ws_id]
+        if include_self or depth > 0:
+            result.append({
+                "id": ws.id,
+                "name": ws.name,
+                "parent_id": ws.parent_id,
+                "depth": depth,
+            })
+
+        kids = sorted(children.get(ws_id, []), key=lambda w: (w.name.lower(), w.id), reverse=True)
+        for kid in kids:
+            stack.append((kid.id, depth + 1))
+
+    _output(result)
+
+
 # ── Task commands ────────────────────────────────────────────────────
 
 def cmd_task_create(args):
@@ -158,7 +197,7 @@ def cmd_task_list(args):
 
 def cmd_task_comment(args):
     from .tasks import comment_task
-    task = comment_task(args.task_id, args.message, base_dir=args.base_dir)
+    task = comment_task(args.task_id, args.message, author=args.author, base_dir=args.base_dir)
     _output(task.to_dict())
 
 
@@ -382,6 +421,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = ws_sub.add_parser("tree")
     p.set_defaults(func=cmd_workstream_tree)
 
+    p = ws_sub.add_parser("descendants")
+    p.add_argument("id", help="Root workstream ID to traverse")
+    p.add_argument("--include-self", action="store_true", help="Include the root workstream in output")
+    p.set_defaults(func=cmd_workstream_descendants)
+
     # ── Task ─────────────────────────────────────────────────────────
     task_parser = subparsers.add_parser("task")
     task_sub = task_parser.add_subparsers(dest="method", required=True)
@@ -418,6 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = task_sub.add_parser("comment")
     p.add_argument("task_id")
     p.add_argument("--message", required=True)
+    p.add_argument("--author", help="Optional comment author (agent/user)")
     p.set_defaults(func=cmd_task_comment)
 
     p = task_sub.add_parser("archive")

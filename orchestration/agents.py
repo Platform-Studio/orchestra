@@ -175,6 +175,7 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         "Key commands:\n"
         "- `workstream find --query '<name>'` — find a workstream by name\n"
         "- `workstream read <workstream_id>` — read workstream details\n"
+        "- `workstream descendants <workstream_id>` — list all descendant workstreams as JSON\n"
         "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
         "- `task update <task_id> --status <new_status>` — transition a task\n"
         "- `task comment <task_id> --message '<msg>'` — add a comment\n"

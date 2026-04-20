@@ -39,7 +39,7 @@ from orchestration.tasks import (
     comment_task, archive_task, get_audit, clear_schedule,
 )
 from orchestration.locks import acquire_lock, release_lock, lock_status
-from orchestration.triggers import create_trigger, list_triggers, delete_trigger
+from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 
 
@@ -161,7 +161,12 @@ def handle_task(method, parts, params):
         task = update_task(**kwargs)
         return _ok(task.to_dict())
     elif m == "comment" and parts:
-        task = comment_task(parts[0], params["message"], base_dir=WORKSPACE_DIR)
+        task = comment_task(
+            parts[0],
+            params["message"],
+            author=params.get("author"),
+            base_dir=WORKSPACE_DIR,
+        )
         return _ok(task.to_dict())
     elif m == "archive" and parts:
         result = archive_task(parts[0], base_dir=WORKSPACE_DIR)
@@ -218,6 +223,9 @@ def handle_trigger(method, parts, params):
     elif m == "delete" and parts:
         delete_trigger(parts[0], base_dir=WORKSPACE_DIR)
         return _ok({"deleted": True})
+    elif m == "run-now" and parts:
+        result = run_trigger_now(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(result)
     return _err(f"Unknown trigger method: {m}")
 
 
@@ -237,6 +245,7 @@ def handle_poll(method, parts, params):
         "workstreams": [w.to_dict() for w in wss],
         "counts": counts,
         "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
+        "active_triggers": get_active_triggers(),
     }
     # If a board ID is requested, include it
     ws_id = params.get("board") or (method if method != "all" else None)
