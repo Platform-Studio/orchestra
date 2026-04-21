@@ -175,6 +175,15 @@ def list_tasks(
             if tags and not all(t in task.tags for t in tags):
                 continue
             result.append(task)
+
+    # Default ordering: oldest last-audit timestamp first (FIFO-style pull).
+    # Fallback for malformed/empty audit is empty string, which sorts first.
+    def _last_audit_ts(task: Task) -> str:
+        if not task.audit:
+            return ""
+        return getattr(task.audit[-1], "timestamp", "") or ""
+
+    result.sort(key=_last_audit_ts)
     return result
 
 
