@@ -44,9 +44,35 @@ def _save_state(state: dict, base_dir: str) -> None:
         yaml.dump(state, f, default_flow_style=False, sort_keys=False)
 
 
+def _existing_running_pid(base_dir: str):
+    """Return an existing live scheduler PID from state, else None.
+
+    Also cleans up stale PID entries when the process is no longer alive.
+    """
+    state = _load_state(base_dir)
+    pid = state.get("pid")
+    if pid is None:
+        return None
+    try:
+        os.kill(pid, 0)
+        return pid
+    except OSError:
+        state.pop("pid", None)
+        _save_state(state, base_dir)
+        return None
+
+
 def run(base_dir: str = ".") -> None:
     """Run the scheduler as a foreground process. Ticks every 60 seconds."""
     abs_dir = os.path.abspath(base_dir)
+
+    existing_pid = _existing_running_pid(abs_dir)
+    if existing_pid is not None and existing_pid != os.getpid():
+        raise RuntimeError(
+            f"Scheduler is already running for this workspace (pid={existing_pid}). "
+            "Stop it first via `python -m orchestration.cli scheduler stop`."
+        )
+
     running = True
 
     def handle_signal(sig, frame):

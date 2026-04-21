@@ -11,6 +11,7 @@ from orchestration.scheduler import (
     _state_path,
     _load_state,
     _save_state,
+    _existing_running_pid,
     _cron_matches_time,
     _cron_matches_between,
     _task_matches_filter,
@@ -99,6 +100,18 @@ class TestSchedulerState:
     def test_state_path(self, workspace):
         path = _state_path(workspace)
         assert path.endswith("scheduler_state.yaml")
+
+    def test_existing_running_pid_returns_live_pid(self, workspace):
+        _save_state({"pid": os.getpid()}, workspace)
+        pid = _existing_running_pid(workspace)
+        assert pid == os.getpid()
+
+    def test_existing_running_pid_clears_stale_pid(self, workspace):
+        _save_state({"pid": 99999999}, workspace)
+        pid = _existing_running_pid(workspace)
+        assert pid is None
+        state = _load_state(workspace)
+        assert "pid" not in state
 
 
 # ── Scheduler status ────────────────────────────────────────────────

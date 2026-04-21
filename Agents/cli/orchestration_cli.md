@@ -50,6 +50,9 @@ python -m orchestration.cli workstream create --name "Pipeline" --states '{"To D
 
 # With retry configuration
 python -m orchestration.cli workstream create --name "Retry WS" --retry '{"max_retries": 5, "backoff": "exponential", "base_seconds": 30}'
+
+# Descendants-only mounted workspace root
+python -m orchestration.cli workstream create --name "career_pivot" --mounted-workspace-path "~/career_pivot"
 ```
 
 Default task states if `--states` is omitted:
@@ -403,12 +406,18 @@ python -m orchestration.cli audit log --limit 20
 
 ```bash
 python -m orchestration.cli artifact create --path "reports/q2_summary.md" --content "# Q2 Summary\n\nResults..."
+
+# Optional mounted-routing context
+python -m orchestration.cli artifact create --path "ideas/april.md" --content "..." --workstream WORKSTREAM_ID
 ```
 
 #### artifact read — Read an artifact
 
 ```bash
 python -m orchestration.cli artifact read "reports/q2_summary.md"
+
+# Optional mounted-routing context
+python -m orchestration.cli artifact read "ideas/april.md" --workstream WORKSTREAM_ID
 ```
 
 #### artifact list — List all artifacts

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import os
 import pytest
+from pathlib import Path
 
 from orchestration.cli import build_parser, main
 
@@ -59,6 +60,19 @@ class TestCLIWorkstream:
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert "Open" in data["data"]["task_states"]
+
+    def test_create_with_mounted_workspace_path(self, workspace):
+        mount_root = Path(workspace) / "external_repo"
+        mount_root.mkdir()
+        result = run_cli(
+            "workstream", "create",
+            "--name", "Career Pivot",
+            "--mounted-workspace-path", str(mount_root),
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["data"]["mounted_workspace_path"] == str(mount_root)
 
     def test_tree(self, workspace):
         # Create parent

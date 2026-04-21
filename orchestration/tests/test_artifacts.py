@@ -3,6 +3,7 @@
 import os
 import pytest
 from orchestration.artifacts import create_artifact, read_artifact, list_artifacts
+from orchestration.workstreams import create_workstream, save_workstream
 
 
 class TestCreateArtifact:
@@ -65,3 +66,36 @@ class TestListArtifacts:
         create_artifact("a/b/c.txt", "deep", base_dir=workspace)
         result = list_artifacts(base_dir=workspace)
         assert "a/b/c.txt" in result
+
+
+class TestMountedArtifactRouting:
+    def test_create_with_workstream_context_routes_to_mounted_workspace(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="ideas", parent_id=parent.id, base_dir=workspace)
+
+        create_artifact("ideas/april.md", "hello", base_dir=workspace, workstream_id=child.id)
+
+        target = mount_root / "artifacts" / "ideas" / "april.md"
+        assert target.exists()
+        assert target.read_text() == "hello"
+
+    def test_create_with_logical_path_uses_mounted_node_name(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        logical = "/Platform/Stage 3/career_pivot/ideas/april.md"
+        create_artifact(logical, "lobster", base_dir=workspace)
+
+        target = mount_root / "artifacts" / "ideas" / "april.md"
+        assert target.exists()
+        assert target.read_text() == "lobster"

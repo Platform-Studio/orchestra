@@ -41,6 +41,8 @@ def cmd_workstream_create(args):
         kwargs["task_states"] = json.loads(args.states)
     if args.retry:
         kwargs["retry"] = json.loads(args.retry)
+    if args.mounted_workspace_path:
+        kwargs["mounted_workspace_path"] = args.mounted_workspace_path
     ws = create_workstream(**kwargs)
     _output(ws.to_dict())
 
@@ -427,13 +429,13 @@ def cmd_audit_log(args):
 
 def cmd_artifact_create(args):
     from .artifacts import create_artifact
-    result = create_artifact(args.path, args.content, base_dir=args.base_dir)
+    result = create_artifact(args.path, args.content, base_dir=args.base_dir, workstream_id=args.workstream)
     _output(result)
 
 
 def cmd_artifact_read(args):
     from .artifacts import read_artifact
-    content = read_artifact(args.path, base_dir=args.base_dir)
+    content = read_artifact(args.path, base_dir=args.base_dir, workstream_id=args.workstream)
     _output({"path": args.path, "content": content})
 
 
@@ -466,6 +468,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--parent")
     p.add_argument("--states", help="JSON string of task states map")
     p.add_argument("--retry", help="JSON string of retry config")
+    p.add_argument("--mounted-workspace-path", help="Path to mounted workspace root for descendants")
     p.set_defaults(func=cmd_workstream_create)
 
     p = ws_sub.add_parser("list")
@@ -666,10 +669,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = artifact_sub.add_parser("create")
     p.add_argument("--path", required=True)
     p.add_argument("--content", required=True)
+    p.add_argument("--workstream", default=None, help="Optional workstream context for mounted artifact routing")
     p.set_defaults(func=cmd_artifact_create)
 
     p = artifact_sub.add_parser("read")
     p.add_argument("path")
+    p.add_argument("--workstream", default=None, help="Optional workstream context for mounted artifact routing")
     p.set_defaults(func=cmd_artifact_read)
 
     p = artifact_sub.add_parser("list")

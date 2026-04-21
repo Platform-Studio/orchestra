@@ -116,6 +116,7 @@ class Workstream:
     name: str
     description: str = None
     parent_id: str = None
+    mounted_workspace_path: str = None
     task_states: dict = field(default_factory=lambda: dict(DEFAULT_TASK_STATES))
     retry: RetryConfig = None
     triggers: list = field(default_factory=list)
@@ -132,6 +133,8 @@ class Workstream:
             d["description"] = self.description
         if self.parent_id is not None:
             d["parent_id"] = self.parent_id
+        if self.mounted_workspace_path is not None:
+            d["mounted_workspace_path"] = self.mounted_workspace_path
         if self.retry is not None:
             d["retry"] = self.retry.to_dict()
         if self.paused:
@@ -147,6 +150,7 @@ class Workstream:
             name=data["name"],
             description=data.get("description"),
             parent_id=data.get("parent_id"),
+            mounted_workspace_path=data.get("mounted_workspace_path"),
             task_states=data.get("task_states", dict(DEFAULT_TASK_STATES)),
             retry=retry,
             triggers=triggers,

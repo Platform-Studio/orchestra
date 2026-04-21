@@ -33,7 +33,7 @@ if WORKSPACE_DIR not in sys.path:
 from orchestration.workstreams import (
     list_workstreams, read_workstream, create_workstream,
     find_workstreams, save_workstream, list_workstream_hierarchy_env,
-    list_effective_workstream_env,
+    list_effective_workstream_env, resolve_workstream_workspace,
 )
 from orchestration.tasks import (
     create_task, read_task, update_task, list_tasks,
@@ -99,6 +99,8 @@ def handle_workstream(method, parts, params):
         return _ok({
             "id": ws.id,
             "name": ws.name,
+            "mounted_workspace_path": ws.mounted_workspace_path,
+            "resolved_workspace_path": resolve_workstream_workspace(ws.id, base_dir=WORKSPACE_DIR),
             "effective_env": effective,
             "env_hierarchy": levels,
         })

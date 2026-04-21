@@ -1,12 +1,14 @@
 """Tests for workstream operations."""
 
 import pytest
+import os
 from orchestration.workstreams import (
     create_workstream,
     list_workstreams,
     read_workstream,
     find_workstreams,
     save_workstream,
+    resolve_workstream_workspace,
     set_workstream_env_key,
     unset_workstream_env_key,
     resolve_workstream_env_key,
@@ -179,3 +181,76 @@ class TestWorkstreamEnv:
         env_map = list_effective_workstream_env(child.id, base_dir=workspace)
         assert "MODEL" not in env_map
         assert env_map["TEMPERATURE"] == "0.1"
+
+
+class TestMountedWorkspaceDescendants:
+    def test_lists_and_reads_mounted_children(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        mounted_child = create_workstream(
+            name="Go-to-Market",
+            parent_id=parent.id,
+            base_dir=workspace,
+        )
+
+        all_ws = list_workstreams(base_dir=workspace)
+        ids = {w.id for w in all_ws}
+        assert parent.id in ids
+        assert mounted_child.id in ids
+
+        loaded = read_workstream(mounted_child.id, base_dir=workspace)
+        assert loaded.name == "Go-to-Market"
+        assert loaded.parent_id == parent.id
+
+    def test_create_child_under_mounted_parent_writes_to_mount(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
+
+        assert os.path.exists(mount_root / "workstreams" / f"{child.id}.yaml")
+        assert not os.path.exists(os.path.join(workspace, "workstreams", f"{child.id}.yaml"))
+
+    def test_create_task_on_mounted_child_writes_to_mount(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        mounted_child = create_workstream(
+            name="linkedin",
+            parent_id=parent.id,
+            base_dir=workspace,
+        )
+
+        task = create_task(mounted_child.id, title="Reach out", base_dir=workspace)
+        task_path = mount_root / "workstreams" / mounted_child.id / "tasks" / f"{task.id}.yaml"
+        assert task_path.exists()
+
+    def test_resolve_workspace_for_mounted_child(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        mounted_child = create_workstream(
+            name="Operations",
+            parent_id=parent.id,
+            base_dir=workspace,
+        )
+
+        resolved = resolve_workstream_workspace(mounted_child.id, base_dir=workspace)
+        assert resolved == str(mount_root.resolve())

@@ -5,7 +5,7 @@ import re
 import yaml
 
 from .models import Task, RetryConfig, new_id, now_iso
-from .workstreams import read_workstream
+from .workstreams import read_workstream, resolve_workstream_workspace, list_workstreams
 
 
 COMMENT_DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})\]\s*")
@@ -30,7 +30,8 @@ def _default_comment_author() -> str:
 
 
 def _tasks_dir(base_dir: str, ws_id: str) -> str:
-    return os.path.join(base_dir, "workstreams", ws_id, "tasks")
+    ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
+    return os.path.join(ws_root, "workstreams", ws_id, "tasks")
 
 
 def _task_path(base_dir: str, ws_id: str, task_id: str) -> str:
@@ -39,16 +40,11 @@ def _task_path(base_dir: str, ws_id: str, task_id: str) -> str:
 
 def _find_task_file(task_id: str, base_dir: str = "."):
     """Find a task file by ID across all workstreams. Returns (ws_id, file_path) or None."""
-    ws_dir = os.path.join(base_dir, "workstreams")
-    if not os.path.exists(ws_dir):
-        return None
-    for ws_name in os.listdir(ws_dir):
-        ws_path = os.path.join(ws_dir, ws_name)
-        if not os.path.isdir(ws_path):
-            continue
-        task_file = os.path.join(ws_path, "tasks", f"{task_id}.yaml")
+    for ws in list_workstreams(base_dir=base_dir):
+        ws_root = getattr(ws, "_workspace_root", os.path.abspath(base_dir))
+        task_file = os.path.join(ws_root, "workstreams", ws.id, "tasks", f"{task_id}.yaml")
         if os.path.exists(task_file):
-            return (ws_name, task_file)
+            return (ws.id, task_file)
     return None
 
 
