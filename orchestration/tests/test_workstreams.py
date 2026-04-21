@@ -7,7 +7,13 @@ from orchestration.workstreams import (
     read_workstream,
     find_workstreams,
     save_workstream,
+    set_workstream_env_key,
+    unset_workstream_env_key,
+    resolve_workstream_env_key,
+    resolve_env_key,
+    list_effective_workstream_env,
 )
+from orchestration.tasks import create_task
 
 
 class TestCreateWorkstream:
@@ -114,3 +120,62 @@ class TestValidateTransition:
         assert ws.validate_transition("To Do", "In Progress") is True
         assert ws.validate_transition("To Do", "Done") is False
         assert ws.validate_transition("Done", "To Do") is False
+
+
+class TestWorkstreamEnv:
+    def test_env_inherits_from_parent(self, workspace):
+        parent = create_workstream(name="Parent", base_dir=workspace)
+        child = create_workstream(name="Child", parent_id=parent.id, base_dir=workspace)
+
+        set_workstream_env_key(parent.id, "OPENAI_API_KEY", "parent-key", base_dir=workspace)
+
+        value = resolve_workstream_env_key(child.id, "OPENAI_API_KEY", base_dir=workspace)
+        assert value == "parent-key"
+
+    def test_env_child_override(self, workspace):
+        parent = create_workstream(name="Parent", base_dir=workspace)
+        child = create_workstream(name="Child", parent_id=parent.id, base_dir=workspace)
+
+        set_workstream_env_key(parent.id, "MODEL", "gpt-parent", base_dir=workspace)
+        set_workstream_env_key(child.id, "MODEL", "gpt-child", base_dir=workspace)
+
+        value = resolve_workstream_env_key(child.id, "MODEL", base_dir=workspace)
+        assert value == "gpt-child"
+
+    def test_env_unset_masks_parent_and_system(self, workspace, monkeypatch):
+        monkeypatch.setenv("SECRET_TOKEN", "system-secret")
+        parent = create_workstream(name="Parent", base_dir=workspace)
+        child = create_workstream(name="Child", parent_id=parent.id, base_dir=workspace)
+
+        set_workstream_env_key(parent.id, "SECRET_TOKEN", "parent-secret", base_dir=workspace)
+        unset_workstream_env_key(child.id, "SECRET_TOKEN", base_dir=workspace)
+
+        value = resolve_workstream_env_key(child.id, "SECRET_TOKEN", base_dir=workspace)
+        assert value is None
+
+    def test_env_falls_back_to_system_env(self, workspace, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "system-anthropic")
+        ws = create_workstream(name="Standalone", base_dir=workspace)
+
+        value = resolve_workstream_env_key(ws.id, "ANTHROPIC_API_KEY", base_dir=workspace)
+        assert value == "system-anthropic"
+
+    def test_resolve_env_key_with_task_context(self, workspace):
+        ws = create_workstream(name="WS", base_dir=workspace)
+        task = create_task(ws.id, title="Task", base_dir=workspace)
+        set_workstream_env_key(ws.id, "MODEL", "gpt-5", base_dir=workspace)
+
+        value = resolve_env_key("MODEL", task_id=task.id, base_dir=workspace)
+        assert value == "gpt-5"
+
+    def test_list_effective_workstream_env_excludes_masked(self, workspace):
+        parent = create_workstream(name="Parent", base_dir=workspace)
+        child = create_workstream(name="Child", parent_id=parent.id, base_dir=workspace)
+
+        set_workstream_env_key(parent.id, "MODEL", "gpt-parent", base_dir=workspace)
+        set_workstream_env_key(parent.id, "TEMPERATURE", "0.1", base_dir=workspace)
+        unset_workstream_env_key(child.id, "MODEL", base_dir=workspace)
+
+        env_map = list_effective_workstream_env(child.id, base_dir=workspace)
+        assert "MODEL" not in env_map
+        assert env_map["TEMPERATURE"] == "0.1"

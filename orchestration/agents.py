@@ -178,7 +178,7 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         "- `workstream descendants <workstream_id>` — list all descendant workstreams as JSON\n"
         "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
         "- `task update <task_id> --status <new_status>` — transition a task\n"
-        "- `task comment <task_id> --message '<msg>'` — add a comment\n"
+        "- `task comment <task_id> --message '<msg>' --author '<agent_name>'` — add a comment with author\n"
         "- `task list <workstream_id>` — list tasks in a workstream\n"
         "- `artifact create --path '<path>' --content '<content>'` — save an artifact\n"
         "- `artifact read '<path>'` — read an artifact\n"
@@ -317,6 +317,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Run with environment inherited (includes ANTHROPIC_API_KEY from dotenv)
         env = os.environ.copy()
+        env["ORCHESTRATION_AGENT_NAME"] = agent_def["name"]
         abs_base = os.path.abspath(base_dir)
 
         # Use Popen so we can capture and store the subprocess PID in the lock

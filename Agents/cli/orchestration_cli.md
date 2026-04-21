@@ -1,6 +1,6 @@
 ## Orchestration Framework CLI
 
-Manage workstreams, tasks, locks, triggers, artifacts, and agents from the command line using `orchestration/cli.py`.
+Manage workstreams, tasks, locks, triggers, env settings, artifacts, and agents from the command line using `orchestration/cli.py`.
 
 All commands output **JSON** to stdout on success, and a JSON error object to stderr on failure. Exit code 0 indicates success, non-zero indicates failure.
 
@@ -124,6 +124,57 @@ python -m orchestration.cli workstream resume WORKSTREAM_ID
 
 ---
 
+#### env set — Set a workstream-local env key
+
+```bash
+python -m orchestration.cli env set WORKSTREAM_ID OPENAI_API_KEY "sk-..."
+```
+
+Writes key/value pairs into `workstreams/{workstream_id}/.env`.
+
+#### env unset — Mask a key at this workstream level
+
+```bash
+python -m orchestration.cli env unset WORKSTREAM_ID OPENAI_API_KEY
+```
+
+`unset` writes `KEY=` in the workstream `.env` file. This explicitly masks inherited values from parent workstreams and also masks process-level environment fallback.
+
+#### env get — Resolve a key in a workstream/task context
+
+```bash
+# Resolve using a workstream context
+python -m orchestration.cli env get OPENAI_API_KEY --workstream WORKSTREAM_ID
+
+# Resolve using a task context (task -> owning workstream)
+python -m orchestration.cli env get OPENAI_API_KEY --task TASK_ID
+```
+
+Resolution order:
+1. Current workstream `.env`
+2. Parent workstream `.env` files up the hierarchy
+3. Process environment (`os.environ`)
+
+If any level defines `KEY=`, resolution stops and returns no value for that key.
+
+#### env list — List env keys for a context
+
+```bash
+# Effective inherited map (default)
+python -m orchestration.cli env list --workstream WORKSTREAM_ID
+
+# Task-context effective map
+python -m orchestration.cli env list --task TASK_ID
+
+# Only keys physically present in selected workstream .env
+python -m orchestration.cli env list --workstream WORKSTREAM_ID --local
+
+# Include process environment fallback keys in effective output
+python -m orchestration.cli env list --workstream WORKSTREAM_ID --include-system
+```
+
+---
+
 #### task create — Create a new task in a workstream
 
 ```bash
@@ -175,7 +226,14 @@ python -m orchestration.cli task list WORKSTREAM_ID --tags "urgent,sales"
 
 ```bash
 python -m orchestration.cli task comment TASK_ID --message "Reached out via email, waiting for response"
+
+# Recommended for agents: explicitly set author
+python -m orchestration.cli task comment TASK_ID --message "Reached out via email, waiting for response" --author "LinkedIn SDR"
 ```
+
+Notes:
+- For agent workflows, always pass `--author` so comments are attributed correctly in the UI.
+- Do not prefix comment bodies with dates like `[2026-04-21]`; timestamps are stored separately.
 
 #### task archive — Delete a task (and its lock)
 
@@ -412,6 +470,7 @@ All data is stored as YAML files on the local filesystem:
 workstreams/
   {workstream_id}.yaml          # Workstream config, triggers
   {workstream_id}/
+    .env                        # Workstream-local env keys (gitignored)
     tasks/
       {task_id}.yaml            # Task data, audit trail
       {task_id}.yaml.lock       # Lock file (if locked)

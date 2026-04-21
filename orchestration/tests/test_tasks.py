@@ -153,6 +153,27 @@ class TestCommentTask:
         updated = comment_task(task.id, "Hello", author="SDR Agent", base_dir=workspace)
         assert updated.comments[0]["author"] == "SDR Agent"
 
+    def test_comment_strips_date_prefix(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = comment_task(task.id, "[2026-04-21] Followed up", base_dir=workspace)
+        assert updated.comments[0]["message"] == "Followed up"
+        assert "[2026-04-21]" not in updated.audit[-1].description
+
+    def test_comment_uses_env_agent_name_when_author_missing(self, workspace, ws, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATION_AGENT_NAME", "LinkedIn SDR")
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = comment_task(task.id, "Hello", base_dir=workspace)
+        assert updated.comments[0]["author"] == "LinkedIn SDR"
+
+    def test_comment_uses_shell_user_as_author_fallback(self, workspace, ws, monkeypatch):
+        monkeypatch.delenv("ORCHESTRATION_AGENT_NAME", raising=False)
+        monkeypatch.delenv("AGENT_NAME", raising=False)
+        monkeypatch.delenv("CLAUDE_AGENT_NAME", raising=False)
+        monkeypatch.setenv("USER", "jeremy")
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = comment_task(task.id, "Hello", base_dir=workspace)
+        assert updated.comments[0]["author"] == "jeremy"
+
 
 class TestArchiveTask:
     def test_archive(self, workspace, ws):

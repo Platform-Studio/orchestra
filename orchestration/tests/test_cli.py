@@ -366,3 +366,67 @@ class TestCLIScheduler:
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert "running" in data
+
+
+class TestCLIEnv:
+    def test_set_get_list_local(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("env", "set", ws_id, "MODEL", "gpt-5", base_dir=workspace)
+        assert result.returncode == 0
+
+        result = run_cli("env", "get", "MODEL", "--workstream", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["value"] == "gpt-5"
+
+        result = run_cli("env", "list", "--workstream", ws_id, "--local", base_dir=workspace)
+        assert result.returncode == 0
+        env_map = json.loads(result.stdout)["data"]
+        assert env_map["MODEL"] == "gpt-5"
+
+    def test_inheritance_and_override(self, workspace):
+        result = run_cli("workstream", "create", "--name", "Parent", base_dir=workspace)
+        parent_id = json.loads(result.stdout)["data"]["id"]
+        result = run_cli("workstream", "create", "--name", "Child", "--parent", parent_id, base_dir=workspace)
+        child_id = json.loads(result.stdout)["data"]["id"]
+
+        run_cli("env", "set", parent_id, "API_URL", "https://parent.example", base_dir=workspace)
+        result = run_cli("env", "get", "API_URL", "--workstream", child_id, base_dir=workspace)
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"]["value"] == "https://parent.example"
+
+        run_cli("env", "set", child_id, "API_URL", "https://child.example", base_dir=workspace)
+        result = run_cli("env", "get", "API_URL", "--workstream", child_id, base_dir=workspace)
+        assert json.loads(result.stdout)["data"]["value"] == "https://child.example"
+
+    def test_unset_masks_parent_and_system(self, workspace, monkeypatch):
+        monkeypatch.setenv("SECRET", "from-system")
+        result = run_cli("workstream", "create", "--name", "Parent", base_dir=workspace)
+        parent_id = json.loads(result.stdout)["data"]["id"]
+        result = run_cli("workstream", "create", "--name", "Child", "--parent", parent_id, base_dir=workspace)
+        child_id = json.loads(result.stdout)["data"]["id"]
+
+        run_cli("env", "set", parent_id, "SECRET", "from-parent", base_dir=workspace)
+        result = run_cli("env", "unset", child_id, "SECRET", base_dir=workspace)
+        assert result.returncode == 0
+
+        result = run_cli("env", "get", "SECRET", "--workstream", child_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["value"] is None
+        assert data["found"] is False
+
+    def test_get_uses_task_context_and_fallback_system(self, workspace, monkeypatch):
+        monkeypatch.setenv("ONLY_SYSTEM", "sys-value")
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+        result = run_cli("task", "create", ws_id, "--title", "T", base_dir=workspace)
+        task_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("env", "get", "ONLY_SYSTEM", "--task", task_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["value"] == "sys-value"
+        assert data["found"] is True

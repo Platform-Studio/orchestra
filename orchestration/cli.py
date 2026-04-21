@@ -138,6 +138,67 @@ def cmd_workstream_descendants(args):
     _output(result)
 
 
+# ── Env commands ─────────────────────────────────────────────────────
+
+def cmd_env_set(args):
+    from .workstreams import set_workstream_env_key
+    result = set_workstream_env_key(
+        ws_id=args.workstream_id,
+        key=args.key,
+        value=args.value,
+        base_dir=args.base_dir,
+    )
+    _output(result)
+
+
+def cmd_env_unset(args):
+    from .workstreams import unset_workstream_env_key
+    result = unset_workstream_env_key(
+        ws_id=args.workstream_id,
+        key=args.key,
+        base_dir=args.base_dir,
+    )
+    _output(result)
+
+
+def cmd_env_get(args):
+    from .workstreams import resolve_env_key
+    value = resolve_env_key(
+        key=args.key,
+        workstream_id=args.workstream,
+        task_id=args.task,
+        base_dir=args.base_dir,
+    )
+    _output({
+        "key": args.key,
+        "value": value,
+        "found": value is not None,
+    })
+
+
+def cmd_env_list(args):
+    from .workstreams import (
+        list_effective_env,
+        read_workstream_env,
+    )
+    if args.local:
+        if args.task:
+            from .tasks import read_task
+            task = read_task(args.task, base_dir=args.base_dir)
+            workstream_id = task.workstream_id
+        else:
+            workstream_id = args.workstream
+        env_map = read_workstream_env(workstream_id, base_dir=args.base_dir)
+    else:
+        env_map = list_effective_env(
+            workstream_id=args.workstream,
+            task_id=args.task,
+            base_dir=args.base_dir,
+            include_system=args.include_system,
+        )
+    _output(env_map)
+
+
 # ── Task commands ────────────────────────────────────────────────────
 
 def cmd_task_create(args):
@@ -425,6 +486,36 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", help="Root workstream ID to traverse")
     p.add_argument("--include-self", action="store_true", help="Include the root workstream in output")
     p.set_defaults(func=cmd_workstream_descendants)
+
+    # ── Task ─────────────────────────────────────────────────────────
+    env_parser = subparsers.add_parser("env")
+    env_sub = env_parser.add_subparsers(dest="method", required=True)
+
+    p = env_sub.add_parser("set")
+    p.add_argument("workstream_id")
+    p.add_argument("key")
+    p.add_argument("value")
+    p.set_defaults(func=cmd_env_set)
+
+    p = env_sub.add_parser("unset")
+    p.add_argument("workstream_id")
+    p.add_argument("key")
+    p.set_defaults(func=cmd_env_unset)
+
+    p = env_sub.add_parser("get")
+    p.add_argument("key")
+    scope = p.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--workstream")
+    scope.add_argument("--task")
+    p.set_defaults(func=cmd_env_get)
+
+    p = env_sub.add_parser("list")
+    scope = p.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--workstream")
+    scope.add_argument("--task")
+    p.add_argument("--local", action="store_true", help="List only .env keys from the selected scope")
+    p.add_argument("--include-system", action="store_true", help="Include process environment keys in effective output")
+    p.set_defaults(func=cmd_env_list)
 
     # ── Task ─────────────────────────────────────────────────────────
     task_parser = subparsers.add_parser("task")

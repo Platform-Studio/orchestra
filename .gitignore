@@ -19,6 +19,11 @@
 # Allow workstreams data (source of truth for task/board state)
 !workstreams/**
 
+# Keep per-workstream secrets out of git
+workstreams/**/.env
+workstreams/**/.env.*
+!workstreams/**/.env.example
+
 # Allow artifacts data
 !artifacts/**
 

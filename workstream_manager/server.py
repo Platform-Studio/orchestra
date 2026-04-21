@@ -32,7 +32,8 @@ if WORKSPACE_DIR not in sys.path:
 
 from orchestration.workstreams import (
     list_workstreams, read_workstream, create_workstream,
-    find_workstreams, save_workstream,
+    find_workstreams, save_workstream, list_workstream_hierarchy_env,
+    list_effective_workstream_env,
 )
 from orchestration.tasks import (
     create_task, read_task, update_task, list_tasks,
@@ -91,6 +92,16 @@ def handle_workstream(method, parts, params):
     elif m == "read" and parts:
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(ws.to_dict())
+    elif m == "info" and parts:
+        ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
+        levels = list_workstream_hierarchy_env(parts[0], base_dir=WORKSPACE_DIR)
+        effective = list_effective_workstream_env(parts[0], base_dir=WORKSPACE_DIR, include_system=False)
+        return _ok({
+            "id": ws.id,
+            "name": ws.name,
+            "effective_env": effective,
+            "env_hierarchy": levels,
+        })
     elif m == "find":
         wss = find_workstreams(params.get("query", ""), base_dir=WORKSPACE_DIR)
         return _ok([w.to_dict() for w in wss])

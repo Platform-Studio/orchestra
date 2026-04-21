@@ -1,10 +1,32 @@
 """Task operations."""
 
 import os
+import re
 import yaml
 
 from .models import Task, RetryConfig, new_id, now_iso
 from .workstreams import read_workstream
+
+
+COMMENT_DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})\]\s*")
+
+
+def _normalize_comment_message(message: str) -> str:
+    """Normalize comment body by stripping legacy date prefix markers."""
+    text = str(message or "").strip()
+    return COMMENT_DATE_PREFIX_RE.sub("", text).strip()
+
+
+def _default_comment_author() -> str:
+    """Best-effort author identity for agent-produced comments."""
+    for env_key in ("ORCHESTRATION_AGENT_NAME", "AGENT_NAME", "CLAUDE_AGENT_NAME"):
+        value = os.getenv(env_key)
+        if value:
+            return value
+    shell_user = os.getenv("USER")
+    if shell_user:
+        return shell_user
+    return None
 
 
 def _tasks_dir(base_dir: str, ws_id: str) -> str:
@@ -189,6 +211,7 @@ def list_tasks(
 
 def comment_task(task_id: str, message: str, author: str = None, base_dir: str = ".") -> Task:
     task = read_task(task_id, base_dir)
+    normalized_message = _normalize_comment_message(message)
 
     comment_author = author
     if comment_author is None:
@@ -200,9 +223,11 @@ def comment_task(task_id: str, message: str, author: str = None, base_dir: str =
                 comment_author = lock.agent_id
         except Exception:
             comment_author = None
+    if comment_author is None:
+        comment_author = _default_comment_author()
 
     comment = {
-        "message": message,
+        "message": normalized_message,
         "timestamp": now_iso(),
     }
     if comment_author:
@@ -211,9 +236,9 @@ def comment_task(task_id: str, message: str, author: str = None, base_dir: str =
     task.comments.append(comment)
 
     if comment_author:
-        task.add_audit("comment", f"Comment added by {comment_author}: {message}")
+        task.add_audit("comment", f"Comment added by {comment_author}: {normalized_message}")
     else:
-        task.add_audit("comment", f"Comment added: {message}")
+        task.add_audit("comment", f"Comment added: {normalized_message}")
     _save_task(task, base_dir)
     return task
 
