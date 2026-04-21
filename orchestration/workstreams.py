@@ -80,6 +80,13 @@ def _collect_effective_workstreams(base_dir: str) -> dict:
             add_descendants_from_workspace(child.id, workspace_root)
             add_mounted_children(child)
 
+    def remove_descendants_from_workspace(parent_id: str, workspace_root: str):
+        workspace_workstreams = get_workspace_workstreams(workspace_root)
+        children = [w for w in workspace_workstreams if w.parent_id == parent_id]
+        for child in children:
+            by_id.pop(child.id, None)
+            remove_descendants_from_workspace(child.id, workspace_root)
+
     def add_mounted_children(ws: Workstream):
         mount_path = ws.mounted_workspace_path
         if not mount_path:
@@ -98,8 +105,12 @@ def _collect_effective_workstreams(base_dir: str) -> dict:
     for ws in get_workspace_workstreams(base_root):
         by_id[ws.id] = ws
 
-    # Mounts are descendants-only: only children/descendants are sourced from target roots.
+    # Mounts override local descendants: when a node is mounted, its subtree
+    # should be sourced from the mounted workspace.
     for ws in list(by_id.values()):
+        if ws.mounted_workspace_path:
+            local_root = _workspace_root_for(ws, base_root)
+            remove_descendants_from_workspace(ws.id, local_root)
         add_mounted_children(ws)
 
     return by_id

@@ -96,11 +96,18 @@ def handle_workstream(method, parts, params):
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         levels = list_workstream_hierarchy_env(parts[0], base_dir=WORKSPACE_DIR)
         effective = list_effective_workstream_env(parts[0], base_dir=WORKSPACE_DIR, include_system=False)
+        resolved_root = resolve_workstream_workspace(ws.id, base_dir=WORKSPACE_DIR)
+        if ws.mounted_workspace_path:
+            expanded = os.path.expanduser(ws.mounted_workspace_path)
+            if os.path.isabs(expanded):
+                resolved_root = os.path.abspath(expanded)
+            else:
+                resolved_root = os.path.abspath(os.path.join(resolved_root, expanded))
         return _ok({
             "id": ws.id,
             "name": ws.name,
             "mounted_workspace_path": ws.mounted_workspace_path,
-            "resolved_workspace_path": resolve_workstream_workspace(ws.id, base_dir=WORKSPACE_DIR),
+            "resolved_workspace_path": resolved_root,
             "effective_env": effective,
             "env_hierarchy": levels,
         })

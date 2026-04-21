@@ -254,3 +254,21 @@ class TestMountedWorkspaceDescendants:
 
         resolved = resolve_workstream_workspace(mounted_child.id, base_dir=workspace)
         assert resolved == str(mount_root.resolve())
+
+    def test_mounted_subtree_hides_local_descendants(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        local_child = create_workstream(name="local-child", parent_id=parent.id, base_dir=workspace)
+
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        mounted_child = create_workstream(name="mounted-child", parent_id=parent.id, base_dir=workspace)
+
+        all_ws = list_workstreams(base_dir=workspace)
+        ids = {w.id for w in all_ws}
+        assert parent.id in ids
+        assert mounted_child.id in ids
+        assert local_child.id not in ids
