@@ -29,6 +29,31 @@ def _default_comment_author() -> str:
     return None
 
 
+def _normalize_attachment_path(path: str) -> str:
+    """Normalize a task attachment path.
+
+    Attachments are logical artifact paths, so they should be stored as
+    workspace-relative artifact identifiers without a leading slash.
+    """
+    normalized = str(path or "").strip().lstrip("/")
+    if not normalized:
+        raise ValueError("Attachment path must be a non-empty artifact path")
+    return normalized
+
+
+def _normalize_attachment_list(paths: list) -> list:
+    """Normalize and deduplicate attachment paths while preserving order."""
+    normalized = []
+    seen = set()
+    for raw in paths or []:
+        path = _normalize_attachment_path(raw)
+        if path in seen:
+            continue
+        seen.add(path)
+        normalized.append(path)
+    return normalized
+
+
 def _tasks_dir(base_dir: str, ws_id: str) -> str:
     ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
     return os.path.join(ws_root, "workstreams", ws_id, "tasks")
@@ -65,6 +90,7 @@ def create_task(
     creator: str = None,
     scheduled_at: str = None,
     scheduled_action: dict = None,
+    attachments: list = None,
     base_dir: str = ".",
 ) -> Task:
     ws = read_workstream(workstream_id, base_dir)
@@ -82,8 +108,11 @@ def create_task(
         retry=RetryConfig.from_dict(retry) if retry else None,
         scheduled_at=scheduled_at,
         scheduled_action=scheduled_action,
+        attachments=_normalize_attachment_list(attachments),
     )
     task.add_audit("created", f"Task created with status '{initial_status}'")
+    if task.attachments:
+        task.add_audit("attachments_updated", f"Attachments set to {task.attachments}")
     if scheduled_at:
         task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
     _save_task(task, base_dir)
@@ -108,6 +137,7 @@ def update_task(
     tags: list = None,
     scheduled_at: str = None,
     scheduled_action: dict = None,
+    attachments: list = None,
     base_dir: str = ".",
 ) -> Task:
     task = read_task(task_id, base_dir)
@@ -137,6 +167,10 @@ def update_task(
         task.scheduled_at = scheduled_at
         task.scheduled_action = scheduled_action
         task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
+
+    if attachments is not None:
+        task.attachments = _normalize_attachment_list(attachments)
+        task.add_audit("attachments_updated", f"Attachments set to {task.attachments}")
 
     _save_task(task, base_dir)
 
@@ -239,6 +273,28 @@ def comment_task(task_id: str, message: str, author: str = None, base_dir: str =
     return task
 
 
+def attach_to_task(task_id: str, path: str, base_dir: str = ".") -> Task:
+    """Attach an artifact path to a task if it is not already attached."""
+    task = read_task(task_id, base_dir)
+    normalized_path = _normalize_attachment_path(path)
+    if normalized_path not in task.attachments:
+        task.attachments.append(normalized_path)
+        task.add_audit("attachment_added", f"Attachment added: {normalized_path}")
+        _save_task(task, base_dir)
+    return task
+
+
+def detach_from_task(task_id: str, path: str, base_dir: str = ".") -> Task:
+    """Detach an artifact path from a task."""
+    task = read_task(task_id, base_dir)
+    normalized_path = _normalize_attachment_path(path)
+    if normalized_path in task.attachments:
+        task.attachments = [p for p in task.attachments if p != normalized_path]
+        task.add_audit("attachment_removed", f"Attachment removed: {normalized_path}")
+        _save_task(task, base_dir)
+    return task
+
+
 def archive_task(task_id: str, base_dir: str = ".") -> dict:
     result = _find_task_file(task_id, base_dir)
     if result is None:
@@ -267,11 +323,109 @@ def clear_schedule(task_id: str, base_dir: str = ".") -> Task:
     return task
 
 
-def clear_schedule(task_id: str, base_dir: str = ".") -> Task:
-    """Clear the scheduled_at and scheduled_action fields from a task."""
+def move_task(
+    task_id: str,
+    target_workstream_id: str,
+    target_status: str = None,
+    base_dir: str = ".",
+) -> Task:
+    """Move a task to a different workstream (or to a new state in the same workstream).
+
+    When moving cross-workstream the full task file is written into the target
+    workstream and the original is deleted.  Within the same workstream this is
+    equivalent to update_task with a status override that skips state-machine
+    validation (because we're treating it as a board-level drag, same as Trello).
+    """
     task = read_task(task_id, base_dir)
-    task.scheduled_at = None
-    task.scheduled_action = None
-    task.add_audit("schedule_cleared", "Scheduled action cleared")
-    _save_task(task, base_dir)
+    original_ws_id = task.workstream_id
+    cross_ws = target_workstream_id != original_ws_id
+
+    target_ws = read_workstream(target_workstream_id, base_dir)
+
+    if target_status is None:
+        target_status = target_ws.initial_status()
+
+    # Validate target status exists in the target workstream
+    if target_status not in target_ws.task_states:
+        raise ValueError(
+            f"State '{target_status}' does not exist in workstream '{target_ws.name}'. "
+            f"Valid states: {list(target_ws.task_states.keys())}"
+        )
+
+    old_status = task.status
+    task.workstream_id = target_workstream_id
+    task.status = target_status
+
+    if cross_ws:
+        task.add_audit(
+            "moved",
+            f"Moved from workstream '{original_ws_id}' to '{target_workstream_id}' "
+            f"with status '{target_status}'",
+        )
+        # Write into target workstream first, then remove from source
+        _save_task(task, base_dir)
+        src_path = _task_path(base_dir, original_ws_id, task_id)
+        if os.path.exists(src_path):
+            os.remove(src_path)
+        # Remove source lock file if present
+        lock_path = src_path + ".lock"
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
+    else:
+        task.add_audit(
+            "status_change",
+            f"Status changed from '{old_status}' to '{target_status}' (moved on board)",
+        )
+        _save_task(task, base_dir)
+
     return task
+
+
+def duplicate_task(
+    task_id: str,
+    target_workstream_id: str = None,
+    target_status: str = None,
+    base_dir: str = ".",
+) -> Task:
+    """Duplicate a task into the same or a different workstream.
+
+    The duplicate receives:
+    - A new unique ID
+    - The same title, description, tags, and comments as the original
+    - A fresh audit trail (no history from the original)
+    - An initial audit entry stating it was duplicated from <original_id>
+
+    Audit trail is intentionally NOT copied.
+    """
+    import copy
+    source = read_task(task_id, base_dir)
+    dest_ws_id = target_workstream_id or source.workstream_id
+    dest_ws = read_workstream(dest_ws_id, base_dir)
+
+    if target_status is None:
+        target_status = dest_ws.initial_status()
+
+    if target_status not in dest_ws.task_states:
+        raise ValueError(
+            f"State '{target_status}' does not exist in workstream '{dest_ws.name}'. "
+            f"Valid states: {list(dest_ws.task_states.keys())}"
+        )
+
+    new_task = Task(
+        id=new_id(),
+        workstream_id=dest_ws_id,
+        title=source.title,
+        description=source.description,
+        status=target_status,
+        creator=source.creator,
+        tags=list(source.tags),
+        comments=copy.deepcopy(source.comments),
+        attachments=list(source.attachments),
+        # audit intentionally empty — fresh trail below
+    )
+    new_task.add_audit(
+        "created",
+        f"Duplicated from task '{task_id}' in workstream '{source.workstream_id}'",
+    )
+    _save_task(new_task, base_dir)
+    return new_task

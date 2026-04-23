@@ -238,6 +238,22 @@ Notes:
 - For agent workflows, always pass `--author` so comments are attributed correctly in the UI.
 - Do not prefix comment bodies with dates like `[2026-04-21]`; timestamps are stored separately.
 
+#### task attach — Attach an artifact to a task
+
+```bash
+python -m orchestration.cli task attach TASK_ID --path <artifact_path>
+```
+
+Adds an artifact path to the task's attachment list. After saving any artifact via the orchestration system, attach it to any Task(s) you were provided with so that other agents and human users can easily find your outputs. This applies to all artifact types — markdown documents, images (SVG, PNG, etc.), and any other files.
+
+#### task detach — Remove an artifact attachment from a task
+
+```bash
+python -m orchestration.cli task detach TASK_ID --path <artifact_path>
+```
+
+---
+
 #### task archive — Delete a task (and its lock)
 
 ```bash

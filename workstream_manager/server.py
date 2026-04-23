@@ -11,6 +11,8 @@ Usage:
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -38,10 +40,13 @@ from orchestration.workstreams import (
 from orchestration.tasks import (
     create_task, read_task, update_task, list_tasks,
     comment_task, archive_task, get_audit, clear_schedule,
+    move_task, duplicate_task, attach_to_task, detach_from_task,
 )
 from orchestration.locks import acquire_lock, release_lock, lock_status
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
+from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
+from orchestration.agents import list_active_agents, tail_active_agent, list_agent_runs, get_agent_run
 
 
 def _ok(data):
@@ -50,6 +55,34 @@ def _ok(data):
 
 def _err(msg, code="ERROR"):
     return 400, json.dumps({"status": "error", "message": msg, "code": code})
+
+
+def _run_orchestration_cli(args: list[str]) -> dict:
+    """Run orchestration CLI and return parsed JSON payload.
+
+    Keeps the Workspace Manager decoupled from orchestration internals for
+    feature-specific endpoints that can be served via CLI contracts.
+    """
+    cmd = [sys.executable, "-m", "orchestration.cli", "--base-dir", WORKSPACE_DIR] + args
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        cwd=WORKSPACE_DIR,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or "Orchestration CLI command failed"
+        try:
+            parsed_err = json.loads(result.stderr)
+            message = parsed_err.get("message", message)
+        except Exception:
+            pass
+        raise RuntimeError(message)
+
+    payload = json.loads(result.stdout)
+    if payload.get("status") != "ok":
+        raise RuntimeError(payload.get("message", "Orchestration CLI returned an error"))
+    return payload.get("data")
 
 
 # ── Route handlers ───────────────────────────────────────────────
@@ -143,6 +176,18 @@ def handle_workstream(method, parts, params):
 
 def handle_task(method, parts, params):
     m = method
+
+    def _parse_attachments(raw):
+        if raw is None:
+            return None
+        if isinstance(raw, list):
+            return [str(v).strip() for v in raw if str(v).strip()]
+        if isinstance(raw, str):
+            if not raw.strip():
+                return []
+            return [p.strip() for p in raw.split(",") if p.strip()]
+        return [str(raw).strip()]
+
     if m == "list" and parts:
         kwargs = {"workstream_id": parts[0], "base_dir": WORKSPACE_DIR}
         if "status" in params:
@@ -164,6 +209,8 @@ def handle_task(method, parts, params):
             kwargs["scheduled_at"] = params["scheduled-at"]
         if "scheduled-action" in params:
             kwargs["scheduled_action"] = json.loads(params["scheduled-action"])
+        if "attachments" in params:
+            kwargs["attachments"] = _parse_attachments(params.get("attachments"))
         task = create_task(**kwargs)
         return _ok(task.to_dict())
     elif m == "update" and parts:
@@ -178,7 +225,19 @@ def handle_task(method, parts, params):
             kwargs["scheduled_at"] = params["scheduled-at"]
         if "scheduled-action" in params:
             kwargs["scheduled_action"] = json.loads(params["scheduled-action"])
+        if "attachments" in params:
+            kwargs["attachments"] = _parse_attachments(params.get("attachments"))
         task = update_task(**kwargs)
+        return _ok(task.to_dict())
+    elif m == "attach" and parts:
+        if "path" not in params:
+            return _err("Missing required parameter: path")
+        task = attach_to_task(parts[0], params["path"], base_dir=WORKSPACE_DIR)
+        return _ok(task.to_dict())
+    elif m == "detach" and parts:
+        if "path" not in params:
+            return _err("Missing required parameter: path")
+        task = detach_from_task(parts[0], params["path"], base_dir=WORKSPACE_DIR)
         return _ok(task.to_dict())
     elif m == "comment" and parts:
         task = comment_task(
@@ -196,6 +255,26 @@ def handle_task(method, parts, params):
         return _ok(audit)
     elif m == "clear-schedule" and parts:
         task = clear_schedule(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(task.to_dict())
+    elif m == "move" and parts:
+        if "workstream_id" not in params:
+            return _err("Missing required parameter: workstream_id")
+        kwargs = {
+            "task_id": parts[0],
+            "target_workstream_id": params["workstream_id"],
+            "base_dir": WORKSPACE_DIR,
+        }
+        if "status" in params:
+            kwargs["target_status"] = params["status"]
+        task = move_task(**kwargs)
+        return _ok(task.to_dict())
+    elif m == "duplicate" and parts:
+        kwargs = {"task_id": parts[0], "base_dir": WORKSPACE_DIR}
+        if "workstream_id" in params:
+            kwargs["target_workstream_id"] = params["workstream_id"]
+        if "status" in params:
+            kwargs["target_status"] = params["status"]
+        task = duplicate_task(**kwargs)
         return _ok(task.to_dict())
     return _err(f"Unknown task method: {m}")
 
@@ -255,17 +334,42 @@ def handle_scheduler(method, parts, params):
     return _err(f"Unknown scheduler method: {method}")
 
 
+def handle_agent(method, parts, params):
+    if method == "active":
+        runs = list_active_agents(base_dir=WORKSPACE_DIR)
+        return _ok(runs)
+    if method == "runs":
+        limit = int(params.get("limit", "100"))
+        runs = list_agent_runs(limit=limit, base_dir=WORKSPACE_DIR)
+        return _ok(runs)
+    if method == "run" and parts:
+        details = get_agent_run(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(details)
+    if method == "tail" and parts:
+        run_id = parts[0]
+        lines = int(params.get("lines", "200"))
+        tail = tail_active_agent(run_id, lines=lines, base_dir=WORKSPACE_DIR)
+        return _ok(tail)
+    return _err(f"Unknown agent method: {method}")
+
+
 def handle_poll(method, parts, params):
     """Combined polling endpoint — returns workstreams, counts, scheduler, and optionally board in one call."""
     wss = list_workstreams(base_dir=WORKSPACE_DIR)
     counts = {}
     for ws in wss:
         counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
+    try:
+        _runs = list_agent_runs(limit=200, base_dir=WORKSPACE_DIR)
+        active_run_count = sum(1 for r in _runs if r.get("status") == "running")
+    except Exception:
+        active_run_count = 0
     result = {
         "workstreams": [w.to_dict() for w in wss],
         "counts": counts,
         "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
         "active_triggers": get_active_triggers(),
+        "active_agent_runs": active_run_count,
     }
     # If a board ID is requested, include it
     ws_id = params.get("board") or (method if method != "all" else None)
@@ -312,6 +416,75 @@ def handle_retry(method, parts, params):
     return _err(f"Unknown retry method: {method}")
 
 
+def handle_artifact(method, parts, params):
+    m = method
+    if m == "read":
+        path = params.get("path")
+        if not path:
+            return _err("Missing required parameter: path", code="INVALID")
+
+        workstream_id = params.get("workstream_id") or None
+        artifacts_root, relative_path = _resolve_artifact_root(
+            path,
+            base_dir=WORKSPACE_DIR,
+            workstream_id=workstream_id,
+        )
+        resolved_path = _validate_path(artifacts_root, relative_path)
+        content = read_artifact(path, base_dir=WORKSPACE_DIR, workstream_id=workstream_id)
+        return _ok({
+            "path": path,
+            "workstream_id": workstream_id,
+            "resolved_path": resolved_path,
+            "content": content,
+        })
+    if m == "open":
+        path = params.get("path")
+        if not path:
+            return _err("Missing required parameter: path", code="INVALID")
+
+        workstream_id = params.get("workstream_id") or None
+        artifacts_root, relative_path = _resolve_artifact_root(
+            path,
+            base_dir=WORKSPACE_DIR,
+            workstream_id=workstream_id,
+        )
+        resolved_path = _validate_path(artifacts_root, relative_path)
+        if not os.path.exists(resolved_path):
+            raise FileNotFoundError(f"Artifact not found: {path}")
+
+        launch_errors = []
+
+        code_bin = shutil.which("code")
+        if code_bin:
+            try:
+                subprocess.Popen([code_bin, "-r", resolved_path], cwd=WORKSPACE_DIR)
+                return _ok({
+                    "opened": True,
+                    "path": path,
+                    "workstream_id": workstream_id,
+                    "resolved_path": resolved_path,
+                    "method": "code-cli",
+                })
+            except Exception as e:
+                launch_errors.append(f"code-cli: {e}")
+
+        # macOS fallback: ask Finder/LaunchServices to open file in VS Code.
+        try:
+            subprocess.Popen(["open", "-a", "Visual Studio Code", resolved_path], cwd=WORKSPACE_DIR)
+            return _ok({
+                "opened": True,
+                "path": path,
+                "workstream_id": workstream_id,
+                "resolved_path": resolved_path,
+                "method": "open-app",
+            })
+        except Exception as e:
+            launch_errors.append(f"open-app: {e}")
+
+        raise RuntimeError("Failed to open file in VS Code. " + " | ".join(launch_errors))
+    return _err(f"Unknown artifact method: {m}")
+
+
 ROUTE_MAP = {
     "board": lambda m, p, q: handle_board(p, q),
     "poll": lambda m, p, q: handle_poll(m, p, q),
@@ -320,8 +493,10 @@ ROUTE_MAP = {
     "lock": handle_lock,
     "trigger": handle_trigger,
     "scheduler": handle_scheduler,
+    "agent": handle_agent,
     "audit": handle_audit,
     "retry": handle_retry,
+    "artifact": handle_artifact,
 }
 
 

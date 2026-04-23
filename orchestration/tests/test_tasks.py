@@ -10,7 +10,13 @@ from orchestration.tasks import (
     comment_task,
     archive_task,
     get_audit,
+    move_task,
+    duplicate_task,
+    attach_to_task,
+    detach_from_task,
 )
+from orchestration.artifacts import create_artifact
+from orchestration.agents import _read_task_attachments_for_prompt
 
 
 @pytest.fixture
@@ -41,6 +47,15 @@ class TestCreateTask:
     def test_create_with_tags(self, workspace, ws):
         task = create_task(ws.id, title="T", tags=["urgent", "sales"], base_dir=workspace)
         assert task.tags == ["urgent", "sales"]
+
+    def test_create_with_attachments(self, workspace, ws):
+        task = create_task(
+            ws.id,
+            title="T",
+            attachments=["Stage 2 Research/brief.md", "/Stage 2 Research/brief.md"],
+            base_dir=workspace,
+        )
+        assert task.attachments == ["Stage 2 Research/brief.md"]
 
     def test_create_adds_audit(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
@@ -85,6 +100,15 @@ class TestUpdateTask:
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = update_task(task.id, tags=["new", "tags"], base_dir=workspace)
         assert updated.tags == ["new", "tags"]
+
+    def test_update_attachments(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = update_task(
+            task.id,
+            attachments=["Theses/one.md", "Theses/two.md"],
+            base_dir=workspace,
+        )
+        assert updated.attachments == ["Theses/one.md", "Theses/two.md"]
 
     def test_update_adds_audit_entry(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
@@ -175,6 +199,37 @@ class TestCommentTask:
         assert updated.comments[0]["author"] == "jeremy"
 
 
+class TestTaskAttachments:
+    def test_attach_to_task(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = attach_to_task(task.id, "Theses/proptech.md", base_dir=workspace)
+        assert updated.attachments == ["Theses/proptech.md"]
+
+    def test_attach_is_deduplicated(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        attach_to_task(task.id, "Theses/proptech.md", base_dir=workspace)
+        updated = attach_to_task(task.id, "/Theses/proptech.md", base_dir=workspace)
+        assert updated.attachments == ["Theses/proptech.md"]
+
+    def test_detach_from_task(self, workspace, ws):
+        task = create_task(ws.id, title="T", attachments=["Theses/a.md"], base_dir=workspace)
+        updated = detach_from_task(task.id, "Theses/a.md", base_dir=workspace)
+        assert updated.attachments == []
+
+    def test_attachment_prompt_includes_artifact_content(self, workspace, ws):
+        create_artifact("Theses/future.md", "# Future\nAI-first workflows", base_dir=workspace)
+        task = create_task(ws.id, title="T", attachments=["Theses/future.md"], base_dir=workspace)
+        section = _read_task_attachments_for_prompt(task, workspace)
+        assert "Task attachments" in section
+        assert "Path: Theses/future.md" in section
+        assert "AI-first workflows" in section
+
+    def test_attachment_prompt_handles_missing_artifact(self, workspace, ws):
+        task = create_task(ws.id, title="T", attachments=["missing.md"], base_dir=workspace)
+        section = _read_task_attachments_for_prompt(task, workspace)
+        assert "Content unavailable" in section
+
+
 class TestArchiveTask:
     def test_archive(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
@@ -198,3 +253,96 @@ class TestGetAudit:
         assert audit[0]["type"] == "created"
         assert audit[1]["type"] == "status_change"
         assert audit[2]["type"] == "comment"
+
+
+class TestMoveTask:
+    @pytest.fixture
+    def ws2(self, workspace):
+        states = {"Backlog": ["Active"], "Active": ["Closed"], "Closed": []}
+        return create_workstream(name="Target WS", task_states=states, base_dir=workspace)
+
+    def test_move_cross_workstream(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="Move Me", base_dir=workspace)
+        moved = move_task(task.id, target_workstream_id=ws2.id, base_dir=workspace)
+        assert moved.workstream_id == ws2.id
+        assert moved.status == "Backlog"  # initial state of target
+        # task should now exist in target workstream
+        reloaded = read_task(task.id, base_dir=workspace)
+        assert reloaded.workstream_id == ws2.id
+        # audit trail should contain move entry
+        assert any(a.type == "moved" for a in reloaded.audit)
+
+    def test_move_cross_workstream_to_specific_state(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        moved = move_task(task.id, target_workstream_id=ws2.id, target_status="Active", base_dir=workspace)
+        assert moved.status == "Active"
+
+    def test_move_same_workstream(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        moved = move_task(task.id, target_workstream_id=ws.id, target_status="In Progress", base_dir=workspace)
+        assert moved.status == "In Progress"
+        assert moved.workstream_id == ws.id
+        assert any(a.type == "status_change" for a in moved.audit)
+
+    def test_move_invalid_state_raises(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        with pytest.raises(ValueError, match="does not exist"):
+            move_task(task.id, target_workstream_id=ws2.id, target_status="NonExistent", base_dir=workspace)
+
+    def test_move_removes_source_file(self, workspace, ws, ws2):
+        import os
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        src_path = os.path.join(workspace, "workstreams", ws.id, "tasks", task.id + ".yaml")
+        assert os.path.exists(src_path)
+        move_task(task.id, target_workstream_id=ws2.id, base_dir=workspace)
+        assert not os.path.exists(src_path)
+
+
+class TestDuplicateTask:
+    @pytest.fixture
+    def ws2(self, workspace):
+        states = {"Backlog": ["Active"], "Active": ["Closed"], "Closed": []}
+        return create_workstream(name="Dup Target WS", task_states=states, base_dir=workspace)
+
+    def test_duplicate_same_workstream(self, workspace, ws):
+        task = create_task(ws.id, title="Original", description="Desc", tags=["a"], base_dir=workspace)
+        comment_task(task.id, "Hello", base_dir=workspace)
+        dup = duplicate_task(task.id, base_dir=workspace)
+        assert dup.id != task.id
+        assert dup.title == task.title
+        assert dup.description == task.description
+        assert dup.tags == task.tags
+        assert len(dup.comments) == 1
+        assert dup.workstream_id == task.workstream_id
+        # audit should be fresh — only the "created" duplicate entry
+        assert len(dup.audit) == 1
+        assert dup.audit[0].type == "created"
+        assert task.id in dup.audit[0].description
+
+    def test_duplicate_cross_workstream(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="Cross Dup", base_dir=workspace)
+        dup = duplicate_task(task.id, target_workstream_id=ws2.id, base_dir=workspace)
+        assert dup.workstream_id == ws2.id
+        assert dup.status == "Backlog"
+
+    def test_duplicate_to_specific_state(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        dup = duplicate_task(task.id, target_workstream_id=ws2.id, target_status="Active", base_dir=workspace)
+        assert dup.status == "Active"
+
+    def test_duplicate_invalid_state_raises(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        with pytest.raises(ValueError, match="does not exist"):
+            duplicate_task(task.id, target_workstream_id=ws2.id, target_status="BadState", base_dir=workspace)
+
+    def test_duplicate_original_unmodified(self, workspace, ws):
+        task = create_task(ws.id, title="Original", base_dir=workspace)
+        duplicate_task(task.id, base_dir=workspace)
+        original = read_task(task.id, base_dir=workspace)
+        assert original.title == "Original"
+        assert len(original.audit) == 1  # only the original "created" entry
+
+    def test_duplicate_copies_attachments(self, workspace, ws):
+        task = create_task(ws.id, title="T", attachments=["Theses/x.md"], base_dir=workspace)
+        dup = duplicate_task(task.id, base_dir=workspace)
+        assert dup.attachments == ["Theses/x.md"]

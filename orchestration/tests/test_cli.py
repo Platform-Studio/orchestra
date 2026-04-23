@@ -5,6 +5,7 @@ import subprocess
 import sys
 import os
 import pytest
+import yaml
 from pathlib import Path
 
 from orchestration.cli import build_parser, main
@@ -172,6 +173,38 @@ class TestCLITask:
         result = run_cli("task", "archive", task_id, base_dir=workspace)
         assert result.returncode == 0
 
+    def test_create_task_with_attachments(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli(
+            "task", "create", ws_id,
+            "--title", "My Task",
+            "--attachment", "Theses/a.md",
+            "--attachment", "Theses/b.md",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["attachments"] == ["Theses/a.md", "Theses/b.md"]
+
+    def test_attach_and_detach_task_attachment(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("task", "create", ws_id, "--title", "My Task", base_dir=workspace)
+        task_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("task", "attach", task_id, "--path", "Theses/attach.md", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["attachments"] == ["Theses/attach.md"]
+
+        result = run_cli("task", "detach", task_id, "--path", "Theses/attach.md", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["attachments"] == []
+
     def test_invalid_transition_error(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS",
                          "--states", json.dumps({"Open": ["Closed"], "Closed": []}),
@@ -232,6 +265,35 @@ class TestCLIArtifact:
         result = run_cli("artifact", "list", base_dir=workspace)
         assert result.returncode == 0
         assert "test.md" in json.loads(result.stdout)["data"]
+
+    def test_artifact_read_logs_audit_when_run_context_present(self, workspace, monkeypatch):
+        run_cli("artifact", "create", "--path", "x.md", "--content", "hello", base_dir=workspace)
+        monkeypatch.setenv("ORCHESTRATION_AGENT_RUN_ID", "run-123")
+        monkeypatch.setenv("ORCHESTRATION_AGENT_NAME", "JTBD Analyst")
+        monkeypatch.setenv("ORCHESTRATION_AGENT_TASK_IDS", '["task-1","task-2"]')
+        monkeypatch.setenv("ORCHESTRATION_AGENT_WORKSTREAM_ID", "ws-9")
+
+        result = run_cli("artifact", "read", "x.md", base_dir=workspace)
+        assert result.returncode == 0
+
+        from orchestration.workspace_audit import get_audit_log
+        entries = get_audit_log(base_dir=workspace, event_type="artifact_read")
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["run_id"] == "run-123"
+        assert e["agent"] == "JTBD Analyst"
+        assert e["artifact_path"] == "x.md"
+        assert e["workstream_id"] == "ws-9"
+        assert e["task_ids"] == ["task-1", "task-2"]
+
+    def test_artifact_read_no_agent_context_does_not_log(self, workspace):
+        run_cli("artifact", "create", "--path", "y.md", "--content", "hello", base_dir=workspace)
+        result = run_cli("artifact", "read", "y.md", base_dir=workspace)
+        assert result.returncode == 0
+
+        from orchestration.workspace_audit import get_audit_log
+        entries = get_audit_log(base_dir=workspace, event_type="artifact_read")
+        assert entries == []
 
 
 class TestCLITrigger:
@@ -317,6 +379,40 @@ class TestCLITriggerPrompt:
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert "prompt" not in data
+
+
+class TestCLIAgentRuntime:
+    def test_agent_active_empty(self, workspace):
+        result = run_cli("agent", "active", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["status"] == "ok"
+        assert data["data"] == []
+
+    def test_agent_tail_reads_recent_lines(self, workspace):
+        state_dir = Path(workspace) / ".orchestration"
+        runs_dir = state_dir / "agent_runs"
+        runs_dir.mkdir(parents=True)
+
+        run_id = "run-test-001"
+        log_path = runs_dir / f"{run_id}.log"
+        log_path.write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+
+        active_yaml = state_dir / "active_agents.yaml"
+        active_yaml.write_text(yaml.safe_dump({
+            "runs": [{
+                "run_id": run_id,
+                "agent": "seo_indexer",
+                "started_at": "2026-04-22T10:00:00+00:00",
+                "log_path": str(Path(".orchestration") / "agent_runs" / f"{run_id}.log"),
+            }]
+        }, sort_keys=False), encoding="utf-8")
+
+        result = run_cli("agent", "tail", run_id, "--lines", "2", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["status"] == "ok"
+        assert data["data"]["tail"] == "line-2\nline-3\n"
 
 
 class TestCLITaskSchedule:

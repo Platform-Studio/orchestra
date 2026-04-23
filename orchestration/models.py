@@ -181,6 +181,7 @@ class Task:
     audit: list = field(default_factory=list)
     scheduled_at: str = None       # ISO datetime for one-shot scheduled action
     scheduled_action: dict = None  # {"type": "run_agent", "agent": "..."} or {"type": "run_command", "command": "..."}
+    attachments: list = field(default_factory=list)  # artifact paths
     retry_count: int = 0
     last_failure_at: str = None
 
@@ -193,6 +194,7 @@ class Task:
             "tags": self.tags,
             "comments": self.comments,
             "audit": [a.to_dict() for a in self.audit],
+            "attachments": self.attachments,
         }
         if self.description is not None:
             d["description"] = self.description
@@ -229,6 +231,7 @@ class Task:
             audit=audit,
             scheduled_at=data.get("scheduled_at"),
             scheduled_action=data.get("scheduled_action"),
+            attachments=data.get("attachments", []),
             retry_count=data.get("retry_count", 0),
             last_failure_at=data.get("last_failure_at"),
         )

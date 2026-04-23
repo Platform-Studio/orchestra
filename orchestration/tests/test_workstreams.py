@@ -182,6 +182,31 @@ class TestWorkstreamEnv:
         assert "MODEL" not in env_map
         assert env_map["TEMPERATURE"] == "0.1"
 
+    def test_mounted_root_env_is_included_for_descendants(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        set_workstream_env_key(parent.id, "SHARED", "parent", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        # Mounted root env should be part of descendant resolution.
+        (mount_root / ".env").write_text("MOUNT_ONLY=from-mount\nSHARED=from-mount\n")
+
+        child = create_workstream(name="Programmatic SEO", parent_id=parent.id, base_dir=workspace)
+
+        assert resolve_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace) == "from-mount"
+        assert resolve_workstream_env_key(child.id, "SHARED", base_dir=workspace) == "from-mount"
+
+        # Descendant override still wins over mounted root.
+        set_workstream_env_key(child.id, "SHARED", "child", base_dir=workspace)
+        assert resolve_workstream_env_key(child.id, "SHARED", base_dir=workspace) == "child"
+
+        # Descendant mask still blocks mounted/root/system fallback.
+        unset_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace)
+        assert resolve_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace) is None
+
 
 class TestMountedWorkspaceDescendants:
     def test_lists_and_reads_mounted_children(self, workspace, tmp_path):

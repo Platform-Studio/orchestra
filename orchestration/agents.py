@@ -7,6 +7,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import uuid
+from datetime import datetime, timezone
 import yaml
 
 try:
@@ -17,6 +20,277 @@ except ImportError:
 
 # Maximum bytes of agent output to store in audit trail
 MAX_AUDIT_OUTPUT = 10_000
+
+_ACTIVE_AGENTS_LOCK = threading.Lock()
+
+
+def _compact_json(value) -> str:
+    """Compact JSON for safe env var transport."""
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _state_dir(base_dir: str) -> str:
+    return os.path.join(base_dir, ".orchestration")
+
+
+def _active_agents_path(base_dir: str) -> str:
+    return os.path.join(_state_dir(base_dir), "active_agents.yaml")
+
+
+def _agent_runs_dir(base_dir: str) -> str:
+    return os.path.join(_state_dir(base_dir), "agent_runs")
+
+
+def _agent_run_meta_path(base_dir: str, run_id: str) -> str:
+    return os.path.join(_agent_runs_dir(base_dir), f"{run_id}.json")
+
+
+def _ensure_state_dirs(base_dir: str) -> None:
+    os.makedirs(_state_dir(base_dir), exist_ok=True)
+    os.makedirs(_agent_runs_dir(base_dir), exist_ok=True)
+
+
+def _write_run_meta(base_dir: str, run_id: str, data: dict) -> None:
+    _ensure_state_dirs(base_dir)
+    path = _agent_run_meta_path(base_dir, run_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _read_run_meta(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _read_run_meta_by_id(base_dir: str, run_id: str) -> dict:
+    path = _agent_run_meta_path(base_dir, run_id)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Agent run '{run_id}' not found")
+    return _read_run_meta(path)
+
+
+def _workstream_path(base_dir: str, ws_id: str) -> str:
+    if not ws_id:
+        return ""
+    from .workstreams import list_workstreams
+
+    by_id = {ws.id: ws for ws in list_workstreams(base_dir=base_dir)}
+    ws = by_id.get(ws_id)
+    if ws is None:
+        return ws_id
+
+    names = []
+    current = ws
+    visited = set()
+    while current and current.id not in visited:
+        visited.add(current.id)
+        names.append(current.name)
+        if not current.parent_id:
+            break
+        current = by_id.get(current.parent_id)
+    return " / ".join(reversed(names))
+
+
+def _read_active_agents(base_dir: str) -> list:
+    path = _active_agents_path(base_dir)
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        raw = yaml.safe_load(f) or {}
+    runs = raw.get("runs")
+    if not isinstance(runs, list):
+        return []
+    return runs
+
+
+def _write_active_agents(base_dir: str, runs: list) -> None:
+    _ensure_state_dirs(base_dir)
+    path = _active_agents_path(base_dir)
+    payload = {"runs": runs}
+    with open(path, "w") as f:
+        yaml.safe_dump(payload, f, sort_keys=False)
+
+
+def _register_active_agent(base_dir: str, run: dict) -> None:
+    with _ACTIVE_AGENTS_LOCK:
+        runs = _read_active_agents(base_dir)
+        runs = [r for r in runs if r.get("run_id") != run.get("run_id")]
+        runs.append(run)
+        _write_active_agents(base_dir, runs)
+
+
+def _unregister_active_agent(base_dir: str, run_id: str) -> None:
+    with _ACTIVE_AGENTS_LOCK:
+        runs = _read_active_agents(base_dir)
+        runs = [r for r in runs if r.get("run_id") != run_id]
+        _write_active_agents(base_dir, runs)
+
+
+def list_active_agents(base_dir: str = ".") -> list:
+    with _ACTIVE_AGENTS_LOCK:
+        runs = _read_active_agents(base_dir)
+    return sorted(runs, key=lambda r: r.get("started_at", ""), reverse=True)
+
+
+def list_agent_runs(limit: int = 100, base_dir: str = ".") -> list:
+    """Return active + recent completed runs, sorted by start time desc."""
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+
+    _ensure_state_dirs(base_dir)
+    meta_paths = sorted(glob.glob(os.path.join(_agent_runs_dir(base_dir), "*.json")))
+    runs = []
+    for path in meta_paths:
+        try:
+            meta = _read_run_meta(path)
+            runs.append(meta)
+        except Exception:
+            continue
+
+    with _ACTIVE_AGENTS_LOCK:
+        active = {r.get("run_id"): r for r in _read_active_agents(base_dir)}
+
+    from .tasks import read_task
+
+    # Merge active runtime fields into persisted metadata.
+    seen_ids = {r.get("run_id") for r in runs}
+    for run in runs:
+        rid = run.get("run_id")
+        live = active.get(rid)
+        if live:
+            run["status"] = "running"
+            run["pid"] = live.get("pid")
+            run["log_path"] = live.get("log_path", run.get("log_path"))
+
+    # Include active runs even if metadata file does not exist yet.
+    for rid, live in active.items():
+        if rid in seen_ids:
+            continue
+        live_task_ids = list(live.get("task_ids") or [])
+        live_tasks = []
+        for tid in live_task_ids:
+            try:
+                t = read_task(tid, base_dir=base_dir)
+                live_tasks.append({"id": t.id, "title": t.title})
+            except Exception:
+                continue
+        runs.append({
+            "run_id": rid,
+            "agent": live.get("agent"),
+            "agent_ref": live.get("agent_ref"),
+            "workstream_id": live.get("workstream_id"),
+            "workstream_path": _workstream_path(base_dir, live.get("workstream_id")),
+            "task_ids": live_task_ids,
+            "tasks": live_tasks,
+            "prompt": "",
+            "system_prompt": "",
+            "log_path": live.get("log_path"),
+            "started_at": live.get("started_at"),
+            "ended_at": None,
+            "status": "running",
+            "exit_code": None,
+            "pid": live.get("pid"),
+        })
+
+    runs.sort(key=lambda r: r.get("started_at", ""), reverse=True)
+    return runs[:limit]
+
+
+def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
+    """Return full details for a single run including output and CLI calls."""
+    try:
+        run = _read_run_meta_by_id(base_dir, run_id)
+    except FileNotFoundError:
+        run = {
+            "run_id": run_id,
+            "agent": None,
+            "agent_ref": None,
+            "workstream_id": None,
+            "workstream_path": "",
+            "task_ids": [],
+            "tasks": [],
+            "prompt": "",
+            "system_prompt": "",
+            "log_path": None,
+            "started_at": None,
+            "ended_at": None,
+            "status": "running",
+            "exit_code": None,
+        }
+
+    with _ACTIVE_AGENTS_LOCK:
+        active = _read_active_agents(base_dir)
+    live = next((r for r in active if r.get("run_id") == run_id), None)
+    if live:
+        run["status"] = "running"
+        run["agent"] = run.get("agent") or live.get("agent")
+        run["agent_ref"] = run.get("agent_ref") or live.get("agent_ref")
+        run["workstream_id"] = run.get("workstream_id") or live.get("workstream_id")
+        run["workstream_path"] = run.get("workstream_path") or _workstream_path(base_dir, run.get("workstream_id"))
+        run["task_ids"] = run.get("task_ids") or list(live.get("task_ids") or [])
+        run["started_at"] = run.get("started_at") or live.get("started_at")
+        run["pid"] = live.get("pid")
+        run["log_path"] = live.get("log_path", run.get("log_path"))
+        if not run.get("tasks") and run.get("task_ids"):
+            from .tasks import read_task
+            task_titles = []
+            for tid in run.get("task_ids"):
+                try:
+                    t = read_task(tid, base_dir=base_dir)
+                    task_titles.append({"id": t.id, "title": t.title})
+                except Exception:
+                    continue
+            run["tasks"] = task_titles
+    elif not run.get("started_at"):
+        raise FileNotFoundError(f"Agent run '{run_id}' not found")
+
+    log_path = run.get("log_path")
+    output = ""
+    if log_path:
+        abs_log_path = log_path if os.path.isabs(log_path) else os.path.join(base_dir, log_path)
+        if os.path.exists(abs_log_path):
+            with open(abs_log_path, "r", encoding="utf-8", errors="replace") as f:
+                output = f.read()
+
+    from .workspace_audit import get_audit_log
+    cli_calls = get_audit_log(base_dir=base_dir, limit=2000, event_type="orchestration_cli_call")
+    cli_calls = [e for e in cli_calls if e.get("run_id") == run_id]
+    cli_calls = sorted(cli_calls, key=lambda e: e.get("timestamp", ""))
+
+    return {
+        "run": run,
+        "output": output,
+        "cli_calls": cli_calls,
+    }
+
+
+def tail_active_agent(run_id: str, lines: int = 200, base_dir: str = ".") -> dict:
+    if lines <= 0:
+        raise ValueError("lines must be > 0")
+
+    with _ACTIVE_AGENTS_LOCK:
+        runs = _read_active_agents(base_dir)
+    run = next((r for r in runs if r.get("run_id") == run_id), None)
+    if run is None:
+        raise FileNotFoundError(f"Active agent run '{run_id}' not found")
+
+    log_path = run.get("log_path")
+    if not log_path:
+        raise FileNotFoundError(f"No log path available for run '{run_id}'")
+
+    abs_log_path = log_path if os.path.isabs(log_path) else os.path.join(base_dir, log_path)
+    if not os.path.exists(abs_log_path):
+        raise FileNotFoundError(f"Log file not found for run '{run_id}'")
+
+    with open(abs_log_path, "r", encoding="utf-8", errors="replace") as f:
+        all_lines = f.readlines()
+
+    tail_text = "".join(all_lines[-lines:])
+    return {
+        "run": run,
+        "tail": tail_text,
+        "line_count": min(lines, len(all_lines)),
+    }
 
 
 def _get_model() -> str:
@@ -179,6 +453,8 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
         "- `task update <task_id> --status <new_status>` — transition a task\n"
         "- `task comment <task_id> --message '<msg>' --author '<agent_name>'` — add a comment with author\n"
+        "- `task attach <task_id> --path '<artifact_path>'` — attach an artifact to a task (REQUIRED after creating any artifact)\n"
+        "- `task detach <task_id> --path '<artifact_path>'` — remove an artifact attachment from a task\n"
         "- `task list <workstream_id>` — list tasks in a workstream\n"
         "- `artifact create --path '<path>' --content '<content>'` — save an artifact\n"
         "- `artifact read '<path>'` — read an artifact\n"
@@ -188,6 +464,35 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
     )
 
     return "\n".join(parts)
+
+
+def _read_task_attachments_for_prompt(task, base_dir: str, max_chars_per_attachment: int = 12000) -> str:
+    """Return a prompt section with attachment paths and their artifact contents.
+
+    Attachments are artifact paths stored on the task. Their contents are injected
+    directly into the agent prompt so task context does not depend on separate reads.
+    """
+    attachments = list(getattr(task, "attachments", []) or [])
+    if not attachments:
+        return ""
+
+    from .artifacts import read_artifact
+
+    lines = ["Task attachments (artifact paths + inlined content):"]
+    for path in attachments:
+        lines.append(f"- Path: {path}")
+        try:
+            content = read_artifact(path, base_dir=base_dir, workstream_id=task.workstream_id)
+            clipped = content[:max_chars_per_attachment]
+            if len(content) > max_chars_per_attachment:
+                clipped += f"\n... (truncated, {len(content)} total chars)"
+            lines.append("  Content:")
+            lines.append("```")
+            lines.append(clipped)
+            lines.append("```")
+        except Exception as exc:
+            lines.append(f"  Content unavailable: {exc}")
+    return "\n".join(lines)
 
 
 # Default agent execution timeout in seconds (30 minutes)
@@ -236,12 +541,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     if workstream_id:
         ws = read_workstream(workstream_id, base_dir)
 
-    # Write task IDs to a temp file for the agent to reference
+    # Write task IDs to a temp file for the agent to reference (always, even for single task)
     task_file_path = None
-    if task_ids:
-        fd, task_file_path = tempfile.mkstemp(suffix=".json", prefix="agent_tasks_")
-        with os.fdopen(fd, "w") as f:
-            json.dump({"task_ids": task_ids, "workstream_id": workstream_id}, f)
+    run_id = None
+    log_path_rel = None
+    run_meta = None
+    fd, task_file_path = tempfile.mkstemp(suffix=".json", prefix="agent_tasks_")
+    with os.fdopen(fd, "w") as f:
+        json.dump({"task_ids": task_ids, "workstream_id": workstream_id}, f)
 
     try:
         # Build system prompt from agent definition + tool docs
@@ -257,24 +564,51 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"in workstream '{ws.name}' (ID: {ws.id}).\n"
                     f"Current status: {task.status}\n"
                     f"Valid next states: {valid_transitions}\n\n"
+                    f"Task IDs file: {task_file_path}\n\n"
                     f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                    f"=== MANDATORY INITIAL STEPS (Execute these before any analysis) ===\n"
+                    f"1. EXECUTE: python -m orchestration.cli task read {task.id}\n"
+                    f"2. Read the complete task output including all comments, audit entries, and artifact references\n"
+                    f"3. For EACH artifact path mentioned in the task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>'\n"
+                    f"4. Review the full content of each artifact before proceeding\n"
+                    f"5. Only then proceed with your analysis\n\n"
                     f"Follow your instructions and process this task now."
                 )
                 if task.description:
                     task_prompt += f"\n\nTask description:\n{task.description}"
+                attachment_section = _read_task_attachments_for_prompt(task, base_dir)
+                if attachment_section:
+                    task_prompt += f"\n\n{attachment_section}"
             else:
                 task_lines = []
                 for t in tasks:
                     transitions = ws.task_states.get(t.status, [])
-                    task_lines.append(f"- '{t.title}' (ID: {t.id}, status: {t.status}, valid next: {transitions})")
+                    task_lines.append(
+                        f"- '{t.title}' (ID: {t.id}, status: {t.status}, "
+                        f"valid next: {transitions}, attachments: {len(getattr(t, 'attachments', []) or [])})"
+                    )
                 task_prompt = (
                     f"You are working on {len(tasks)} tasks "
                     f"in workstream '{ws.name}' (ID: {ws.id}).\n\n"
                     f"Tasks:\n" + "\n".join(task_lines) + "\n\n"
                     f"Task IDs file: {task_file_path}\n\n"
                     f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                    f"=== MANDATORY INITIAL STEPS (Execute these before any analysis) ===\n"
+                    f"1. EXECUTE: python -m orchestration.cli task list {ws.id} or read each task ID from the Task IDs file\n"
+                    f"2. For each task, EXECUTE: python -m orchestration.cli task read <task_id>\n"
+                    f"3. Read the complete task output including all comments, audit entries, and artifact references\n"
+                    f"4. For EACH artifact path mentioned in any task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>'\n"
+                    f"5. Review the full content of all artifacts before proceeding\n"
+                    f"6. Only then proceed with your analysis\n\n"
                     f"Follow your instructions and process these tasks now."
                 )
+                all_attachment_sections = []
+                for t in tasks:
+                    section = _read_task_attachments_for_prompt(t, base_dir)
+                    if section:
+                        all_attachment_sections.append(f"Task {t.id}:\n{section}")
+                if all_attachment_sections:
+                    task_prompt += "\n\n" + "\n\n".join(all_attachment_sections)
         elif ws:
             states = list(ws.task_states.keys())
             task_prompt = (
@@ -318,35 +652,102 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         # Run with environment inherited (includes ANTHROPIC_API_KEY from dotenv)
         env = os.environ.copy()
         env["ORCHESTRATION_AGENT_NAME"] = agent_def["name"]
+        env["ORCHESTRATION_AGENT_RUN_ID"] = run_id if run_id else ""
+        env["ORCHESTRATION_AGENT_TASK_IDS"] = _compact_json(task_ids)
+        if workstream_id:
+            env["ORCHESTRATION_AGENT_WORKSTREAM_ID"] = str(workstream_id)
         abs_base = os.path.abspath(base_dir)
 
-        # Use Popen so we can capture and store the subprocess PID in the lock
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=abs_base,
-            env=env,
-        )
+        _ensure_state_dirs(base_dir)
+        run_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc).isoformat()
+        log_path = os.path.join(_agent_runs_dir(base_dir), f"{run_id}.log")
+        log_path_rel = os.path.relpath(log_path, base_dir)
 
-        # Store subprocess PID in lock files for dead-process detection
-        from .locks import update_lock_pid
-        for tid in task_ids:
-            update_lock_pid(tid, proc.pid, base_dir=base_dir)
+        task_titles = [{"id": t.id, "title": t.title} for t in tasks]
+        run_meta = {
+            "run_id": run_id,
+            "agent": agent_def["name"],
+            "agent_ref": agent_name,
+            "workstream_id": workstream_id,
+            "workstream_path": _workstream_path(base_dir, workstream_id),
+            "task_ids": list(task_ids),
+            "tasks": task_titles,
+            "prompt": task_prompt,
+            "system_prompt": system_prompt,
+            "log_path": log_path_rel,
+            "started_at": started_at,
+            "ended_at": None,
+            "status": "running",
+            "exit_code": None,
+        }
+        _write_run_meta(base_dir, run_id, run_meta)
 
-        try:
-            # Resolve timeout: caller override > agent x-timeout > default
-            effective_timeout = timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
-            stdout, stderr = proc.communicate(timeout=effective_timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
-            raise
+        # run_id is now known; update env context used by CLI calls made by the agent.
+        env["ORCHESTRATION_AGENT_RUN_ID"] = run_id
 
-        output = stdout.strip()
-        stderr = stderr.strip()
+        # Use a file-backed log so the Workspace Manager can live-tail active agent output.
+        timeout_expired = False
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=abs_base,
+                env=env,
+            )
+
+            active_run = {
+                "run_id": run_id,
+                "agent": agent_def["name"],
+                "agent_ref": agent_name,
+                "workstream_id": workstream_id,
+                "task_ids": list(task_ids),
+                "pid": proc.pid,
+                "started_at": started_at,
+                "log_path": log_path_rel,
+            }
+            _register_active_agent(base_dir, active_run)
+
+            # Store subprocess PID in lock files for dead-process detection
+            from .locks import update_lock_pid
+            for tid in task_ids:
+                update_lock_pid(tid, proc.pid, base_dir=base_dir)
+
+            try:
+                # Resolve timeout: caller override > agent x-timeout > default
+                effective_timeout = timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
+                proc.communicate(timeout=effective_timeout)
+            except subprocess.TimeoutExpired:
+                timeout_expired = True
+                proc.kill()
+                proc.communicate()
+            finally:
+                _unregister_active_agent(base_dir, run_id)
+
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            output = f.read().strip()
         returncode = proc.returncode
+
+        if run_meta is None:
+            run_meta = {
+                "run_id": run_id,
+                "agent": agent_def["name"],
+                "agent_ref": agent_name,
+                "workstream_id": workstream_id,
+                "workstream_path": _workstream_path(base_dir, workstream_id),
+                "task_ids": list(task_ids),
+                "tasks": [{"id": t.id, "title": t.title} for t in tasks],
+                "prompt": task_prompt,
+                "system_prompt": system_prompt,
+                "log_path": log_path_rel,
+                "started_at": started_at,
+            }
+        run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
+        run_meta["status"] = "completed" if returncode == 0 else ("timeout" if timeout_expired else "failed")
+        run_meta["exit_code"] = returncode
+        _write_run_meta(base_dir, run_id, run_meta)
 
         # Log agent output to audit trail for each task
         for tid in task_ids:
@@ -360,14 +761,24 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 t.retry_count = 0
                 t.last_failure_at = None
             else:
-                error_msg = stderr[:MAX_AUDIT_OUTPUT] if stderr else output[:MAX_AUDIT_OUTPUT]
-                t.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
+                error_msg = output[:MAX_AUDIT_OUTPUT]
+                if timeout_expired:
+                    t.add_audit("agent_failed", f"Agent '{agent_def['name']}' timed out.\n\nError:\n{error_msg}")
+                else:
+                    t.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
             _save_task(t, base_dir)
 
         if returncode != 0:
-            raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {returncode}): {stderr or output}")
+            if timeout_expired:
+                raise RuntimeError(f"Agent '{agent_def['name']}' timed out after {effective_timeout} seconds")
+            raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {returncode}): {output}")
 
-        response = {"agent": agent_def["name"], "result": output}
+        response = {
+            "agent": agent_def["name"],
+            "result": output,
+            "run_id": run_id,
+            "log_path": log_path_rel,
+        }
         if task_ids:
             response["task_ids"] = task_ids
         if ws:

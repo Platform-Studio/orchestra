@@ -155,14 +155,11 @@ def _parse_env_line(line: str):
     return key, value
 
 
-def read_workstream_env(ws_id: str, base_dir: str = ".") -> dict:
-    """Return key/value pairs from a workstream-local .env file."""
-    ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
-    env_path = _ws_env_path(ws_root, ws_id)
-    if not os.path.exists(env_path):
+def _read_env_file(path: str) -> dict:
+    if not os.path.exists(path):
         return {}
     data = {}
-    with open(env_path) as f:
+    with open(path) as f:
         for raw_line in f:
             parsed = _parse_env_line(raw_line)
             if not parsed:
@@ -171,6 +168,59 @@ def read_workstream_env(ws_id: str, base_dir: str = ".") -> dict:
             _validate_env_key(key)
             data[key] = value
     return data
+
+
+def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
+    """Return env layers from root -> selected workstream.
+
+    Layers include:
+    - workstream-local `.env` files
+    - mounted workspace root `.env` files for mounted ancestors (descendants-only)
+    """
+    by_id = {ws.id: ws for ws in list_workstreams(base_dir=base_dir)}
+    if ws_id not in by_id:
+        raise FileNotFoundError(f"Workstream {ws_id} not found")
+
+    layers = []
+    lineage = list(reversed(_workstream_ancestry(ws_id, base_dir=base_dir)))
+    for ws_level_id in lineage:
+        ws = by_id[ws_level_id]
+
+        ws_root = resolve_workstream_workspace(ws_level_id, base_dir=base_dir)
+        local_env_path = _ws_env_path(ws_root, ws_level_id)
+        if os.path.exists(local_env_path):
+            layers.append({
+                "kind": "workstream",
+                "id": ws.id,
+                "name": ws.name,
+                "parent_id": ws.parent_id,
+                "path": local_env_path,
+                "env": _read_env_file(local_env_path),
+            })
+
+        # Descendants-only: mounted root env affects descendants, not the node itself.
+        if ws.mounted_workspace_path and ws_level_id != ws_id:
+            current_ws_root = _workspace_root_for(ws, base_dir)
+            mounted_root = _normalize_mounted_workspace_path(ws.mounted_workspace_path, current_ws_root)
+            mounted_env_path = os.path.join(mounted_root, ".env")
+            if os.path.exists(mounted_env_path):
+                layers.append({
+                    "kind": "mounted-root",
+                    "id": ws.id,
+                    "name": f"{ws.name} mounted root",
+                    "parent_id": ws.id,
+                    "path": mounted_env_path,
+                    "env": _read_env_file(mounted_env_path),
+                })
+
+    return layers
+
+
+def read_workstream_env(ws_id: str, base_dir: str = ".") -> dict:
+    """Return key/value pairs from a workstream-local .env file."""
+    ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
+    env_path = _ws_env_path(ws_root, ws_id)
+    return _read_env_file(env_path)
 
 
 def write_workstream_env(ws_id: str, values: dict, base_dir: str = ".") -> None:
@@ -228,27 +278,15 @@ def _workstream_ancestry(ws_id: str, base_dir: str = ".") -> list:
 
 def list_workstream_hierarchy_env(ws_id: str, base_dir: str = ".") -> list:
     """Return hierarchy levels with local .env content (root to selected workstream)."""
-    by_id = {ws.id: ws for ws in list_workstreams(base_dir=base_dir)}
-    if ws_id not in by_id:
-        raise FileNotFoundError(f"Workstream {ws_id} not found")
-
-    levels = []
-    lineage = list(reversed(_workstream_ancestry(ws_id, base_dir=base_dir)))
-    for ws_level_id in lineage:
-        ws = by_id[ws_level_id]
-        ws_root = resolve_workstream_workspace(ws_level_id, base_dir=base_dir)
-        env_path = _ws_env_path(ws_root, ws_level_id)
-        has_env_file = os.path.exists(env_path)
-        if not has_env_file:
-            continue
-        local_env = read_workstream_env(ws_level_id, base_dir=base_dir)
-        levels.append({
-            "id": ws.id,
-            "name": ws.name,
-            "parent_id": ws.parent_id,
-            "env": local_env,
-        })
-    return levels
+    layers = _env_layers_for_workstream(ws_id, base_dir=base_dir)
+    return [{
+        "id": layer["id"],
+        "name": layer["name"],
+        "parent_id": layer["parent_id"],
+        "kind": layer["kind"],
+        "path": layer["path"],
+        "env": layer["env"],
+    } for layer in layers]
 
 
 def resolve_workstream_env_key(ws_id: str, key: str, base_dir: str = "."):
@@ -257,8 +295,8 @@ def resolve_workstream_env_key(ws_id: str, key: str, base_dir: str = "."):
     If a level contains KEY=, the key is explicitly masked and resolution stops.
     """
     _validate_env_key(key)
-    for current_ws_id in _workstream_ancestry(ws_id, base_dir=base_dir):
-        local = read_workstream_env(current_ws_id, base_dir=base_dir)
+    for layer in reversed(_env_layers_for_workstream(ws_id, base_dir=base_dir)):
+        local = layer["env"]
         if key in local:
             value = local[key]
             if value == "":
@@ -283,9 +321,8 @@ def list_effective_workstream_env(ws_id: str, base_dir: str = ".", include_syste
     effective = {}
     masked = set()
     # Root first so nearest child can override.
-    lineage = list(reversed(_workstream_ancestry(ws_id, base_dir=base_dir)))
-    for current_ws_id in lineage:
-        local = read_workstream_env(current_ws_id, base_dir=base_dir)
+    for layer in _env_layers_for_workstream(ws_id, base_dir=base_dir):
+        local = layer["env"]
         for key, value in local.items():
             if value == "":
                 effective.pop(key, None)

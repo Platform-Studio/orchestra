@@ -220,6 +220,8 @@ def cmd_task_create(args):
         kwargs["scheduled_at"] = args.scheduled_at
     if args.scheduled_action:
         kwargs["scheduled_action"] = json.loads(args.scheduled_action)
+    if args.attachment is not None:
+        kwargs["attachments"] = args.attachment
     task = create_task(**kwargs)
     _output(task.to_dict())
 
@@ -243,6 +245,8 @@ def cmd_task_update(args):
         kwargs["scheduled_at"] = args.scheduled_at
     if args.scheduled_action:
         kwargs["scheduled_action"] = json.loads(args.scheduled_action)
+    if args.attachment is not None:
+        kwargs["attachments"] = args.attachment
     task = update_task(**kwargs)
     _output(task.to_dict())
 
@@ -279,6 +283,38 @@ def cmd_task_audit(args):
 def cmd_task_clear_schedule(args):
     from .tasks import clear_schedule
     task = clear_schedule(args.task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_move(args):
+    from .tasks import move_task
+    kwargs = {"task_id": args.task_id, "target_workstream_id": args.workstream_id, "base_dir": args.base_dir}
+    if args.status:
+        kwargs["target_status"] = args.status
+    task = move_task(**kwargs)
+    _output(task.to_dict())
+
+
+def cmd_task_duplicate(args):
+    from .tasks import duplicate_task
+    kwargs = {"task_id": args.task_id, "base_dir": args.base_dir}
+    if args.workstream_id:
+        kwargs["target_workstream_id"] = args.workstream_id
+    if args.status:
+        kwargs["target_status"] = args.status
+    task = duplicate_task(**kwargs)
+    _output(task.to_dict())
+
+
+def cmd_task_attach(args):
+    from .tasks import attach_to_task
+    task = attach_to_task(args.task_id, args.path, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_detach(args):
+    from .tasks import detach_from_task
+    task = detach_from_task(args.task_id, args.path, base_dir=args.base_dir)
     _output(task.to_dict())
 
 
@@ -366,6 +402,18 @@ def cmd_agent_run(args):
     _output(result)
 
 
+def cmd_agent_active(args):
+    from .agents import list_active_agents
+    runs = list_active_agents(base_dir=args.base_dir)
+    _output(runs)
+
+
+def cmd_agent_tail(args):
+    from .agents import tail_active_agent
+    result = tail_active_agent(args.run_id, lines=args.lines, base_dir=args.base_dir)
+    _output(result)
+
+
 # ── Workstream pause/resume ──────────────────────────────────────────
 
 def cmd_workstream_pause(args):
@@ -435,7 +483,44 @@ def cmd_artifact_create(args):
 
 def cmd_artifact_read(args):
     from .artifacts import read_artifact
+    from .workspace_audit import log_event
+    import os
+    import json as _json
     content = read_artifact(args.path, base_dir=args.base_dir, workstream_id=args.workstream)
+
+    # If an agent invocation is active, record which artifact it accessed.
+    run_id = os.getenv("ORCHESTRATION_AGENT_RUN_ID")
+    if run_id:
+        extra = {
+            "status": "ok",
+            "run_id": run_id,
+            "artifact_path": args.path,
+        }
+        agent_name = os.getenv("ORCHESTRATION_AGENT_NAME")
+        if agent_name:
+            extra["agent"] = agent_name
+        ws_id = args.workstream or os.getenv("ORCHESTRATION_AGENT_WORKSTREAM_ID")
+        if ws_id:
+            extra["workstream_id"] = ws_id
+        raw_task_ids = os.getenv("ORCHESTRATION_AGENT_TASK_IDS")
+        if raw_task_ids:
+            try:
+                task_ids = _json.loads(raw_task_ids)
+            except Exception:
+                task_ids = []
+            if isinstance(task_ids, list) and task_ids:
+                if len(task_ids) == 1:
+                    extra["task_id"] = task_ids[0]
+                else:
+                    extra["task_ids"] = task_ids
+
+        log_event(
+            "artifact_read",
+            f"Artifact read: {args.path}",
+            args.base_dir,
+            **extra,
+        )
+
     _output({"path": args.path, "content": content})
 
 
@@ -532,6 +617,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--retry", help="JSON string of retry config")
     p.add_argument("--scheduled-at", help="ISO datetime for one-shot schedule")
     p.add_argument("--scheduled-action", help="JSON string of action to run")
+    p.add_argument("--attachment", action="append", dest="attachment", help="Artifact path to attach (repeatable)")
     p.set_defaults(func=cmd_task_create)
 
     p = task_sub.add_parser("read")
@@ -545,6 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tags")
     p.add_argument("--scheduled-at", help="ISO datetime for one-shot schedule")
     p.add_argument("--scheduled-action", help="JSON string of action to run")
+    p.add_argument("--attachment", action="append", dest="attachment", help="Set attachments to these artifact paths (repeatable)")
     p.set_defaults(func=cmd_task_update)
 
     p = task_sub.add_parser("list")
@@ -570,6 +657,28 @@ def build_parser() -> argparse.ArgumentParser:
     p = task_sub.add_parser("clear-schedule")
     p.add_argument("task_id")
     p.set_defaults(func=cmd_task_clear_schedule)
+
+    p = task_sub.add_parser("move")
+    p.add_argument("task_id")
+    p.add_argument("workstream_id", help="Target workstream ID")
+    p.add_argument("--status", help="Target state in the destination workstream (defaults to initial state)")
+    p.set_defaults(func=cmd_task_move)
+
+    p = task_sub.add_parser("duplicate")
+    p.add_argument("task_id")
+    p.add_argument("--workstream-id", dest="workstream_id", help="Target workstream ID (defaults to same workstream)")
+    p.add_argument("--status", help="Target state in the destination workstream (defaults to initial state)")
+    p.set_defaults(func=cmd_task_duplicate)
+
+    p = task_sub.add_parser("attach")
+    p.add_argument("task_id")
+    p.add_argument("--path", required=True, help="Artifact path to attach")
+    p.set_defaults(func=cmd_task_attach)
+
+    p = task_sub.add_parser("detach")
+    p.add_argument("task_id")
+    p.add_argument("--path", required=True, help="Artifact path to detach")
+    p.set_defaults(func=cmd_task_detach)
 
     # ── Lock ─────────────────────────────────────────────────────────
     lock_parser = subparsers.add_parser("lock")
@@ -636,6 +745,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workstream", default=None)
     p.set_defaults(func=cmd_agent_run)
 
+    p = agent_sub.add_parser("active")
+    p.set_defaults(func=cmd_agent_active)
+
+    p = agent_sub.add_parser("tail")
+    p.add_argument("run_id")
+    p.add_argument("--lines", type=int, default=200)
+    p.set_defaults(func=cmd_agent_tail)
+
     # ── Scheduler ────────────────────────────────────────────────────
     sched_parser = subparsers.add_parser("scheduler")
     sched_sub = sched_parser.add_subparsers(dest="method", required=True)
@@ -688,21 +805,58 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    run_id = os.getenv("ORCHESTRATION_AGENT_RUN_ID")
+    agent_name = os.getenv("ORCHESTRATION_AGENT_NAME")
+
+    def _log_cli_call(status: str, error_code: str = None, error_message: str = None):
+        if not run_id:
+            return
+        from .workspace_audit import log_event
+        extra = {
+            "run_id": run_id,
+            "status": status,
+            "command": " ".join(sys.argv[1:]),
+            "concept": getattr(args, "concept", None),
+            "method": getattr(args, "method", None),
+        }
+        if agent_name:
+            extra["agent"] = agent_name
+        ws_id = getattr(args, "workstream", None) or os.getenv("ORCHESTRATION_AGENT_WORKSTREAM_ID")
+        if ws_id:
+            extra["workstream_id"] = ws_id
+        if error_code:
+            extra["error_code"] = error_code
+        if error_message:
+            extra["error_message"] = error_message
+        log_event(
+            "orchestration_cli_call",
+            f"orchestration cli: {' '.join(sys.argv[1:])}",
+            args.base_dir,
+            **extra,
+        )
+
     try:
         args.func(args)
+        _log_cli_call("ok")
     except FileNotFoundError as e:
+        _log_cli_call("error", "NOT_FOUND", str(e))
         _error(str(e), "NOT_FOUND")
     except ValueError as e:
+        _log_cli_call("error", "INVALID_TRANSITION", str(e))
         _error(str(e), "INVALID_TRANSITION")
     except RuntimeError as e:
         msg = str(e)
         if "locked" in msg.lower() or "contention" in msg.lower():
+            _log_cli_call("error", "TASK_LOCKED", msg)
             _error(msg, "TASK_LOCKED")
         else:
+            _log_cli_call("error", "RUNTIME_ERROR", msg)
             _error(msg, "RUNTIME_ERROR")
     except json.JSONDecodeError as e:
+        _log_cli_call("error", "INVALID_JSON", f"Invalid JSON: {e}")
         _error(f"Invalid JSON: {e}", "INVALID_JSON")
     except Exception as e:
+        _log_cli_call("error", "ERROR", str(e))
         _error(str(e), "ERROR")
 
 
