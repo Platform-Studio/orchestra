@@ -354,6 +354,7 @@ def list_effective_env(workstream_id: str = None, task_id: str = None, base_dir:
 def create_workstream(
     name: str,
     description: str = None,
+    context: str = None,
     parent_id: str = None,
     task_states: dict = None,
     retry: dict = None,
@@ -372,6 +373,7 @@ def create_workstream(
         id=ws_id,
         name=name,
         description=description,
+        context=context,
         parent_id=parent_id,
         mounted_workspace_path=mounted_workspace_path,
     )
@@ -418,6 +420,49 @@ def find_workstreams(query: str, base_dir: str = ".") -> list:
         elif ws.description and query_lower in ws.description.lower():
             result.append(ws)
     return result
+
+
+def read_workstream_context(ws_id: str, base_dir: str = ".") -> dict:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    return {
+        "workstream_id": ws.id,
+        "name": ws.name,
+        "context": ws.context,
+    }
+
+
+def set_workstream_context(
+    ws_id: str,
+    context: str = None,
+    base_dir: str = ".",
+    updated_by: str = None,
+) -> Workstream:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    normalized = None if context is None else str(context).strip()
+    if normalized == "":
+        normalized = None
+
+    previous = ws.context
+    if previous == normalized:
+        return ws
+
+    ws.context = normalized
+    save_workstream(ws, base_dir)
+
+    from .workspace_audit import log_event
+
+    actor = f" by {updated_by}" if updated_by else ""
+    if normalized:
+        description = f"Workstream context updated{actor}"
+    else:
+        description = f"Workstream context cleared{actor}"
+    log_event(
+        "workstream_context_updated",
+        description,
+        base_dir,
+        workstream_id=ws.id,
+    )
+    return ws
 
 
 def save_workstream(ws: Workstream, base_dir: str = ".") -> None:

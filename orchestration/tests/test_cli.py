@@ -75,6 +75,27 @@ class TestCLIWorkstream:
         data = json.loads(result.stdout)
         assert data["data"]["mounted_workspace_path"] == str(mount_root)
 
+    def test_context_read_and_update(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", "--context", "brief one", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("workstream", "context", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"]["context"] == "brief one"
+
+        result = run_cli(
+            "workstream", "update-context", ws_id,
+            "--content", "brief two",
+            "--updated-by", "cli-test",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"]["context"] == "brief two"
+
+        audit_path = Path(workspace) / "workspace_audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text())
+        assert any(e["type"] == "workstream_context_updated" and e["description"] == "Workstream context updated by cli-test" for e in audit)
+
     def test_tree(self, workspace):
         # Create parent
         result = run_cli("workstream", "create", "--name", "Root", base_dir=workspace)
@@ -195,6 +216,9 @@ class TestCLITask:
         result = run_cli("task", "create", ws_id, "--title", "My Task", base_dir=workspace)
         task_id = json.loads(result.stdout)["data"]["id"]
 
+        result = run_cli("artifact", "create", "--path", "Theses/attach.md", "--content", "hello", base_dir=workspace)
+        assert result.returncode == 0
+
         result = run_cli("task", "attach", task_id, "--path", "Theses/attach.md", base_dir=workspace)
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
@@ -271,7 +295,6 @@ class TestCLIArtifact:
         monkeypatch.setenv("ORCHESTRATION_AGENT_RUN_ID", "run-123")
         monkeypatch.setenv("ORCHESTRATION_AGENT_NAME", "JTBD Analyst")
         monkeypatch.setenv("ORCHESTRATION_AGENT_TASK_IDS", '["task-1","task-2"]')
-        monkeypatch.setenv("ORCHESTRATION_AGENT_WORKSTREAM_ID", "ws-9")
 
         result = run_cli("artifact", "read", "x.md", base_dir=workspace)
         assert result.returncode == 0
@@ -283,7 +306,6 @@ class TestCLIArtifact:
         assert e["run_id"] == "run-123"
         assert e["agent"] == "JTBD Analyst"
         assert e["artifact_path"] == "x.md"
-        assert e["workstream_id"] == "ws-9"
         assert e["task_ids"] == ["task-1", "task-2"]
 
     def test_artifact_read_no_agent_context_does_not_log(self, workspace):
@@ -294,6 +316,47 @@ class TestCLIArtifact:
         from orchestration.workspace_audit import get_audit_log
         entries = get_audit_log(base_dir=workspace, event_type="artifact_read")
         assert entries == []
+
+    def test_artifact_commands_infer_workstream_from_agent_context(self, workspace, monkeypatch):
+        mount_root = Path(workspace) / "career_pivot_repo"
+        mount_root.mkdir()
+
+        result = run_cli(
+            "workstream", "create",
+            "--name", "Career Pivot",
+            "--mounted-workspace-path", str(mount_root),
+            base_dir=workspace,
+        )
+        parent_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli(
+            "workstream", "create",
+            "--name", "Go-to-Market",
+            "--parent", parent_id,
+            base_dir=workspace,
+        )
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        monkeypatch.setenv("ORCHESTRATION_AGENT_WORKSTREAM_ID", ws_id)
+
+        result = run_cli(
+            "artifact", "create",
+            "--path", "reports/hello.md",
+            "--content", "hello",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+
+        created_path = mount_root / "artifacts" / "reports" / "hello.md"
+        assert created_path.exists()
+
+        result = run_cli("artifact", "read", "reports/hello.md", base_dir=workspace)
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"]["content"] == "hello"
+
+        result = run_cli("artifact", "list", "--prefix", "reports/", base_dir=workspace)
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"] == ["reports/hello.md"]
 
 
 class TestCLITrigger:
@@ -413,6 +476,61 @@ class TestCLIAgentRuntime:
         data = json.loads(result.stdout)
         assert data["status"] == "ok"
         assert data["data"]["tail"] == "line-2\nline-3\n"
+
+    def test_agent_active_accepts_legacy_list_format(self, workspace):
+        state_dir = Path(workspace) / ".orchestration"
+        state_dir.mkdir(parents=True)
+        active_yaml = state_dir / "active_agents.yaml"
+        active_yaml.write_text(yaml.safe_dump([
+            {
+                "run_id": "run-legacy-001",
+                "agent": "seo_indexer",
+                "started_at": "2026-04-22T10:00:00+00:00",
+                "log_path": ".orchestration/agent_runs/run-legacy-001.log",
+            }
+        ], sort_keys=False), encoding="utf-8")
+
+        result = run_cli("agent", "active", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["status"] == "ok"
+        assert isinstance(data["data"], list)
+        assert data["data"][0]["run_id"] == "run-legacy-001"
+
+    def test_agent_kill_marks_run_killed(self, workspace):
+        state_dir = Path(workspace) / ".orchestration"
+        runs_dir = state_dir / "agent_runs"
+        runs_dir.mkdir(parents=True)
+
+        run_id = "run-kill-001"
+        run_meta = runs_dir / f"{run_id}.json"
+        run_meta.write_text(json.dumps({
+            "run_id": run_id,
+            "agent": "LinkedIn SDR",
+            "status": "running",
+            "started_at": "2026-04-22T10:00:00+00:00",
+            "ended_at": None,
+            "exit_code": None,
+        }, indent=2), encoding="utf-8")
+
+        active_yaml = state_dir / "active_agents.yaml"
+        active_yaml.write_text(yaml.safe_dump({
+            "runs": [{
+                "run_id": run_id,
+                "agent": "LinkedIn SDR",
+                "started_at": "2026-04-22T10:00:00+00:00",
+                "log_path": ".orchestration/agent_runs/run-kill-001.log",
+            }]
+        }, sort_keys=False), encoding="utf-8")
+
+        result = run_cli("agent", "kill", run_id, base_dir=workspace)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)["data"]
+        assert payload["status"] == "killed"
+
+        # Reload metadata and ensure terminal status is recorded by the command.
+        reloaded = json.loads(run_meta.read_text(encoding="utf-8"))
+        assert reloaded["status"] == "killed"
 
 
 class TestCLITaskSchedule:

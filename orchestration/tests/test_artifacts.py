@@ -99,3 +99,19 @@ class TestMountedArtifactRouting:
         target = mount_root / "artifacts" / "ideas" / "april.md"
         assert target.exists()
         assert target.read_text() == "lobster"
+
+    def test_list_with_workstream_context_uses_mounted_artifact_root(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="ideas", parent_id=parent.id, base_dir=workspace)
+
+        create_artifact("reports/a.md", "mounted", base_dir=workspace, workstream_id=child.id)
+        create_artifact("reports/b.md", "local", base_dir=workspace)
+
+        mounted_paths = list_artifacts(prefix="reports/", base_dir=workspace, workstream_id=child.id)
+        assert mounted_paths == ["reports/a.md"]

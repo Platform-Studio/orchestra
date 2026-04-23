@@ -32,6 +32,14 @@ def execute_trigger(trigger: Trigger, task_ids: list, workstream_id: str, base_d
         workstream_id: The workstream context.
         base_dir: Workspace root.
     """
+    ws = read_workstream(workstream_id, base_dir)
+    if ws.paused:
+        return {
+            "trigger_id": trigger.id,
+            "status": "skipped",
+            "message": f"Workstream '{ws.name}' is paused",
+        }
+
     with _active_triggers_lock:
         _active_triggers.add(trigger.id)
     try:
@@ -151,6 +159,8 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                 continue
             if trigger.on_schedule is None:
                 raise ValueError("Run Now is only supported for schedule-based triggers")
+            if ws.paused:
+                raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
             # Capture references for the background thread
             _trigger, _ws = trigger, ws

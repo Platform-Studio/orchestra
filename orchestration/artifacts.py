@@ -81,8 +81,11 @@ def read_artifact(path: str, base_dir: str = ".", workstream_id: str = None) -> 
         return f.read()
 
 
-def list_artifacts(prefix: str = None, base_dir: str = ".") -> list:
-    artifacts_dir = _artifacts_dir(base_dir)
+def list_artifacts(prefix: str = None, base_dir: str = ".", workstream_id: str = None) -> list:
+    if workstream_id:
+        artifacts_dir, _ = _resolve_artifact_root("", base_dir=base_dir, workstream_id=workstream_id)
+    else:
+        artifacts_dir = _artifacts_dir(base_dir)
     if not os.path.exists(artifacts_dir):
         return []
     result = []

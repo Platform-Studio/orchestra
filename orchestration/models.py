@@ -115,6 +115,7 @@ class Workstream:
     id: str
     name: str
     description: str = None
+    context: str = None
     parent_id: str = None
     mounted_workspace_path: str = None
     task_states: dict = field(default_factory=lambda: dict(DEFAULT_TASK_STATES))
@@ -131,6 +132,8 @@ class Workstream:
         }
         if self.description is not None:
             d["description"] = self.description
+        if self.context is not None:
+            d["context"] = self.context
         if self.parent_id is not None:
             d["parent_id"] = self.parent_id
         if self.mounted_workspace_path is not None:
@@ -149,6 +152,7 @@ class Workstream:
             id=data["id"],
             name=data["name"],
             description=data.get("description"),
+            context=data.get("context"),
             parent_id=data.get("parent_id"),
             mounted_workspace_path=data.get("mounted_workspace_path"),
             task_states=data.get("task_states", dict(DEFAULT_TASK_STATES)),

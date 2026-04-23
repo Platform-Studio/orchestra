@@ -35,7 +35,7 @@ if WORKSPACE_DIR not in sys.path:
 from orchestration.workstreams import (
     list_workstreams, read_workstream, create_workstream,
     find_workstreams, save_workstream, list_workstream_hierarchy_env,
-    list_effective_workstream_env, resolve_workstream_workspace,
+    list_effective_workstream_env, resolve_workstream_workspace, set_workstream_context,
 )
 from orchestration.tasks import (
     create_task, read_task, update_task, list_tasks,
@@ -46,7 +46,7 @@ from orchestration.locks import acquire_lock, release_lock, lock_status
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
-from orchestration.agents import list_active_agents, tail_active_agent, list_agent_runs, get_agent_run
+from orchestration.agents import list_active_agents, tail_active_agent, list_agent_runs, get_agent_run, kill_agent_run
 
 
 def _ok(data):
@@ -125,6 +125,17 @@ def handle_workstream(method, parts, params):
     elif m == "read" and parts:
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(ws.to_dict())
+    elif m == "context" and parts:
+        ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
+        if params.get("_http_method") == "POST":
+            updated = set_workstream_context(
+                ws.id,
+                context=params.get("context"),
+                base_dir=WORKSPACE_DIR,
+                updated_by=params.get("updated_by") or "Workspace Manager",
+            )
+            return _ok(updated.to_dict())
+        return _ok({"id": ws.id, "name": ws.name, "context": ws.context})
     elif m == "info" and parts:
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         levels = list_workstream_hierarchy_env(parts[0], base_dir=WORKSPACE_DIR)
@@ -165,6 +176,8 @@ def handle_workstream(method, parts, params):
         kwargs = {"name": params["name"], "base_dir": WORKSPACE_DIR}
         if "description" in params:
             kwargs["description"] = params["description"]
+        if "context" in params:
+            kwargs["context"] = params["context"]
         if "parent" in params:
             kwargs["parent_id"] = params["parent"]
         if "states" in params:
@@ -176,6 +189,13 @@ def handle_workstream(method, parts, params):
 
 def handle_task(method, parts, params):
     m = method
+
+    def _parse_bool(raw):
+        if isinstance(raw, bool):
+            return raw
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     def _parse_attachments(raw):
         if raw is None:
@@ -217,6 +237,8 @@ def handle_task(method, parts, params):
         kwargs = {"task_id": parts[0], "base_dir": WORKSPACE_DIR}
         if "status" in params:
             kwargs["status"] = params["status"]
+        if "force" in params:
+            kwargs["force"] = _parse_bool(params.get("force"))
         if "description" in params:
             kwargs["description"] = params["description"]
         if "tags" in params:
@@ -350,6 +372,9 @@ def handle_agent(method, parts, params):
         lines = int(params.get("lines", "200"))
         tail = tail_active_agent(run_id, lines=lines, base_dir=WORKSPACE_DIR)
         return _ok(tail)
+    if method == "kill" and parts:
+        result = kill_agent_run(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(result)
     return _err(f"Unknown agent method: {method}")
 
 
@@ -541,6 +566,7 @@ class Handler(SimpleHTTPRequestHandler):
         # Collect params from query string
         query = parse_qs(parsed.query, keep_blank_values=False)
         params = {k: v[0] for k, v in query.items()}
+        params["_http_method"] = http_method
 
         # Merge POST body params
         if http_method == "POST":

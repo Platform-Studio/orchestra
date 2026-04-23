@@ -139,7 +139,14 @@ class TestTriggerAudit:
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         tick(workspace)
 
-        entries = get_audit_log(workspace, event_type="trigger_fired")
+        # State triggers run on daemon threads — wait for audit entry
+        import time
+        entries = []
+        for _ in range(30):
+            entries = get_audit_log(workspace, event_type="trigger_fired")
+            if entries:
+                break
+            time.sleep(0.1)
         assert len(entries) >= 1
         assert entries[0].get("workstream_id") == ws.id
         assert entries[0].get("task_id") == task.id

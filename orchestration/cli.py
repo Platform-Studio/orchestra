@@ -35,6 +35,8 @@ def cmd_workstream_create(args):
     kwargs = {"name": args.name, "base_dir": args.base_dir}
     if args.description:
         kwargs["description"] = args.description
+    if args.context is not None:
+        kwargs["context"] = args.context
     if args.parent:
         kwargs["parent_id"] = args.parent
     if args.states:
@@ -63,6 +65,22 @@ def cmd_workstream_find(args):
     from .workstreams import find_workstreams
     workstreams = find_workstreams(args.query, base_dir=args.base_dir)
     _output([ws.to_dict() for ws in workstreams])
+
+
+def cmd_workstream_context(args):
+    from .workstreams import read_workstream_context
+    _output(read_workstream_context(args.id, base_dir=args.base_dir))
+
+
+def cmd_workstream_update_context(args):
+    from .workstreams import set_workstream_context
+    ws = set_workstream_context(
+        args.id,
+        context=args.content,
+        base_dir=args.base_dir,
+        updated_by=args.updated_by,
+    )
+    _output(ws.to_dict())
 
 
 def cmd_workstream_tree(args):
@@ -414,6 +432,12 @@ def cmd_agent_tail(args):
     _output(result)
 
 
+def cmd_agent_kill(args):
+    from .agents import kill_agent_run
+    result = kill_agent_run(args.run_id, base_dir=args.base_dir)
+    _output(result)
+
+
 # ── Workstream pause/resume ──────────────────────────────────────────
 
 def cmd_workstream_pause(args):
@@ -475,9 +499,14 @@ def cmd_audit_log(args):
     _output(entries)
 
 
+def _artifact_workstream_context(args):
+    return args.workstream or os.getenv("ORCHESTRATION_AGENT_WORKSTREAM_ID") or None
+
+
 def cmd_artifact_create(args):
     from .artifacts import create_artifact
-    result = create_artifact(args.path, args.content, base_dir=args.base_dir, workstream_id=args.workstream)
+    workstream_id = _artifact_workstream_context(args)
+    result = create_artifact(args.path, args.content, base_dir=args.base_dir, workstream_id=workstream_id)
     _output(result)
 
 
@@ -486,7 +515,8 @@ def cmd_artifact_read(args):
     from .workspace_audit import log_event
     import os
     import json as _json
-    content = read_artifact(args.path, base_dir=args.base_dir, workstream_id=args.workstream)
+    workstream_id = _artifact_workstream_context(args)
+    content = read_artifact(args.path, base_dir=args.base_dir, workstream_id=workstream_id)
 
     # If an agent invocation is active, record which artifact it accessed.
     run_id = os.getenv("ORCHESTRATION_AGENT_RUN_ID")
@@ -499,7 +529,7 @@ def cmd_artifact_read(args):
         agent_name = os.getenv("ORCHESTRATION_AGENT_NAME")
         if agent_name:
             extra["agent"] = agent_name
-        ws_id = args.workstream or os.getenv("ORCHESTRATION_AGENT_WORKSTREAM_ID")
+        ws_id = workstream_id
         if ws_id:
             extra["workstream_id"] = ws_id
         raw_task_ids = os.getenv("ORCHESTRATION_AGENT_TASK_IDS")
@@ -526,7 +556,8 @@ def cmd_artifact_read(args):
 
 def cmd_artifact_list(args):
     from .artifacts import list_artifacts
-    artifacts = list_artifacts(prefix=args.prefix, base_dir=args.base_dir)
+    workstream_id = _artifact_workstream_context(args)
+    artifacts = list_artifacts(prefix=args.prefix, base_dir=args.base_dir, workstream_id=workstream_id)
     _output(artifacts)
 
 
@@ -550,6 +581,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = ws_sub.add_parser("create")
     p.add_argument("--name", required=True)
     p.add_argument("--description")
+    p.add_argument("--context")
     p.add_argument("--parent")
     p.add_argument("--states", help="JSON string of task states map")
     p.add_argument("--retry", help="JSON string of retry config")
@@ -562,6 +594,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = ws_sub.add_parser("read")
     p.add_argument("id")
     p.set_defaults(func=cmd_workstream_read)
+
+    p = ws_sub.add_parser("context")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_workstream_context)
+
+    p = ws_sub.add_parser("update-context")
+    p.add_argument("id")
+    p.add_argument("--content", required=True)
+    p.add_argument("--updated-by")
+    p.set_defaults(func=cmd_workstream_update_context)
 
     p = ws_sub.add_parser("find")
     p.add_argument("--query", required=True)
@@ -753,6 +795,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lines", type=int, default=200)
     p.set_defaults(func=cmd_agent_tail)
 
+    p = agent_sub.add_parser("kill")
+    p.add_argument("run_id")
+    p.set_defaults(func=cmd_agent_kill)
+
     # ── Scheduler ────────────────────────────────────────────────────
     sched_parser = subparsers.add_parser("scheduler")
     sched_sub = sched_parser.add_subparsers(dest="method", required=True)
@@ -796,6 +842,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = artifact_sub.add_parser("list")
     p.add_argument("--prefix")
+    p.add_argument("--workstream", default=None, help="Optional workstream context for mounted artifact routing")
     p.set_defaults(func=cmd_artifact_list)
 
     return parser

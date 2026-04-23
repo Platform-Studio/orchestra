@@ -673,6 +673,14 @@ class TestRequestParsing:
         kw = call_kw.kwargs if call_kw.kwargs else call_kw[1]
         assert kw["tags"] == ["a", "b", "c"]
 
+    def test_task_update_force_passed_through(self, api):
+        api.mocks["update_task"].return_value = _fake_task()
+        api.post("/api/task/update/t-1", {"status": "Done", "force": True})
+        call_kw = api.mocks["update_task"].call_args
+        kw = call_kw.kwargs if call_kw.kwargs else call_kw[1]
+        assert kw["status"] == "Done"
+        assert kw["force"] is True
+
     def test_response_envelope(self, api):
         api.mocks["list_workstreams"].return_value = []
         code, body = api.get("/api/workstream/list")

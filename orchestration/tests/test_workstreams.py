@@ -6,10 +6,12 @@ from orchestration.workstreams import (
     create_workstream,
     list_workstreams,
     read_workstream,
+    read_workstream_context,
     find_workstreams,
     save_workstream,
     resolve_workstream_workspace,
     set_workstream_env_key,
+    set_workstream_context,
     unset_workstream_env_key,
     resolve_workstream_env_key,
     resolve_env_key,
@@ -33,6 +35,14 @@ class TestCreateWorkstream:
             base_dir=workspace,
         )
         assert ws.description == "Manage leads"
+
+    def test_create_with_context(self, workspace):
+        ws = create_workstream(
+            name="Programmatic SEO",
+            context="This week test variant B messaging.",
+            base_dir=workspace,
+        )
+        assert ws.context == "This week test variant B messaging."
 
     def test_create_with_custom_states(self, workspace):
         states = {
@@ -86,6 +96,32 @@ class TestReadWorkstream:
     def test_read_not_found(self, workspace):
         with pytest.raises(FileNotFoundError):
             read_workstream("nonexistent-id", base_dir=workspace)
+
+    def test_read_context_view(self, workspace):
+        ws = create_workstream(name="Read Context", context="brief", base_dir=workspace)
+        data = read_workstream_context(ws.id, base_dir=workspace)
+        assert data["context"] == "brief"
+
+
+class TestWorkstreamContext:
+    def test_set_context_persists_and_audits(self, workspace):
+        from orchestration.workspace_audit import get_audit_log
+
+        ws = create_workstream(name="Sales Funnel", base_dir=workspace)
+        updated = set_workstream_context(ws.id, "Try CFO messaging this week", base_dir=workspace, updated_by="tester")
+
+        assert updated.context == "Try CFO messaging this week"
+        reloaded = read_workstream(ws.id, base_dir=workspace)
+        assert reloaded.context == "Try CFO messaging this week"
+
+        audit = get_audit_log(base_dir=workspace, workstream_id=ws.id, event_type="workstream_context_updated")
+        assert audit
+        assert audit[0]["description"] == "Workstream context updated by tester"
+
+    def test_empty_context_clears_field(self, workspace):
+        ws = create_workstream(name="Sales Funnel", context="x", base_dir=workspace)
+        updated = set_workstream_context(ws.id, "   ", base_dir=workspace)
+        assert updated.context is None
 
 
 class TestFindWorkstreams:

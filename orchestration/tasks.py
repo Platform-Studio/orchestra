@@ -133,6 +133,7 @@ def read_task(task_id: str, base_dir: str = ".") -> Task:
 def update_task(
     task_id: str,
     status: str = None,
+    force: bool = False,
     description: str = None,
     tags: list = None,
     scheduled_at: str = None,
@@ -145,14 +146,17 @@ def update_task(
 
     status_changed = False
     if status is not None and status != task.status:
-        if not ws.validate_transition(task.status, status):
+        if not force and not ws.validate_transition(task.status, status):
             raise ValueError(
                 f"Invalid state transition: '{task.status}' -> '{status}'. "
                 f"Allowed transitions from '{task.status}': {ws.task_states.get(task.status, [])}"
             )
         old_status = task.status
         task.status = status
-        task.add_audit("status_change", f"Status changed from '{old_status}' to '{status}'")
+        if force and not ws.validate_transition(old_status, status):
+            task.add_audit("status_change", f"Status forcibly changed from '{old_status}' to '{status}'")
+        else:
+            task.add_audit("status_change", f"Status changed from '{old_status}' to '{status}'")
         status_changed = True
 
     if description is not None:
@@ -277,6 +281,11 @@ def attach_to_task(task_id: str, path: str, base_dir: str = ".") -> Task:
     """Attach an artifact path to a task if it is not already attached."""
     task = read_task(task_id, base_dir)
     normalized_path = _normalize_attachment_path(path)
+
+    # Guardrail: attachments must resolve in the task's workstream artifact root.
+    from .artifacts import read_artifact
+    read_artifact(normalized_path, base_dir=base_dir, workstream_id=task.workstream_id)
+
     if normalized_path not in task.attachments:
         task.attachments.append(normalized_path)
         task.add_audit("attachment_added", f"Attachment added: {normalized_path}")

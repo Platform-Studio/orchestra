@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import yaml
+import threading
 
 from datetime import datetime, timezone
 
@@ -232,7 +233,38 @@ def _audit_trigger(trigger, result, ws, base_dir, task_ids=None):
     log_event("trigger_fired", desc, base_dir, **kwargs)
 
 
-def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str) -> dict:
+def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str) -> None:
+    """Execute a trigger and release locks on a background daemon thread.
+
+    Lock acquisition is handled by the caller on the main scheduler thread so
+    that concurrency checks in subsequent ticks see the lock immediately.
+    This function owns only execution and cleanup.
+    """
+    try:
+        result = execute_trigger(trigger, locked_ids, ws.id, base_dir)
+        _audit_trigger(trigger, result, ws, base_dir, task_ids=locked_ids)
+    except Exception as e:
+        print(f"[scheduler] background trigger error: {e}", file=sys.stderr)
+    finally:
+        from .locks import release_lock
+        for tid in locked_ids:
+            try:
+                release_lock(tid, agent_id=agent_id, base_dir=base_dir)
+            except Exception:
+                pass  # Lock may have already expired or been released
+
+
+def _run_without_lock(trigger, ws, base_dir: str, task_ids: list = None) -> None:
+    """Execute a trigger with no lock lifecycle on a background daemon thread."""
+    ids = task_ids or []
+    try:
+        result = execute_trigger(trigger, ids, ws.id, base_dir)
+        _audit_trigger(trigger, result, ws, base_dir, task_ids=ids)
+    except Exception as e:
+        print(f"[scheduler] background standalone trigger error: {e}", file=sys.stderr)
+
+
+def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: bool = False) -> dict:
     """Lock all task_ids, invoke the trigger, then unlock all.
 
     This is the single code path for all trigger execution. Every agent
@@ -244,11 +276,25 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str) -> dict:
         task_ids: List of task IDs (may be empty for standalone triggers).
         ws: The Workstream context.
         base_dir: Workspace root.
+        background: When True, lock acquisition is synchronous but execution
+            and unlock are dispatched to a daemon thread. The caller must NOT
+            call _audit_trigger for a "dispatched" result — it runs in the thread.
 
     Returns:
-        The result dict from execute_trigger.
+        Result dict from execute_trigger, or {"status": "dispatched"} if background=True.
     """
     from .locks import acquire_lock, release_lock, active_lock_count
+    from .workstreams import read_workstream
+
+    # Re-check paused state at execution time so direct calls and races with
+    # pause/unpause cannot dispatch work for paused workstreams.
+    latest_ws = read_workstream(ws.id, base_dir=base_dir)
+    if latest_ws.paused:
+        return {
+            "trigger_id": trigger.id,
+            "status": "skipped",
+            "message": f"Workstream '{latest_ws.name}' is paused",
+        }
 
     agent_id = trigger.agent or f"trigger:{trigger.id}"
 
@@ -290,11 +336,25 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str) -> dict:
                 # Task already locked or not found — skip it
                 continue
 
-        # Invoke with whatever tasks we successfully locked
+        if background and locked_ids:
+            # Transfer lock ownership to the background thread.
+            # Copy IDs for the thread, then clear so the finally block does NOT
+            # release — the thread is now responsible for unlock.
+            thread_ids = locked_ids[:]
+            locked_ids.clear()
+            t = threading.Thread(
+                target=_run_and_unlock,
+                args=(trigger, thread_ids, ws, base_dir, agent_id),
+                daemon=True,
+            )
+            t.start()
+            return {"trigger_id": trigger.id, "status": "dispatched"}
+
+        # Synchronous path: invoke then fall through to finally for unlock
         result = execute_trigger(trigger, locked_ids, ws.id, base_dir)
         return result
     finally:
-        # Always unlock everything we locked
+        # Unlock tasks we still own (empty when background dispatched above)
         for tid in locked_ids:
             try:
                 release_lock(tid, agent_id=agent_id, base_dir=base_dir)
@@ -372,9 +432,14 @@ def tick(base_dir: str = ".") -> dict:
                 continue
 
             if trigger.filter is None:
-                # No filter — fire once with no tasks (standalone)
-                result = _lock_invoke_unlock(trigger, [], ws, base_dir)
-                _audit_trigger(trigger, result, ws, base_dir, task_ids=[])
+                # No filter — fire once with no tasks (standalone) in background
+                t = threading.Thread(
+                    target=_run_without_lock,
+                    args=(trigger, ws, base_dir, []),
+                    daemon=True,
+                )
+                t.start()
+                result = {"trigger_id": trigger.id, "status": "dispatched"}
                 results["trigger_schedules_fired"].append({
                     "trigger_id": trigger.id,
                     "result": result,
@@ -387,8 +452,15 @@ def tick(base_dir: str = ".") -> dict:
                 ]
                 if not matching_ids:
                     continue
-                result = _lock_invoke_unlock(trigger, matching_ids, ws, base_dir)
-                _audit_trigger(trigger, result, ws, base_dir, task_ids=matching_ids)
+                result = _lock_invoke_unlock(
+                    trigger,
+                    matching_ids,
+                    ws,
+                    base_dir,
+                    background=True,
+                )
+                if result.get("status") not in ("dispatched",):
+                    _audit_trigger(trigger, result, ws, base_dir, task_ids=matching_ids)
                 results["trigger_schedules_fired"].append({
                     "trigger_id": trigger.id,
                     "task_ids": matching_ids,
@@ -424,8 +496,12 @@ def tick(base_dir: str = ".") -> dict:
                 continue
 
             for task_id in ids_to_run:
-                result = _lock_invoke_unlock(trigger, [task_id], ws, base_dir)
-                _audit_trigger(trigger, result, ws, base_dir, task_ids=[task_id])
+                # background=True: locks acquired here (synchronous), execution on daemon thread.
+                # _audit_trigger is called inside _run_and_unlock for dispatched results.
+                result = _lock_invoke_unlock(trigger, [task_id], ws, base_dir, background=True)
+                if result.get("status") not in ("dispatched",):
+                    # Only audit non-dispatched outcomes (e.g. skipped due to lock contention)
+                    _audit_trigger(trigger, result, ws, base_dir, task_ids=[task_id])
                 results["state_triggers_fired"].append({
                     "trigger_id": trigger.id,
                     "task_ids": [task_id],

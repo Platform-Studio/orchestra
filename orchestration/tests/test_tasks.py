@@ -91,6 +91,12 @@ class TestUpdateTask:
         with pytest.raises(ValueError, match="Invalid state transition"):
             update_task(task.id, status="Done", base_dir=workspace)
 
+    def test_update_status_invalid_with_force(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = update_task(task.id, status="Done", force=True, base_dir=workspace)
+        assert updated.status == "Done"
+        assert any("forcibly changed" in a.description for a in updated.audit)
+
     def test_update_description(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = update_task(task.id, description="New desc", base_dir=workspace)
@@ -201,15 +207,22 @@ class TestCommentTask:
 
 class TestTaskAttachments:
     def test_attach_to_task(self, workspace, ws):
+        create_artifact("Theses/proptech.md", "# Proptech", base_dir=workspace)
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = attach_to_task(task.id, "Theses/proptech.md", base_dir=workspace)
         assert updated.attachments == ["Theses/proptech.md"]
 
     def test_attach_is_deduplicated(self, workspace, ws):
+        create_artifact("Theses/proptech.md", "# Proptech", base_dir=workspace)
         task = create_task(ws.id, title="T", base_dir=workspace)
         attach_to_task(task.id, "Theses/proptech.md", base_dir=workspace)
         updated = attach_to_task(task.id, "/Theses/proptech.md", base_dir=workspace)
         assert updated.attachments == ["Theses/proptech.md"]
+
+    def test_attach_missing_artifact_raises(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        with pytest.raises(FileNotFoundError):
+            attach_to_task(task.id, "Theses/missing.md", base_dir=workspace)
 
     def test_detach_from_task(self, workspace, ws):
         task = create_task(ws.id, title="T", attachments=["Theses/a.md"], base_dir=workspace)

@@ -104,6 +104,25 @@ class TestExecuteTrigger:
         assert task.id in result["stdout"]
         assert ws.id in result["stdout"]
 
+    def test_execute_trigger_skips_when_workstream_paused(self, workspace, ws):
+        from orchestration.workstreams import save_workstream
+
+        ws.paused = True
+        save_workstream(ws, workspace)
+
+        trigger = create_trigger(
+            ws.id,
+            on_state="Done",
+            action="run_command",
+            command="echo should_not_run",
+            base_dir=workspace,
+        )
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace)
+        assert result["status"] == "skipped"
+        assert "paused" in result.get("message", "").lower()
+
 
 class TestStateTriggerViaTick:
     def test_tick_fires_state_trigger(self, workspace, ws):
@@ -120,6 +139,13 @@ class TestStateTriggerViaTick:
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
         assert len(result["state_triggers_fired"]) == 1
+        # State triggers now run on daemon threads — wait briefly for the
+        # background thread to finish the run_command.
+        import time
+        for _ in range(30):
+            if os.path.exists(marker_file):
+                break
+            time.sleep(0.1)
         assert os.path.exists(marker_file)
 
     def test_tick_does_not_fire_for_wrong_state(self, workspace, ws):
@@ -132,7 +158,6 @@ class TestStateTriggerViaTick:
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
         assert len(result["state_triggers_fired"]) == 0
-
     def test_locked_task_is_skipped(self, workspace, ws):
         """Tasks with active locks are not re-triggered."""
         from orchestration.locks import acquire_lock
@@ -174,7 +199,7 @@ class TestMaxConcurrent:
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
         assert len(result["state_triggers_fired"]) == 1
-        assert result["state_triggers_fired"][0]["result"]["status"] == "ok"
+        assert result["state_triggers_fired"][0]["result"]["status"] == "dispatched"
 
     def test_trigger_skipped_when_at_max_concurrent(self, workspace, ws):
         """Trigger should be skipped when active locks >= max_concurrent."""
@@ -211,7 +236,7 @@ class TestMaxConcurrent:
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
         assert len(result["state_triggers_fired"]) == 1
-        assert result["state_triggers_fired"][0]["result"]["status"] == "ok"
+        assert result["state_triggers_fired"][0]["result"]["status"] == "dispatched"
 
     def test_trigger_skipped_when_at_max_concurrent_2(self, workspace, ws):
         """Trigger with max_concurrent=2 should skip when 2 locks active."""
@@ -370,8 +395,13 @@ class TestTriggerLocking:
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
         assert len(result["state_triggers_fired"]) == 1
-        assert result["state_triggers_fired"][0]["result"]["status"] == "ok"
-        # Lock released after tick
+        assert result["state_triggers_fired"][0]["result"]["status"] == "dispatched"
+        # Lock is released by the background thread — wait briefly
+        import time
+        for _ in range(30):
+            if lock_status(task.id, base_dir=workspace) is None:
+                break
+            time.sleep(0.1)
         assert lock_status(task.id, base_dir=workspace) is None
 
 
@@ -404,6 +434,20 @@ class TestRunTriggerNow:
             command="echo nope", base_dir=workspace,
         )
         with pytest.raises(ValueError, match="schedule-based"):
+            run_trigger_now(trigger.id, base_dir=workspace)
+
+    def test_run_now_rejects_paused_workstream(self, workspace, ws):
+        """Run Now should refuse to execute when workstream is paused."""
+        from orchestration.workstreams import save_workstream
+
+        ws.paused = True
+        save_workstream(ws, workspace)
+
+        trigger = create_trigger(
+            ws.id, on_schedule="0 9 * * *", action="run_command",
+            command="echo nope", base_dir=workspace,
+        )
+        with pytest.raises(RuntimeError, match="paused"):
             run_trigger_now(trigger.id, base_dir=workspace)
 
     def test_run_now_not_found(self, workspace, ws):

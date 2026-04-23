@@ -3,11 +3,13 @@
 import json
 import os
 import glob
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 import yaml
@@ -96,11 +98,20 @@ def _read_active_agents(base_dir: str) -> list:
     if not os.path.exists(path):
         return []
     with open(path) as f:
-        raw = yaml.safe_load(f) or {}
-    runs = raw.get("runs")
-    if not isinstance(runs, list):
+        raw = yaml.safe_load(f)
+
+    # Canonical format: {"runs": [...]}
+    if isinstance(raw, dict):
+        runs = raw.get("runs")
+        if isinstance(runs, list):
+            return runs
         return []
-    return runs
+
+    # Backward/accidental format support: bare list at file root.
+    if isinstance(raw, list):
+        return raw
+
+    return []
 
 
 def _write_active_agents(base_dir: str, runs: list) -> None:
@@ -257,10 +268,101 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
     cli_calls = [e for e in cli_calls if e.get("run_id") == run_id]
     cli_calls = sorted(cli_calls, key=lambda e: e.get("timestamp", ""))
 
+    retry_info = _get_run_retry_info(run, base_dir)
+
     return {
         "run": run,
         "output": output,
         "cli_calls": cli_calls,
+        "retry": retry_info,
+    }
+
+
+def _get_run_retry_info(run: dict, base_dir: str) -> dict:
+    """Return retry diagnostics for an agent run detail payload.
+
+    Notes:
+    - Automatic retry logic is currently task-centric and triggered from
+      expired lock cleanup in orchestration.retry.
+    - Standalone runs (no task_ids) therefore have no retry schedule.
+    """
+    task_ids = list(run.get("task_ids") or [])
+    workstream_id = run.get("workstream_id")
+
+    if not task_ids:
+        return {
+            "eligible": False,
+            "reason": "Standalone run (no task binding)",
+            "retry_count": None,
+            "max_retries": None,
+            "retries_remaining": None,
+            "next_retry_at": None,
+            "last_failure_at": None,
+            "policy": "Automatic retries currently apply to task-bound lock-expiry failures.",
+        }
+
+    if len(task_ids) != 1:
+        return {
+            "eligible": False,
+            "reason": f"Multi-task run ({len(task_ids)} tasks)",
+            "retry_count": None,
+            "max_retries": None,
+            "retries_remaining": None,
+            "next_retry_at": None,
+            "last_failure_at": None,
+            "policy": "Retry diagnostics are currently shown for single task runs.",
+        }
+
+    from .tasks import read_task
+    from .workstreams import read_workstream
+    from .retry import DEFAULT_RETRY_CONFIG
+
+    task_id = task_ids[0]
+    try:
+        task = read_task(task_id, base_dir=base_dir)
+    except Exception as e:
+        return {
+            "eligible": False,
+            "reason": f"Task unavailable: {e}",
+            "task_id": task_id,
+            "retry_count": None,
+            "max_retries": None,
+            "retries_remaining": None,
+            "next_retry_at": None,
+            "last_failure_at": None,
+            "policy": "Retry diagnostics require readable task state.",
+        }
+
+    ws = None
+    try:
+        ws = read_workstream(workstream_id or task.workstream_id, base_dir=base_dir)
+    except Exception:
+        ws = None
+
+    retry_cfg = task.retry or (ws.retry if ws and ws.retry else DEFAULT_RETRY_CONFIG)
+    retry_count = int(getattr(task, "retry_count", 0) or 0)
+    max_retries = int(getattr(retry_cfg, "max_retries", 3) or 3)
+    retries_remaining = max(0, max_retries - retry_count)
+
+    # A retry is considered scheduled when a run_agent scheduled_action is present.
+    scheduled_action = getattr(task, "scheduled_action", None) or {}
+    next_retry_at = None
+    if task.scheduled_at and isinstance(scheduled_action, dict):
+        if scheduled_action.get("type") == "run_agent":
+            next_retry_at = task.scheduled_at
+
+    return {
+        "eligible": True,
+        "task_id": task.id,
+        "task_status": task.status,
+        "retry_count": retry_count,
+        "max_retries": max_retries,
+        "retries_remaining": retries_remaining,
+        "backoff": getattr(retry_cfg, "backoff", "exponential"),
+        "base_seconds": getattr(retry_cfg, "base_seconds", 60),
+        "next_retry_at": next_retry_at,
+        "last_failure_at": getattr(task, "last_failure_at", None),
+        "policy": "Automatic retries are scheduled by expired-lock cleanup.",
     }
 
 
@@ -293,6 +395,122 @@ def tail_active_agent(run_id: str, lines: int = 200, base_dir: str = ".") -> dic
     }
 
 
+def _find_run_pids(run_id: str) -> list:
+    """Find live process IDs for an agent run via env marker."""
+    marker = f"ORCHESTRATION_AGENT_RUN_ID={run_id}"
+    try:
+        output = subprocess.check_output(
+            ["ps", "eww", "-axo", "pid=,command="],
+            text=True,
+            errors="replace",
+        )
+    except Exception:
+        return []
+
+    pids = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or marker not in line:
+            continue
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        try:
+            pids.append(int(parts[0]))
+        except ValueError:
+            continue
+    return sorted(set(pids))
+
+
+def kill_agent_run(run_id: str, base_dir: str = ".", grace_seconds: float = 1.0) -> dict:
+    """Terminate a running agent run and mark it as killed.
+
+    If metadata already indicates a terminal status, preserve it and return
+    without overwriting failure reason.
+    """
+    if grace_seconds < 0:
+        raise ValueError("grace_seconds must be >= 0")
+
+    with _ACTIVE_AGENTS_LOCK:
+        active_runs = _read_active_agents(base_dir)
+        active = next((r for r in active_runs if r.get("run_id") == run_id), None)
+
+    meta = None
+    meta_path = _agent_run_meta_path(base_dir, run_id)
+    if os.path.exists(meta_path):
+        meta = _read_run_meta(meta_path)
+
+    if active is None and meta is None:
+        raise FileNotFoundError(f"Agent run '{run_id}' not found")
+
+    previous_status = (meta or {}).get("status") or ("running" if active else None)
+    if previous_status in ("completed", "failed", "timeout", "killed"):
+        return {
+            "run_id": run_id,
+            "killed": False,
+            "message": f"Run already finished with status '{previous_status}'",
+            "previous_status": previous_status,
+            "status": previous_status,
+            "pids": [],
+        }
+
+    pids = _find_run_pids(run_id)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+    if pids and grace_seconds > 0:
+        time.sleep(grace_seconds)
+
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    ended_at = datetime.now(timezone.utc).isoformat()
+    if meta is None:
+        meta = {
+            "run_id": run_id,
+            "agent": active.get("agent") if active else None,
+            "agent_ref": active.get("agent_ref") if active else None,
+            "workstream_id": active.get("workstream_id") if active else None,
+            "workstream_path": _workstream_path(base_dir, active.get("workstream_id") if active else None),
+            "task_ids": list(active.get("task_ids") or []) if active else [],
+            "tasks": [],
+            "prompt": "",
+            "system_prompt": "",
+            "log_path": active.get("log_path") if active else None,
+            "started_at": active.get("started_at") if active else ended_at,
+        }
+
+    # Preserve non-running terminal state if one appeared mid-flight.
+    if meta.get("status") in ("completed", "failed", "timeout", "killed"):
+        final_status = meta.get("status")
+    else:
+        meta["status"] = "killed"
+        meta["exit_code"] = -15
+        meta["ended_at"] = ended_at
+        final_status = "killed"
+        _write_run_meta(base_dir, run_id, meta)
+
+    _unregister_active_agent(base_dir, run_id)
+
+    return {
+        "run_id": run_id,
+        "killed": final_status == "killed",
+        "previous_status": previous_status,
+        "status": final_status,
+        "pids": pids,
+    }
+
+
 def _get_model() -> str:
     """Return the model name for Claude Code CLI from DEFAULT_LLM env var.
 
@@ -320,6 +538,7 @@ def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
       - bare name:        "sorter"
       - filename:         "sorter.md"
       - relative path:    "Agents/sorter.md"
+            - header name:      "Sorter" (from YAML frontmatter `name:`)
     """
     agents_dir = _agents_dir(base_dir)
 
@@ -353,6 +572,20 @@ def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
         for fname in os.listdir(agents_dir):
             if fname.lower() == f"{bare.lower()}.md" or fname.lower() == f"{bare_underscore.lower()}.md":
                 return os.path.join(agents_dir, fname)
+
+        # Fall back to matching the human-readable name declared in frontmatter.
+        # This keeps triggers stable even when filenames use a different slug.
+        for fname in sorted(os.listdir(agents_dir)):
+            if not fname.endswith(".md"):
+                continue
+            path = os.path.join(agents_dir, fname)
+            try:
+                agent = _parse_agent_md(path)
+            except Exception:
+                continue
+            agent_name = str(agent.get("name", "") or "").strip()
+            if agent_name and agent_name.lower() == agent_ref.strip().lower():
+                return path
 
     raise FileNotFoundError(f"Agent '{agent_ref}' not found in {agents_dir}")
 
@@ -449,6 +682,8 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         "Key commands:\n"
         "- `workstream find --query '<name>'` — find a workstream by name\n"
         "- `workstream read <workstream_id>` — read workstream details\n"
+        "- `workstream context <workstream_id>` — read the current workstream operating context\n"
+        "- `workstream update-context <workstream_id> --content '<text>'` — update the workstream operating context\n"
         "- `workstream descendants <workstream_id>` — list all descendant workstreams as JSON\n"
         "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
         "- `task update <task_id> --status <new_status>` — transition a task\n"
@@ -456,10 +691,11 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         "- `task attach <task_id> --path '<artifact_path>'` — attach an artifact to a task (REQUIRED after creating any artifact)\n"
         "- `task detach <task_id> --path '<artifact_path>'` — remove an artifact attachment from a task\n"
         "- `task list <workstream_id>` — list tasks in a workstream\n"
-        "- `artifact create --path '<path>' --content '<content>'` — save an artifact\n"
-        "- `artifact read '<path>'` — read an artifact\n"
-        "- `artifact list` — list all artifacts\n"
-        "- `artifact list --prefix '<prefix>'` — list artifacts under a path\n"
+        "- `artifact create --path '<path>' --content '<content>' --workstream '<workstream_id>'` — save an artifact\n"
+        "- `artifact read '<path>' --workstream '<workstream_id>'` — read an artifact\n"
+        "- `artifact list --workstream '<workstream_id>'` — list artifacts in the workstream root\n"
+        "- `artifact list --prefix '<prefix>' --workstream '<workstream_id>'` — list artifacts under a path\n"
+        "  (When running under orchestration, `--workstream` is auto-inferred from run context.)\n"
         "\nFull CLI reference: Agents/cli/orchestration_cli.md\n"
     )
 
@@ -493,6 +729,13 @@ def _read_task_attachments_for_prompt(task, base_dir: str, max_chars_per_attachm
         except Exception as exc:
             lines.append(f"  Content unavailable: {exc}")
     return "\n".join(lines)
+
+
+def _workstream_context_prompt_section(ws) -> str:
+    context = str(getattr(ws, "context", "") or "").strip()
+    if not context:
+        return ""
+    return "Workstream Operating Context:\n" + context
 
 
 # Default agent execution timeout in seconds (30 minutes)
@@ -540,6 +783,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         workstream_id = tasks[0].workstream_id
     if workstream_id:
         ws = read_workstream(workstream_id, base_dir)
+        if ws.paused:
+            raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
     # Write task IDs to a temp file for the agent to reference (always, even for single task)
     task_file_path = None
@@ -569,7 +814,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"=== MANDATORY INITIAL STEPS (Execute these before any analysis) ===\n"
                     f"1. EXECUTE: python -m orchestration.cli task read {task.id}\n"
                     f"2. Read the complete task output including all comments, audit entries, and artifact references\n"
-                    f"3. For EACH artifact path mentioned in the task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>'\n"
+                    f"3. For EACH artifact path mentioned in the task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>' --workstream {ws.id}\n"
                     f"4. Review the full content of each artifact before proceeding\n"
                     f"5. Only then proceed with your analysis\n\n"
                     f"Follow your instructions and process this task now."
@@ -579,6 +824,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 attachment_section = _read_task_attachments_for_prompt(task, base_dir)
                 if attachment_section:
                     task_prompt += f"\n\n{attachment_section}"
+                context_section = _workstream_context_prompt_section(ws)
+                if context_section:
+                    task_prompt += f"\n\n{context_section}"
             else:
                 task_lines = []
                 for t in tasks:
@@ -597,7 +845,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"1. EXECUTE: python -m orchestration.cli task list {ws.id} or read each task ID from the Task IDs file\n"
                     f"2. For each task, EXECUTE: python -m orchestration.cli task read <task_id>\n"
                     f"3. Read the complete task output including all comments, audit entries, and artifact references\n"
-                    f"4. For EACH artifact path mentioned in any task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>'\n"
+                    f"4. For EACH artifact path mentioned in any task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>' --workstream {ws.id}\n"
                     f"5. Review the full content of all artifacts before proceeding\n"
                     f"6. Only then proceed with your analysis\n\n"
                     f"Follow your instructions and process these tasks now."
@@ -609,6 +857,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                         all_attachment_sections.append(f"Task {t.id}:\n{section}")
                 if all_attachment_sections:
                     task_prompt += "\n\n" + "\n\n".join(all_attachment_sections)
+                context_section = _workstream_context_prompt_section(ws)
+                if context_section:
+                    task_prompt += f"\n\n{context_section}"
         elif ws:
             states = list(ws.task_states.keys())
             task_prompt = (
@@ -617,6 +868,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 f"Working directory: {os.path.abspath(base_dir)}\n\n"
                 f"Follow your instructions now."
             )
+            context_section = _workstream_context_prompt_section(ws)
+            if context_section:
+                task_prompt += f"\n\n{context_section}"
         else:
             task_prompt = (
                 f"You are running standalone with no specific workstream or task.\n"
