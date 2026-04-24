@@ -8,6 +8,8 @@ from unittest.mock import patch
 import pytest
 
 from orchestration.agents import _resolve_agent_file, get_agent_run, run_agent
+from orchestration.locks import acquire_lock, lock_status
+from orchestration.artifacts import create_artifact
 from orchestration.tasks import create_task, read_task, _save_task
 from orchestration.workstreams import create_workstream, save_workstream
 from orchestration.models import RetryConfig
@@ -169,3 +171,51 @@ def test_run_agent_rejects_paused_workstream(mock_popen, mock_which, workspace):
         run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
 
     mock_popen.assert_not_called()
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_releases_matching_lock(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Lock WS", base_dir=workspace)
+    task = create_task(ws.id, title="T", base_dir=workspace)
+
+    acquire_lock(task.id, agent_id="Test Agent", base_dir=workspace)
+    assert lock_status(task.id, base_dir=workspace) is not None
+
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    assert lock_status(task.id, base_dir=workspace) is None
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_does_not_inline_attachments_by_default(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="No Inline WS", base_dir=workspace)
+    create_artifact("reports/brief.md", "inline me", base_dir=workspace, workstream_id=ws.id)
+    task = create_task(ws.id, title="Task", attachments=["reports/brief.md"], base_dir=workspace)
+
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    assert "Task attachments (artifact paths + inlined content):" not in prompt
+    assert "inline me" not in prompt
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_inlines_attachments_when_workstream_flag_enabled(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Inline WS", base_dir=workspace)
+    ws.inline_attachments = True
+    save_workstream(ws, workspace)
+
+    create_artifact("reports/brief.md", "inline me", base_dir=workspace, workstream_id=ws.id)
+    task = create_task(ws.id, title="Task", attachments=["reports/brief.md"], base_dir=workspace)
+
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    assert "Task attachments (artifact paths + inlined content):" in prompt
+    assert "- Path: reports/brief.md" in prompt
+    assert "inline me" in prompt
