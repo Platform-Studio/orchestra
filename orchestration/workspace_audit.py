@@ -8,6 +8,7 @@ MAX_ENTRIES to prevent unbounded growth.
 """
 
 import os
+import tempfile
 import yaml
 
 from .models import now_iso
@@ -23,16 +24,36 @@ def _audit_path(base_dir: str) -> str:
 def _load_audit(base_dir: str) -> list:
     path = _audit_path(base_dir)
     if os.path.exists(path):
-        with open(path) as f:
-            data = yaml.safe_load(f)
-            return data if isinstance(data, list) else []
+        # Readers may occasionally race a writer. Retry once and fail soft so
+        # UI diagnostics never break on transient partial YAML reads.
+        for _ in range(2):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                return data if isinstance(data, list) else []
+            except yaml.YAMLError:
+                continue
+            except OSError:
+                continue
     return []
 
 
 def _save_audit(entries: list, base_dir: str) -> None:
     path = _audit_path(base_dir)
-    with open(path, "w") as f:
-        yaml.dump(entries, f, default_flow_style=False, sort_keys=False)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix="workspace_audit_", suffix=".yaml", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(entries, f, default_flow_style=False, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def log_event(event_type: str, description: str, base_dir: str = ".", **extra) -> dict:

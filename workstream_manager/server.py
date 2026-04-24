@@ -150,6 +150,7 @@ def handle_workstream(method, parts, params):
         return _ok({
             "id": ws.id,
             "name": ws.name,
+            "task_states": ws.task_states,
             "mounted_workspace_path": ws.mounted_workspace_path,
             "resolved_workspace_path": resolved_root,
             "effective_env": effective,

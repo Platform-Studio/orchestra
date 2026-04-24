@@ -319,15 +319,24 @@ python -m orchestration.cli trigger create WORKSTREAM_ID --on-state "Done" --act
 # Schedule-based trigger: runs every minute on matching tasks
 python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "* * * * *" --action run_command --command "echo tick"
 
-# Schedule-based trigger with task filter and concurrency limit
-python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "*/5 * * * *" --filter '{"status": "pending", "tags": ["batch"]}' --action run_agent --agent sdr --max-concurrent 3
+# Schedule-based trigger with task filter
+python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "*/5 * * * *" --filter '{"status": "pending", "tags": ["batch"]}' --action run_agent --agent sdr
 ```
 
 Template variables `{task_id}` and `{workstream_id}` are replaced in `run_command` commands.
 
 All triggers are evaluated by the scheduler on each tick (every 60 seconds). State-based triggers match tasks currently in the specified state. Schedule-based triggers match on cron expressions.
 
-The `--max-concurrent` flag (default: 1) limits how many tasks a trigger can process in parallel within the workstream.
+Concurrency for `run_agent` triggers is controlled at the workstream level, per agent, with default `1` run per agent:
+
+```yaml
+agent_concurrency:
+  default: 1
+  overrides:
+    kanban_ninja: 2
+```
+
+This policy is configured in workstream YAML. Trigger-level concurrency flags are deprecated.
 
 #### trigger list — List triggers on a workstream
 

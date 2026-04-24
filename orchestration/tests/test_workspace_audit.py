@@ -89,6 +89,26 @@ class TestGetAuditLog:
         entries = get_audit_log(workspace)
         assert entries == []
 
+    def test_malformed_yaml_returns_empty_instead_of_raising(self, workspace):
+        from pathlib import Path
+        audit_path = Path(workspace) / "workspace_audit.yaml"
+        audit_path.write_text("- timestamp: '2026-01-01T00:00:00Z'\n  type: broken\n  description: \"unterminated\n", encoding="utf-8")
+
+        entries = get_audit_log(workspace)
+
+        assert entries == []
+
+    def test_log_event_recovers_after_malformed_yaml(self, workspace):
+        from pathlib import Path
+        audit_path = Path(workspace) / "workspace_audit.yaml"
+        audit_path.write_text("- bad: \"unterminated\n", encoding="utf-8")
+
+        entry = log_event("recovered", "Recovered write", workspace)
+        entries = get_audit_log(workspace)
+
+        assert entry["type"] == "recovered"
+        assert entries and entries[0]["type"] == "recovered"
+
 
 class TestPauseResumeAudit:
     def test_pause_logs_event(self, workspace, ws):

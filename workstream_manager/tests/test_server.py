@@ -24,6 +24,7 @@ def _fake_workstream(**kwargs):
         "name": "Test WS",
         "description": "desc",
         "parent_id": None,
+        "mounted_workspace_path": "/tmp/workspace",
         "task_states": {"backlog": ["doing"], "doing": ["done"], "done": []},
         "paused": False,
         "retry": None,
@@ -90,6 +91,9 @@ _PATCHES = {
     "create_workstream": "workstream_manager.server.create_workstream",
     "find_workstreams":  "workstream_manager.server.find_workstreams",
     "save_workstream":   "workstream_manager.server.save_workstream",
+    "list_workstream_hierarchy_env": "workstream_manager.server.list_workstream_hierarchy_env",
+    "list_effective_workstream_env": "workstream_manager.server.list_effective_workstream_env",
+    "resolve_workstream_workspace": "workstream_manager.server.resolve_workstream_workspace",
     "create_task":       "workstream_manager.server.create_task",
     "read_task":         "workstream_manager.server.read_task",
     "update_task":       "workstream_manager.server.update_task",
@@ -124,6 +128,9 @@ def api(tmp_path):
     mocks["list_tasks"].return_value = []
     mocks["list_triggers"].return_value = []
     mocks["scheduler_status"].return_value = {"running": False, "last_tick": None}
+    mocks["list_workstream_hierarchy_env"].return_value = []
+    mocks["list_effective_workstream_env"].return_value = {}
+    mocks["resolve_workstream_workspace"].return_value = "/tmp/workspace"
 
     # Default for lock_status (used by board/poll)
     mocks["lock_status"].return_value = None
@@ -325,6 +332,14 @@ class TestWorkstream:
         code, body = api.get("/api/workstream/read/ws-42")
         assert code == 200
         assert body["data"]["id"] == "ws-42"
+
+    def test_info_includes_task_states(self, api):
+        ws = _fake_workstream(id="ws-42")
+        api.mocks["read_workstream"].return_value = ws
+        code, body = api.get("/api/workstream/info/ws-42")
+        assert code == 200
+        assert body["data"]["id"] == "ws-42"
+        assert body["data"]["task_states"] == ws.task_states
 
     def test_find(self, api):
         ws = _fake_workstream()
