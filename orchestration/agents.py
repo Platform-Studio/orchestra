@@ -143,6 +143,70 @@ def list_active_agents(base_dir: str = ".") -> list:
     return sorted(runs, key=lambda r: r.get("started_at", ""), reverse=True)
 
 
+def _agent_identity_keys(agent_ref: str, base_dir: str = ".") -> set:
+    """Return case-insensitive identity keys for an agent reference."""
+    raw = str(agent_ref or "").strip()
+    if not raw:
+        return set()
+
+    keys = set()
+    keys.add(raw.lower())
+
+    base_name = os.path.basename(raw)
+    keys.add(base_name.lower())
+    if base_name.lower().endswith(".md"):
+        keys.add(base_name[:-3].lower())
+
+    try:
+        resolved = _resolve_agent_file(raw, base_dir)
+        resolved_name = os.path.basename(resolved)
+        keys.add(resolved_name.lower())
+        if resolved_name.lower().endswith(".md"):
+            keys.add(resolved_name[:-3].lower())
+        agent_def = _parse_agent_md(resolved)
+        friendly = str(agent_def.get("name") or "").strip()
+        if friendly:
+            keys.add(friendly.lower())
+    except Exception:
+        pass
+
+    return {k for k in keys if k}
+
+
+def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = ".") -> int:
+    """Count active runs for a specific agent within a workstream."""
+    if not workstream_id or not agent_ref:
+        return 0
+
+    target_keys = _agent_identity_keys(agent_ref, base_dir)
+    if not target_keys:
+        return 0
+
+    with _ACTIVE_AGENTS_LOCK:
+        runs = _read_active_agents(base_dir)
+
+    count = 0
+    for run in runs:
+        if str(run.get("workstream_id") or "") != str(workstream_id):
+            continue
+
+        run_keys = set()
+        for candidate in (run.get("agent"), run.get("agent_ref")):
+            text = str(candidate or "").strip()
+            if not text:
+                continue
+            run_keys.add(text.lower())
+            bname = os.path.basename(text)
+            run_keys.add(bname.lower())
+            if bname.lower().endswith(".md"):
+                run_keys.add(bname[:-3].lower())
+
+        if run_keys & target_keys:
+            count += 1
+
+    return count
+
+
 def list_agent_runs(limit: int = 100, base_dir: str = ".") -> list:
     """Return active + recent completed runs, sorted by start time desc."""
     if limit <= 0:
@@ -738,6 +802,10 @@ def _workstream_context_prompt_section(ws) -> str:
     return "Workstream Operating Context:\n" + context
 
 
+def _should_inline_attachments(ws) -> bool:
+    return bool(getattr(ws, "inline_attachments", False))
+
+
 # Default agent execution timeout in seconds (30 minutes)
 DEFAULT_AGENT_TIMEOUT = 1800
 
@@ -821,9 +889,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 )
                 if task.description:
                     task_prompt += f"\n\nTask description:\n{task.description}"
-                attachment_section = _read_task_attachments_for_prompt(task, base_dir)
-                if attachment_section:
-                    task_prompt += f"\n\n{attachment_section}"
+                if _should_inline_attachments(ws):
+                    attachment_section = _read_task_attachments_for_prompt(task, base_dir)
+                    if attachment_section:
+                        task_prompt += f"\n\n{attachment_section}"
                 context_section = _workstream_context_prompt_section(ws)
                 if context_section:
                     task_prompt += f"\n\n{context_section}"
@@ -850,13 +919,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"6. Only then proceed with your analysis\n\n"
                     f"Follow your instructions and process these tasks now."
                 )
-                all_attachment_sections = []
-                for t in tasks:
-                    section = _read_task_attachments_for_prompt(t, base_dir)
-                    if section:
-                        all_attachment_sections.append(f"Task {t.id}:\n{section}")
-                if all_attachment_sections:
-                    task_prompt += "\n\n" + "\n\n".join(all_attachment_sections)
+                if _should_inline_attachments(ws):
+                    all_attachment_sections = []
+                    for t in tasks:
+                        section = _read_task_attachments_for_prompt(t, base_dir)
+                        if section:
+                            all_attachment_sections.append(f"Task {t.id}:\n{section}")
+                    if all_attachment_sections:
+                        task_prompt += "\n\n" + "\n\n".join(all_attachment_sections)
                 context_section = _workstream_context_prompt_section(ws)
                 if context_section:
                     task_prompt += f"\n\n{context_section}"
@@ -1021,6 +1091,16 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 else:
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
             _save_task(t, base_dir)
+
+        # Best-effort lock cleanup for this agent/task set.
+        # This handles stale lock edge cases when scheduler/thread lifecycles are interrupted.
+        from .locks import release_lock
+        for tid in task_ids:
+            try:
+                release_lock(tid, agent_id=agent_def["name"], base_dir=base_dir)
+            except Exception:
+                # Ignore ownership mismatches/missing locks; callers may also release locks.
+                pass
 
         if returncode != 0:
             if timeout_expired:

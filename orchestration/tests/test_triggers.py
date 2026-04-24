@@ -3,7 +3,7 @@
 import os
 import pytest
 from datetime import datetime, timezone, timedelta
-from orchestration.workstreams import create_workstream, read_workstream
+from orchestration.workstreams import create_workstream, read_workstream, save_workstream
 from orchestration.tasks import create_task, read_task, update_task
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, execute_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import tick, _save_state
@@ -163,7 +163,7 @@ class TestStateTriggerViaTick:
         from orchestration.locks import acquire_lock
         create_trigger(
             ws.id, on_state="To Do", action="run_command",
-            command="echo x", max_concurrent=5, base_dir=workspace,
+            command="echo x", base_dir=workspace,
         )
         task = create_task(ws.id, title="Locked", base_dir=workspace)
         acquire_lock(task.id, "some_agent", base_dir=workspace)
@@ -172,114 +172,61 @@ class TestStateTriggerViaTick:
         assert len(result["state_triggers_fired"]) == 0
 
 
-class TestMaxConcurrent:
-    def test_create_trigger_with_max_concurrent(self, workspace, ws):
-        trigger = create_trigger(
-            ws.id, on_state="Done", action="run_command",
-            command="echo x", max_concurrent=3, base_dir=workspace,
-        )
-        assert trigger.max_concurrent == 3
-        reloaded = read_workstream(ws.id, base_dir=workspace)
-        assert reloaded.triggers[0].max_concurrent == 3
-
-    def test_default_max_concurrent_is_1(self, workspace, ws):
-        trigger = create_trigger(
-            ws.id, on_state="Done", action="run_command",
-            command="echo x", base_dir=workspace,
-        )
-        assert trigger.max_concurrent == 1
-
-    def test_trigger_fires_when_no_locks(self, workspace, ws):
-        """Trigger should fire normally when no locks are held."""
+class TestAgentConcurrency:
+    def test_state_trigger_skipped_when_agent_limit_reached(self, workspace, ws, monkeypatch):
         create_trigger(
-            ws.id, on_state="To Do", action="run_command",
-            command="echo ok", base_dir=workspace,
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", base_dir=workspace,
         )
         create_task(ws.id, title="T", base_dir=workspace)
+
+        called = {"count": 0}
+
+        def _fake_lock_invoke_unlock(*_args, **_kwargs):
+            called["count"] += 1
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.agents.count_active_agent_runs", lambda *_a, **_k: 1)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
-        assert len(result["state_triggers_fired"]) == 1
-        assert result["state_triggers_fired"][0]["result"]["status"] == "dispatched"
 
-    def test_trigger_skipped_when_at_max_concurrent(self, workspace, ws):
-        """Trigger should be skipped when active locks >= max_concurrent."""
-        from orchestration.locks import acquire_lock
-        create_trigger(
-            ws.id, on_state="To Do", action="run_command",
-            command="echo x", max_concurrent=1, base_dir=workspace,
-        )
-        # Create a task and lock it to simulate an active agent
-        locked_task = create_task(ws.id, title="Locked", base_dir=workspace)
-        acquire_lock(locked_task.id, "some_agent", base_dir=workspace)
-
-        # Create another task that should be skipped (at max_concurrent)
-        create_task(ws.id, title="Trigger", base_dir=workspace)
-        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
-        result = tick(workspace)
-        # Trigger fires but returns skipped status due to max_concurrent
+        assert called["count"] == 0
         assert len(result["state_triggers_fired"]) == 1
         assert result["state_triggers_fired"][0]["result"]["status"] == "skipped"
 
-    def test_trigger_fires_when_below_max_concurrent(self, workspace, ws):
-        """Trigger should fire when active locks < max_concurrent."""
-        from orchestration.locks import acquire_lock
-        create_trigger(
-            ws.id, on_state="To Do", action="run_command",
-            command="echo ok", max_concurrent=2, base_dir=workspace,
-        )
-        # Create one lock — still below max_concurrent=2
-        locked_task = create_task(ws.id, title="Locked", base_dir=workspace)
-        acquire_lock(locked_task.id, "some_agent", base_dir=workspace)
+    def test_state_trigger_dispatches_up_to_agent_limit(self, workspace, ws, monkeypatch):
+        ws.agent_concurrency = {
+            "default": 1,
+            "overrides": {"test_agent": 2},
+        }
+        save_workstream(ws, workspace)
 
-        # Unlocked task in same state should fire
-        create_task(ws.id, title="Trigger", base_dir=workspace)
+        create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", base_dir=workspace,
+        )
+
+        create_task(ws.id, title="T1", base_dir=workspace)
+        create_task(ws.id, title="T2", base_dir=workspace)
+        create_task(ws.id, title="T3", base_dir=workspace)
+
+        calls = []
+
+        def _fake_lock_invoke_unlock(_trigger, task_ids, *_args, **_kwargs):
+            calls.append(list(task_ids))
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.agents.count_active_agent_runs", lambda *_a, **_k: 0)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
-        assert len(result["state_triggers_fired"]) == 1
-        assert result["state_triggers_fired"][0]["result"]["status"] == "dispatched"
 
-    def test_trigger_skipped_when_at_max_concurrent_2(self, workspace, ws):
-        """Trigger with max_concurrent=2 should skip when 2 locks active."""
-        from orchestration.locks import acquire_lock
-        create_trigger(
-            ws.id, on_state="To Do", action="run_command",
-            command="echo x", max_concurrent=2, base_dir=workspace,
-        )
-        t1 = create_task(ws.id, title="L1", base_dir=workspace)
-        t2 = create_task(ws.id, title="L2", base_dir=workspace)
-        acquire_lock(t1.id, "agent1", base_dir=workspace)
-        acquire_lock(t2.id, "agent2", base_dir=workspace)
-
-        # Another unlocked task — but at max_concurrent=2 with 2 locks
-        create_task(ws.id, title="Trigger", base_dir=workspace)
-        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
-        result = tick(workspace)
-        # Trigger fires but returns skipped status due to max_concurrent
-        assert len(result["state_triggers_fired"]) == 1
-        assert result["state_triggers_fired"][0]["result"]["status"] == "skipped"
-
-    def test_max_concurrent_serialization_roundtrip(self, workspace, ws):
-        """max_concurrent should survive YAML serialization."""
-        create_trigger(
-            ws.id, on_state="Done", action="run_command",
-            command="echo x", max_concurrent=5, base_dir=workspace,
-        )
-        reloaded = read_workstream(ws.id, base_dir=workspace)
-        assert reloaded.triggers[0].max_concurrent == 5
-
-    def test_max_concurrent_default_not_serialized(self, workspace, ws):
-        """Default max_concurrent=1 should not appear in serialized YAML."""
-        import yaml, os
-        create_trigger(
-            ws.id, on_state="Done", action="run_command",
-            command="echo x", base_dir=workspace,
-        )
-        # Read the raw workstream YAML
-        ws_file = os.path.join(workspace, "workstreams", f"{ws.id}.yaml")
-        with open(ws_file) as f:
-            data = yaml.safe_load(f)
-        trigger_data = data["triggers"][0]
-        assert "max_concurrent" not in trigger_data
+        assert len(calls) == 2
+        assert len(result["state_triggers_fired"]) == 2
+        assert all(x["result"]["status"] == "dispatched" for x in result["state_triggers_fired"])
 
 
 class TestTriggerPrompt:

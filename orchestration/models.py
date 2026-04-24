@@ -70,7 +70,6 @@ class Trigger:
     filter: dict = None        # filter for schedule-based triggers (state, tags, older_than_days)
     agent: str = None
     command: str = None
-    max_concurrent: int = 1    # max parallel executions within the workstream
     prompt: str = None         # custom prompt injected into agent when trigger fires
     timeout: int = None        # override agent timeout (seconds); None = use agent default
 
@@ -86,8 +85,6 @@ class Trigger:
             d["agent"] = self.agent
         if self.command is not None:
             d["command"] = self.command
-        if self.max_concurrent != 1:
-            d["max_concurrent"] = self.max_concurrent
         if self.prompt is not None:
             d["prompt"] = self.prompt
         if self.timeout is not None:
@@ -104,7 +101,6 @@ class Trigger:
             filter=data.get("filter"),
             agent=data.get("agent"),
             command=data.get("command"),
-            max_concurrent=data.get("max_concurrent", 1),
             prompt=data.get("prompt"),
             timeout=data.get("timeout"),
         )
@@ -118,6 +114,8 @@ class Workstream:
     context: str = None
     parent_id: str = None
     mounted_workspace_path: str = None
+    inline_attachments: bool = False
+    agent_concurrency: dict = field(default_factory=dict)
     task_states: dict = field(default_factory=lambda: dict(DEFAULT_TASK_STATES))
     retry: RetryConfig = None
     triggers: list = field(default_factory=list)
@@ -138,6 +136,10 @@ class Workstream:
             d["parent_id"] = self.parent_id
         if self.mounted_workspace_path is not None:
             d["mounted_workspace_path"] = self.mounted_workspace_path
+        if self.inline_attachments:
+            d["inline_attachments"] = True
+        if self.agent_concurrency:
+            d["agent_concurrency"] = self.agent_concurrency
         if self.retry is not None:
             d["retry"] = self.retry.to_dict()
         if self.paused:
@@ -155,6 +157,8 @@ class Workstream:
             context=data.get("context"),
             parent_id=data.get("parent_id"),
             mounted_workspace_path=data.get("mounted_workspace_path"),
+            inline_attachments=data.get("inline_attachments", False),
+            agent_concurrency=data.get("agent_concurrency", {}),
             task_states=data.get("task_states", dict(DEFAULT_TASK_STATES)),
             retry=retry,
             triggers=triggers,

@@ -102,7 +102,6 @@ def create_trigger(
     filter: dict = None,
     agent: str = None,
     command: str = None,
-    max_concurrent: int = 1,
     prompt: str = None,
     timeout: int = None,
     base_dir: str = ".",
@@ -121,7 +120,6 @@ def create_trigger(
         filter=filter,
         agent=agent,
         command=command,
-        max_concurrent=max_concurrent,
         prompt=prompt,
         timeout=timeout,
     )

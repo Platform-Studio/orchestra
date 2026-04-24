@@ -233,6 +233,40 @@ def _audit_trigger(trigger, result, ws, base_dir, task_ids=None):
     log_event("trigger_fired", desc, base_dir, **kwargs)
 
 
+def _workstream_agent_limit(ws, agent_ref: str, base_dir: str = ".") -> int:
+    """Resolve per-agent concurrency limit from workstream policy."""
+    default_limit = 1
+    overrides = {}
+
+    policy = getattr(ws, "agent_concurrency", None)
+    if isinstance(policy, dict):
+        try:
+            default_limit = int(policy.get("default", 1) or 1)
+        except (TypeError, ValueError):
+            default_limit = 1
+        raw_overrides = policy.get("overrides", {})
+        if isinstance(raw_overrides, dict):
+            overrides = raw_overrides
+
+    default_limit = max(1, default_limit)
+
+    if not agent_ref:
+        return default_limit
+
+    from .agents import _agent_identity_keys
+
+    identity_keys = _agent_identity_keys(agent_ref, base_dir=base_dir)
+    for key, value in overrides.items():
+        normalized_key = str(key or "").strip().lower()
+        if normalized_key and normalized_key in identity_keys:
+            try:
+                return max(1, int(value))
+            except (TypeError, ValueError):
+                return default_limit
+
+    return default_limit
+
+
 def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str) -> None:
     """Execute a trigger and release locks on a background daemon thread.
 
@@ -283,7 +317,7 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
     Returns:
         Result dict from execute_trigger, or {"status": "dispatched"} if background=True.
     """
-    from .locks import acquire_lock, release_lock, active_lock_count
+    from .locks import acquire_lock, release_lock
     from .workstreams import read_workstream
 
     # Re-check paused state at execution time so direct calls and races with
@@ -298,20 +332,25 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
 
     agent_id = trigger.agent or f"trigger:{trigger.id}"
 
-    # Check max_concurrent before locking
-    if task_ids:
-        current = active_lock_count(ws.id, base_dir=base_dir)
-        if current >= trigger.max_concurrent:
+    # Enforce workstream-level concurrency only for run_agent triggers.
+    if trigger.action == "run_agent" and trigger.agent:
+        from .agents import count_active_agent_runs
+        current_runs = count_active_agent_runs(ws.id, trigger.agent, base_dir=base_dir)
+        max_runs = _workstream_agent_limit(ws, trigger.agent, base_dir=base_dir)
+        if current_runs >= max_runs:
             from .workspace_audit import log_event as _log_event
             _log_event(
                 "trigger_skipped",
                 f"Trigger '{trigger.action}' skipped — "
-                f"{current}/{trigger.max_concurrent} concurrent locks active",
+                f"{current_runs}/{max_runs} active agent runs for '{trigger.agent}'",
                 base_dir, trigger_id=trigger.id, workstream_id=ws.id,
                 status="skipped",
             )
-            return {"trigger_id": trigger.id, "status": "skipped",
-                    "message": f"max_concurrent ({trigger.max_concurrent}) reached"}
+            return {
+                "trigger_id": trigger.id,
+                "status": "skipped",
+                "message": f"agent_concurrency ({max_runs}) reached for '{trigger.agent}'",
+            }
 
     # Lock all tasks
     locked_ids = []
@@ -481,17 +520,22 @@ def tick(base_dir: str = ".") -> dict:
             if not matching_ids:
                 continue
 
-            # Respect max_concurrent: invoke the agent once per task, up to
-            # the number of free concurrency slots available right now.
-            from .locks import active_lock_count
-            current_locks = active_lock_count(ws.id, base_dir=base_dir)
-            free_slots = max(0, trigger.max_concurrent - current_locks)
-            ids_to_run = matching_ids[:free_slots]
+            # For agent triggers, respect workstream-level per-agent
+            # concurrency. Command triggers are unconstrained here.
+            if trigger.action == "run_agent" and trigger.agent:
+                from .agents import count_active_agent_runs
+                current_runs = count_active_agent_runs(ws.id, trigger.agent, base_dir=base_dir)
+                max_runs = _workstream_agent_limit(ws, trigger.agent, base_dir=base_dir)
+                free_slots = max(0, max_runs - current_runs)
+                ids_to_run = matching_ids[:free_slots]
+            else:
+                ids_to_run = matching_ids
+
             if not ids_to_run:
                 results["state_triggers_fired"].append({
                     "trigger_id": trigger.id,
                     "task_ids": [],
-                    "result": {"status": "skipped", "reason": "max_concurrent reached"},
+                    "result": {"status": "skipped", "reason": "agent_concurrency reached"},
                 })
                 continue
 
