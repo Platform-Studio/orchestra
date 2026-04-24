@@ -32,3 +32,16 @@ workstreams/**/.env.*
 
 # Allow this file itself
 !.gitignore
+
+# Allow the Prova product directory (all product source code)
+!prova/**
+
+# But exclude build artifacts and dependencies within prova
+prova/frontend/node_modules/
+prova/frontend/.nuxt/
+prova/frontend/.output/
+prova/backend/.venv/
+prova/backend/__pycache__/
+prova/backend/**/__pycache__/
+prova/backend/*.egg-info/
+prova/.env
