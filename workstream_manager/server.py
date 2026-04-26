@@ -41,6 +41,7 @@ from orchestration.tasks import (
     create_task, read_task, update_task, list_tasks,
     comment_task, archive_task, get_audit, clear_schedule,
     move_task, duplicate_task, attach_to_task, detach_from_task,
+    move_task_before, move_task_after, move_task_to_index,
 )
 from orchestration.locks import acquire_lock, release_lock, lock_status
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
@@ -298,6 +299,25 @@ def handle_task(method, parts, params):
         if "status" in params:
             kwargs["target_status"] = params["status"]
         task = duplicate_task(**kwargs)
+        return _ok(task.to_dict())
+    elif m == "reorder" and parts:
+        task_id = parts[0]
+        if "index" in params:
+            task = move_task_to_index(task_id, int(params["index"]), base_dir=WORKSPACE_DIR)
+            return _ok(task.to_dict())
+
+        target_task_id = params.get("target_task_id") or params.get("target")
+        if not target_task_id:
+            return _err("Missing required parameter: target_task_id")
+
+        position = (params.get("position") or "before").strip().lower()
+        if position == "before":
+            task = move_task_before(task_id, target_task_id, base_dir=WORKSPACE_DIR)
+        elif position == "after":
+            task = move_task_after(task_id, target_task_id, base_dir=WORKSPACE_DIR)
+        else:
+            return _err("Invalid position. Use 'before' or 'after'.")
+
         return _ok(task.to_dict())
     return _err(f"Unknown task method: {m}")
 

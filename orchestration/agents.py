@@ -26,6 +26,37 @@ MAX_AUDIT_OUTPUT = 10_000
 _ACTIVE_AGENTS_LOCK = threading.Lock()
 
 
+def _is_pid_alive(pid) -> bool:
+    """Best-effort process existence check for active run bookkeeping."""
+    if pid is None:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _prune_dead_active_runs(base_dir: str, runs: list = None) -> list:
+    """Drop stale active-agent entries whose PIDs are no longer alive."""
+    if runs is None:
+        runs = _read_active_agents(base_dir)
+
+    live_runs = []
+    changed = False
+    for run in runs:
+        pid = run.get("pid")
+        # Runs without a pid are kept for backward compatibility.
+        if pid is None or _is_pid_alive(pid):
+            live_runs.append(run)
+        else:
+            changed = True
+
+    if changed:
+        _write_active_agents(base_dir, live_runs)
+    return live_runs
+
+
 def _compact_json(value) -> str:
     """Compact JSON for safe env var transport."""
     return json.dumps(value, separators=(",", ":"))
@@ -139,7 +170,7 @@ def _unregister_active_agent(base_dir: str, run_id: str) -> None:
 
 def list_active_agents(base_dir: str = ".") -> list:
     with _ACTIVE_AGENTS_LOCK:
-        runs = _read_active_agents(base_dir)
+        runs = _prune_dead_active_runs(base_dir)
     return sorted(runs, key=lambda r: r.get("started_at", ""), reverse=True)
 
 
@@ -183,7 +214,7 @@ def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = 
         return 0
 
     with _ACTIVE_AGENTS_LOCK:
-        runs = _read_active_agents(base_dir)
+        runs = _prune_dead_active_runs(base_dir)
 
     count = 0
     for run in runs:
@@ -223,7 +254,8 @@ def list_agent_runs(limit: int = 100, base_dir: str = ".") -> list:
             continue
 
     with _ACTIVE_AGENTS_LOCK:
-        active = {r.get("run_id"): r for r in _read_active_agents(base_dir)}
+        active_runs = _prune_dead_active_runs(base_dir)
+        active = {r.get("run_id"): r for r in active_runs}
 
     from .tasks import read_task
 
@@ -236,6 +268,10 @@ def list_agent_runs(limit: int = 100, base_dir: str = ".") -> list:
             run["status"] = "running"
             run["pid"] = live.get("pid")
             run["log_path"] = live.get("log_path", run.get("log_path"))
+        elif run.get("status") == "running":
+            # Metadata can be left behind after crashes/restarts. If a run is not
+            # in live active state anymore, report it as stale instead of running.
+            run["status"] = "stale"
 
     # Include active runs even if metadata file does not exist yet.
     for rid, live in active.items():
@@ -294,7 +330,7 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
         }
 
     with _ACTIVE_AGENTS_LOCK:
-        active = _read_active_agents(base_dir)
+        active = _prune_dead_active_runs(base_dir)
     live = next((r for r in active if r.get("run_id") == run_id), None)
     if live:
         run["status"] = "running"
@@ -378,7 +414,7 @@ def _get_run_retry_info(run: dict, base_dir: str) -> dict:
         }
 
     from .tasks import read_task
-    from .workstreams import read_workstream
+    from .workstreams import read_workstream, resolve_workstream_workspace
     from .retry import DEFAULT_RETRY_CONFIG
 
     task_id = task_ids[0]
@@ -575,16 +611,73 @@ def kill_agent_run(run_id: str, base_dir: str = ".", grace_seconds: float = 1.0)
     }
 
 
-def _get_model() -> str:
-    """Return the model name for Claude Code CLI from DEFAULT_LLM env var.
+def _normalize_model_name(raw: str) -> str:
+    """Normalize model names accepted by claude CLI.
 
-    Strips 'anthropic/' prefix if present (legacy format).
-    Falls back to 'sonnet' if not set.
+    Supports legacy values prefixed with 'anthropic/'.
     """
-    raw = os.getenv("DEFAULT_LLM", "sonnet")
-    if raw.startswith("anthropic/"):
-        raw = raw[len("anthropic/"):]
-    return raw
+    model = str(raw or "").strip()
+    if model.startswith("anthropic/"):
+        model = model[len("anthropic/"):]
+    return model
+
+
+def _get_model() -> str:
+    """Return the default model name for Claude Code CLI.
+
+    Uses DEFAULT_LLM and falls back to 'sonnet'.
+    """
+    return _normalize_model_name(os.getenv("DEFAULT_LLM", "sonnet"))
+
+
+def _model_from_level(level: str) -> str:
+    """Map x-model-level to env-configured model aliases."""
+    level_norm = str(level or "").strip().lower()
+    env_key_by_level = {
+        "high": "HIGH_LLM",
+        "medium": "MEDIUM_LLM",
+        "low": "LOW_LLM",
+    }
+    env_key = env_key_by_level.get(level_norm)
+    if not env_key:
+        raise ValueError(f"Invalid x-model-level '{level}'. Expected one of: high, medium, low")
+
+    env_value = os.getenv(env_key)
+    if not env_value:
+        raise ValueError(f"x-model-level '{level_norm}' requires env var {env_key} to be set")
+
+    model = _normalize_model_name(env_value)
+    if not model:
+        raise ValueError(f"Env var {env_key} is empty")
+    return model
+
+
+def _resolve_agent_model(agent_def: dict) -> str:
+    """Resolve model with precedence: x-model > x-model-level > DEFAULT_LLM."""
+    explicit_model = _normalize_model_name(agent_def.get("model"))
+    if explicit_model:
+        return explicit_model
+
+    level = agent_def.get("model_level")
+    if str(level or "").strip():
+        return _model_from_level(level)
+
+    return _get_model()
+
+
+def _resolve_agent_effort(agent_def: dict):
+    """Return validated effort value or None when not set."""
+    raw = agent_def.get("effort")
+    effort = str(raw or "").strip().lower()
+    if not effort:
+        return None
+
+    allowed = {"low", "medium", "high", "xhigh", "max"}
+    if effort not in allowed:
+        raise ValueError(
+            f"Invalid x-effort '{raw}'. Expected one of: low, medium, high, xhigh, max"
+        )
+    return effort
 
 
 def _agents_dir(base_dir: str) -> str:
@@ -673,6 +766,9 @@ def _parse_agent_md(path: str) -> dict:
         "agent_type": header.get("x-agent-type", "worker"),
         "tools": header.get("x-tools", []),
         "timeout": header.get("x-timeout"),
+        "model": header.get("x-model"),
+        "model_level": header.get("x-model-level"),
+        "effort": header.get("x-effort"),
         "file": path,
         "body": body,
     }
@@ -810,6 +906,20 @@ def _should_inline_attachments(ws) -> bool:
 DEFAULT_AGENT_TIMEOUT = 1800
 
 
+def _classify_run_outcome(returncode: int, timeout_expired: bool) -> str:
+    """Map subprocess result to persisted run status."""
+    if returncode == 0:
+        return "completed"
+    if timeout_expired:
+        return "timeout"
+
+    # Treat termination signals as killed so UI/operator intent is preserved.
+    if returncode in (-signal.SIGTERM, 128 + signal.SIGTERM, -signal.SIGKILL, 128 + signal.SIGKILL):
+        return "killed"
+
+    return "failed"
+
+
 def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".") -> dict:
     """Run an agent via Claude Code CLI against 0-N tasks.
 
@@ -839,7 +949,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     agent_def = _parse_agent_md(agent_file)
 
     from .tasks import read_task, _save_task
-    from .workstreams import read_workstream
+    from .workstreams import read_workstream, resolve_workstream_workspace
 
     # Load tasks and resolve workstream context
     tasks = []
@@ -867,6 +977,38 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         # Build system prompt from agent definition + tool docs
         system_prompt = _build_system_prompt(agent_def, base_dir)
 
+        # Compute path context for prompt injection
+        orchestration_root = os.path.abspath(base_dir)
+        workspace_root = orchestration_root
+        if ws:
+            # For descendants under a mounted workstream, mounted_workspace_path is
+            # often set on an ancestor. Resolve the workspace that actually stores
+            # this workstream's files first.
+            try:
+                workspace_root = os.path.abspath(
+                    resolve_workstream_workspace(ws.id, base_dir=base_dir)
+                )
+            except Exception:
+                workspace_root = orchestration_root
+
+            # If the current workstream itself is mounted, descendants should be
+            # developed in the mounted target path rather than the YAML storage root.
+            if ws.mounted_workspace_path:
+                _expanded = os.path.expanduser(ws.mounted_workspace_path)
+                workspace_root = (
+                    os.path.abspath(_expanded)
+                    if os.path.isabs(_expanded)
+                    else os.path.abspath(os.path.join(orchestration_root, _expanded))
+                )
+        _path_context = (
+            f"ORCHESTRATION_ROOT: {orchestration_root} "
+            f"(orchestration CLI, artifacts, agent instructions)\n"
+            f"WORKSPACE_ROOT: {workspace_root} "
+            f"(product source code, tests, configs for this workstream)\n"
+            "MANDATORY: Write product code only under WORKSPACE_ROOT. "
+            "Do not write product code under ORCHESTRATION_ROOT unless both paths are identical.\n\n"
+        )
+
         # Build task prompt based on context available
         if tasks and ws:
             if len(tasks) == 1:
@@ -878,7 +1020,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"Current status: {task.status}\n"
                     f"Valid next states: {valid_transitions}\n\n"
                     f"Task IDs file: {task_file_path}\n\n"
-                    f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                    + _path_context +
                     f"=== MANDATORY INITIAL STEPS (Execute these before any analysis) ===\n"
                     f"1. EXECUTE: python -m orchestration.cli task read {task.id}\n"
                     f"2. Read the complete task output including all comments, audit entries, and artifact references\n"
@@ -909,7 +1051,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"in workstream '{ws.name}' (ID: {ws.id}).\n\n"
                     f"Tasks:\n" + "\n".join(task_lines) + "\n\n"
                     f"Task IDs file: {task_file_path}\n\n"
-                    f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                    + _path_context +
                     f"=== MANDATORY INITIAL STEPS (Execute these before any analysis) ===\n"
                     f"1. EXECUTE: python -m orchestration.cli task list {ws.id} or read each task ID from the Task IDs file\n"
                     f"2. For each task, EXECUTE: python -m orchestration.cli task read <task_id>\n"
@@ -935,7 +1077,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             task_prompt = (
                 f"You are running standalone in workstream '{ws.name}' (ID: {ws.id}).\n"
                 f"Available states: {states}\n\n"
-                f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                + _path_context +
                 f"Follow your instructions now."
             )
             context_section = _workstream_context_prompt_section(ws)
@@ -944,7 +1086,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         else:
             task_prompt = (
                 f"You are running standalone with no specific workstream or task.\n"
-                f"Working directory: {os.path.abspath(base_dir)}\n\n"
+                f"ORCHESTRATION_ROOT: {orchestration_root}\n\n"
                 f"Follow your instructions now."
             )
 
@@ -957,42 +1099,35 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             t.add_audit("agent_started", f"Agent '{agent_def['name']}' started processing")
             _save_task(t, base_dir)
 
-        # Build claude CLI command
-        model = _get_model()
-        cmd = [
-            claude_path,
-            "-p", task_prompt,
-            "--model", model,
-            "--output-format", "text",
-            "--verbose",
-        ]
+        # Resolve model and effort for CLI and for run metadata
+        model = _resolve_agent_model(agent_def)
+        effort = _resolve_agent_effort(agent_def)
 
-        # Append system prompt
-        cmd.extend(["--append-system-prompt", system_prompt])
-
-        # Use --dangerously-skip-permissions for headless/automated execution
-        cmd.append("--dangerously-skip-permissions")
-
-        # Run with environment inherited (includes ANTHROPIC_API_KEY from dotenv)
-        env = os.environ.copy()
-        env["ORCHESTRATION_AGENT_NAME"] = agent_def["name"]
-        env["ORCHESTRATION_AGENT_RUN_ID"] = run_id if run_id else ""
-        env["ORCHESTRATION_AGENT_TASK_IDS"] = _compact_json(task_ids)
-        if workstream_id:
-            env["ORCHESTRATION_AGENT_WORKSTREAM_ID"] = str(workstream_id)
-        abs_base = os.path.abspath(base_dir)
-
+        # Initialize run metadata
         _ensure_state_dirs(base_dir)
         run_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
         log_path = os.path.join(_agent_runs_dir(base_dir), f"{run_id}.log")
         log_path_rel = os.path.relpath(log_path, base_dir)
 
+        # Prepare environment for subprocess
+        env = os.environ.copy()
+        env["ORCHESTRATION_AGENT_NAME"] = agent_def["name"]
+        env["ORCHESTRATION_AGENT_RUN_ID"] = run_id if run_id else ""
+        env["ORCHESTRATION_AGENT_TASK_IDS"] = _compact_json(task_ids)
+        env["ORCHESTRATION_ROOT"] = orchestration_root
+        env["WORKSPACE_ROOT"] = workspace_root
+        if workstream_id:
+            env["ORCHESTRATION_AGENT_WORKSTREAM_ID"] = str(workstream_id)
+        abs_base = os.path.abspath(base_dir)
+
         task_titles = [{"id": t.id, "title": t.title} for t in tasks]
         run_meta = {
             "run_id": run_id,
             "agent": agent_def["name"],
             "agent_ref": agent_name,
+            "model": model,
+            "effort": effort,
             "workstream_id": workstream_id,
             "workstream_path": _workstream_path(base_dir, workstream_id),
             "task_ids": list(task_ids),
@@ -1007,8 +1142,17 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         }
         _write_run_meta(base_dir, run_id, run_meta)
 
-        # run_id is now known; update env context used by CLI calls made by the agent.
-        env["ORCHESTRATION_AGENT_RUN_ID"] = run_id
+        # Build claude CLI command
+        cmd = [
+            claude_path,
+            "-p", task_prompt,
+            "--append-system-prompt", system_prompt,
+            "--model", model,
+            "--output-format", "text",
+            "--verbose",
+        ]
+        if effort:
+            cmd.extend(["--effort", effort])
 
         # Use a file-backed log so the Workspace Manager can live-tail active agent output.
         timeout_expired = False
@@ -1026,6 +1170,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "run_id": run_id,
                 "agent": agent_def["name"],
                 "agent_ref": agent_name,
+                "model": model,
+                "effort": effort,
                 "workstream_id": workstream_id,
                 "task_ids": list(task_ids),
                 "pid": proc.pid,
@@ -1059,6 +1205,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "run_id": run_id,
                 "agent": agent_def["name"],
                 "agent_ref": agent_name,
+                "model": model,
+                "effort": effort,
                 "workstream_id": workstream_id,
                 "workstream_path": _workstream_path(base_dir, workstream_id),
                 "task_ids": list(task_ids),
@@ -1068,15 +1216,16 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "log_path": log_path_rel,
                 "started_at": started_at,
             }
+        final_status = _classify_run_outcome(returncode, timeout_expired)
         run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
-        run_meta["status"] = "completed" if returncode == 0 else ("timeout" if timeout_expired else "failed")
+        run_meta["status"] = final_status
         run_meta["exit_code"] = returncode
         _write_run_meta(base_dir, run_id, run_meta)
 
         # Log agent output to audit trail for each task
         for tid in task_ids:
             t = read_task(tid, base_dir)  # Re-read in case agent modified it
-            if returncode == 0:
+            if final_status == "completed":
                 audit_output = output[:MAX_AUDIT_OUTPUT]
                 if len(output) > MAX_AUDIT_OUTPUT:
                     audit_output += f"\n... (truncated, {len(output)} total chars)"
@@ -1086,8 +1235,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 t.last_failure_at = None
             else:
                 error_msg = output[:MAX_AUDIT_OUTPUT]
-                if timeout_expired:
+                if final_status == "timeout":
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' timed out.\n\nError:\n{error_msg}")
+                elif final_status == "killed":
+                    t.add_audit("agent_failed", f"Agent '{agent_def['name']}' was killed.\n\nError:\n{error_msg}")
                 else:
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
             _save_task(t, base_dir)
@@ -1102,9 +1253,11 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 # Ignore ownership mismatches/missing locks; callers may also release locks.
                 pass
 
-        if returncode != 0:
-            if timeout_expired:
+        if final_status != "completed":
+            if final_status == "timeout":
                 raise RuntimeError(f"Agent '{agent_def['name']}' timed out after {effective_timeout} seconds")
+            if final_status == "killed":
+                raise RuntimeError(f"Agent '{agent_def['name']}' was killed (exit {returncode}): {output}")
             raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {returncode}): {output}")
 
         response = {

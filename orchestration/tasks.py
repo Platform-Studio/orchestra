@@ -3,9 +3,13 @@
 import os
 import re
 import yaml
+from decimal import Decimal, InvalidOperation
 
 from .models import Task, RetryConfig, new_id, now_iso
 from .workstreams import read_workstream, resolve_workstream_workspace, list_workstreams
+
+
+RANK_GAP = Decimal("1024")
 
 
 COMMENT_DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})\]\s*")
@@ -63,6 +67,75 @@ def _task_path(base_dir: str, ws_id: str, task_id: str) -> str:
     return os.path.join(_tasks_dir(base_dir, ws_id), f"{task_id}.yaml")
 
 
+def _parse_rank(rank_value):
+    if rank_value is None:
+        return None
+    text = str(rank_value).strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _format_rank(rank_value: Decimal) -> str:
+    text = format(rank_value.normalize(), "f")
+    return text if "." in text else f"{text}.0"
+
+
+def _last_audit_ts(task: Task) -> str:
+    if not task.audit:
+        return ""
+    return getattr(task.audit[-1], "timestamp", "") or ""
+
+
+def _task_sort_key(task: Task):
+    parsed_rank = _parse_rank(getattr(task, "rank", None))
+    if parsed_rank is not None:
+        return (0, parsed_rank, _last_audit_ts(task), task.id)
+    # Backward-compatible fallback for legacy tasks with no rank.
+    return (1, Decimal("0"), _last_audit_ts(task), task.id)
+
+
+def _rebalance_state_ranks(workstream_id: str, status: str, base_dir: str = ".") -> None:
+    tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    for idx, task in enumerate(tasks):
+        new_rank = _format_rank(RANK_GAP * Decimal(idx + 1))
+        if task.rank != new_rank:
+            task.rank = new_rank
+            _save_task(task, base_dir)
+
+
+def _ensure_state_ranks(workstream_id: str, status: str, base_dir: str = ".") -> None:
+    tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    if any(_parse_rank(getattr(t, "rank", None)) is None for t in tasks):
+        _rebalance_state_ranks(workstream_id, status, base_dir=base_dir)
+
+
+def _rank_between(lower: Decimal = None, upper: Decimal = None):
+    if lower is None and upper is None:
+        return _format_rank(RANK_GAP)
+    if lower is None:
+        return _format_rank(upper - RANK_GAP)
+    if upper is None:
+        return _format_rank(lower + RANK_GAP)
+
+    mid = (lower + upper) / 2
+    if mid <= lower or mid >= upper:
+        return None
+    return _format_rank(mid)
+
+
+def _next_rank_for_state(workstream_id: str, status: str, base_dir: str = ".") -> str:
+    state_tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    parsed = [_parse_rank(getattr(t, "rank", None)) for t in state_tasks]
+    parsed = [p for p in parsed if p is not None]
+    if not parsed:
+        return _format_rank(RANK_GAP)
+    return _format_rank(max(parsed) + RANK_GAP)
+
+
 def _find_task_file(task_id: str, base_dir: str = "."):
     """Find a task file by ID across all workstreams. Returns (ws_id, file_path) or None."""
     for ws in list_workstreams(base_dir=base_dir):
@@ -103,6 +176,7 @@ def create_task(
         title=title,
         description=description,
         status=initial_status,
+        rank=_next_rank_for_state(workstream_id, initial_status, base_dir=base_dir),
         creator=creator,
         tags=tags or [],
         retry=RetryConfig.from_dict(retry) if retry else None,
@@ -153,6 +227,7 @@ def update_task(
             )
         old_status = task.status
         task.status = status
+        task.rank = _next_rank_for_state(task.workstream_id, status, base_dir=base_dir)
         if force and not ws.validate_transition(old_status, status):
             task.add_audit("status_change", f"Status forcibly changed from '{old_status}' to '{status}'")
         else:
@@ -232,15 +307,164 @@ def list_tasks(
                 continue
             result.append(task)
 
-    # Default ordering: oldest last-audit timestamp first (FIFO-style pull).
-    # Fallback for malformed/empty audit is empty string, which sorts first.
-    def _last_audit_ts(task: Task) -> str:
-        if not task.audit:
-            return ""
-        return getattr(task.audit[-1], "timestamp", "") or ""
-
-    result.sort(key=_last_audit_ts)
+    # Ordered by rank when present, with legacy fallback to audit timestamp.
+    result.sort(key=_task_sort_key)
     return result
+
+
+def move_task_up(task_id: str, base_dir: str = ".") -> Task:
+    task = read_task(task_id, base_dir)
+    status = task.status
+    _ensure_state_ranks(task.workstream_id, status, base_dir=base_dir)
+
+    state_tasks = [t for t in list_tasks(task.workstream_id, base_dir=base_dir) if t.status == status]
+    idx = next((i for i, t in enumerate(state_tasks) if t.id == task_id), None)
+    if idx is None:
+        raise FileNotFoundError(f"Task {task_id} not found in status '{status}'")
+    if idx == 0:
+        return task
+
+    upper = state_tasks[idx - 1]
+    upper2 = state_tasks[idx - 2] if idx - 2 >= 0 else None
+    lower_rank = _parse_rank(getattr(upper2, "rank", None)) if upper2 else None
+    upper_rank = _parse_rank(getattr(upper, "rank", None))
+    new_rank = _rank_between(lower_rank, upper_rank)
+
+    if new_rank is None:
+        _rebalance_state_ranks(task.workstream_id, status, base_dir=base_dir)
+        return move_task_up(task_id, base_dir=base_dir)
+
+    task.rank = new_rank
+    task.add_audit("reordered", f"Moved up within '{status}'")
+    _save_task(task, base_dir)
+    return task
+
+
+def move_task_down(task_id: str, base_dir: str = ".") -> Task:
+    task = read_task(task_id, base_dir)
+    status = task.status
+    _ensure_state_ranks(task.workstream_id, status, base_dir=base_dir)
+
+    state_tasks = [t for t in list_tasks(task.workstream_id, base_dir=base_dir) if t.status == status]
+    idx = next((i for i, t in enumerate(state_tasks) if t.id == task_id), None)
+    if idx is None:
+        raise FileNotFoundError(f"Task {task_id} not found in status '{status}'")
+    if idx >= len(state_tasks) - 1:
+        return task
+
+    lower = state_tasks[idx + 1]
+    lower2 = state_tasks[idx + 2] if idx + 2 < len(state_tasks) else None
+    lower_rank = _parse_rank(getattr(lower, "rank", None))
+    upper_rank = _parse_rank(getattr(lower2, "rank", None)) if lower2 else None
+    new_rank = _rank_between(lower_rank, upper_rank)
+
+    if new_rank is None:
+        _rebalance_state_ranks(task.workstream_id, status, base_dir=base_dir)
+        return move_task_down(task_id, base_dir=base_dir)
+
+    task.rank = new_rank
+    task.add_audit("reordered", f"Moved down within '{status}'")
+    _save_task(task, base_dir)
+    return task
+
+
+def _reorder_within_state(task_id: str, new_index: int, reason: str, base_dir: str = ".") -> Task:
+    task = read_task(task_id, base_dir)
+    status = task.status
+    workstream_id = task.workstream_id
+    _ensure_state_ranks(workstream_id, status, base_dir=base_dir)
+
+    state_tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    current_idx = next((i for i, t in enumerate(state_tasks) if t.id == task_id), None)
+    if current_idx is None:
+        raise FileNotFoundError(f"Task {task_id} not found in status '{status}'")
+
+    if not state_tasks:
+        return task
+
+    new_index = max(0, min(int(new_index), len(state_tasks) - 1))
+    if new_index == current_idx:
+        return task
+
+    moving = state_tasks.pop(current_idx)
+    state_tasks.insert(new_index, moving)
+
+    prev_task = state_tasks[new_index - 1] if new_index > 0 else None
+    next_task = state_tasks[new_index + 1] if new_index + 1 < len(state_tasks) else None
+    lower = _parse_rank(getattr(prev_task, "rank", None)) if prev_task else None
+    upper = _parse_rank(getattr(next_task, "rank", None)) if next_task else None
+    new_rank = _rank_between(lower, upper)
+
+    if new_rank is None:
+        _rebalance_state_ranks(workstream_id, status, base_dir=base_dir)
+        return _reorder_within_state(task_id, new_index, reason, base_dir=base_dir)
+
+    task.rank = new_rank
+    task.add_audit("reordered", reason)
+    _save_task(task, base_dir)
+    return task
+
+
+def move_task_before(task_id: str, target_task_id: str, base_dir: str = ".") -> Task:
+    if task_id == target_task_id:
+        return read_task(task_id, base_dir)
+
+    task = read_task(task_id, base_dir)
+    target = read_task(target_task_id, base_dir)
+    if task.workstream_id != target.workstream_id:
+        raise ValueError("Tasks must belong to the same workstream for in-state reordering")
+    if task.status != target.status:
+        raise ValueError("Tasks must have the same status for in-state reordering")
+
+    state_tasks = [t for t in list_tasks(task.workstream_id, base_dir=base_dir) if t.status == task.status]
+    task_idx = next((i for i, t in enumerate(state_tasks) if t.id == task_id), None)
+    target_idx = next((i for i, t in enumerate(state_tasks) if t.id == target_task_id), None)
+    if task_idx is None or target_idx is None:
+        raise FileNotFoundError("Could not locate one or both tasks in the target status")
+
+    new_index = target_idx if task_idx > target_idx else target_idx - 1
+    return _reorder_within_state(
+        task_id,
+        new_index,
+        f"Moved before task '{target_task_id}' within '{task.status}'",
+        base_dir=base_dir,
+    )
+
+
+def move_task_after(task_id: str, target_task_id: str, base_dir: str = ".") -> Task:
+    if task_id == target_task_id:
+        return read_task(task_id, base_dir)
+
+    task = read_task(task_id, base_dir)
+    target = read_task(target_task_id, base_dir)
+    if task.workstream_id != target.workstream_id:
+        raise ValueError("Tasks must belong to the same workstream for in-state reordering")
+    if task.status != target.status:
+        raise ValueError("Tasks must have the same status for in-state reordering")
+
+    state_tasks = [t for t in list_tasks(task.workstream_id, base_dir=base_dir) if t.status == task.status]
+    task_idx = next((i for i, t in enumerate(state_tasks) if t.id == task_id), None)
+    target_idx = next((i for i, t in enumerate(state_tasks) if t.id == target_task_id), None)
+    if task_idx is None or target_idx is None:
+        raise FileNotFoundError("Could not locate one or both tasks in the target status")
+
+    new_index = target_idx + 1 if task_idx > target_idx else target_idx
+    return _reorder_within_state(
+        task_id,
+        new_index,
+        f"Moved after task '{target_task_id}' within '{task.status}'",
+        base_dir=base_dir,
+    )
+
+
+def move_task_to_index(task_id: str, index: int, base_dir: str = ".") -> Task:
+    task = read_task(task_id, base_dir)
+    return _reorder_within_state(
+        task_id,
+        int(index),
+        f"Moved to index {int(index)} within '{task.status}'",
+        base_dir=base_dir,
+    )
 
 
 def comment_task(task_id: str, message: str, author: str = None, base_dir: str = ".") -> Task:
@@ -364,6 +588,7 @@ def move_task(
     old_status = task.status
     task.workstream_id = target_workstream_id
     task.status = target_status
+    task.rank = _next_rank_for_state(target_workstream_id, target_status, base_dir=base_dir)
 
     if cross_ws:
         task.add_audit(
@@ -426,6 +651,7 @@ def duplicate_task(
         title=source.title,
         description=source.description,
         status=target_status,
+        rank=_next_rank_for_state(dest_ws_id, target_status, base_dir=base_dir),
         creator=source.creator,
         tags=list(source.tags),
         comments=copy.deepcopy(source.comments),

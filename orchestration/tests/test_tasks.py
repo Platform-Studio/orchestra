@@ -7,6 +7,11 @@ from orchestration.tasks import (
     read_task,
     update_task,
     list_tasks,
+    move_task_up,
+    move_task_down,
+    move_task_before,
+    move_task_after,
+    move_task_to_index,
     comment_task,
     archive_task,
     get_audit,
@@ -160,6 +165,86 @@ class TestListTasks:
         tasks = list_tasks(ws.id, tags=["urgent"], base_dir=workspace)
         assert len(tasks) == 1
         assert tasks[0].title == "T1"
+
+
+class TestTaskOrdering:
+    def test_create_assigns_rank(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        assert t1.rank is not None
+        assert t2.rank is not None
+        assert float(t2.rank) > float(t1.rank)
+
+    def test_move_up_reorders_within_status(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        t3 = create_task(ws.id, title="T3", base_dir=workspace)
+
+        move_task_up(t3.id, base_dir=workspace)
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert ordered == [t1.id, t3.id, t2.id]
+
+    def test_move_down_reorders_within_status(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        t3 = create_task(ws.id, title="T3", base_dir=workspace)
+
+        move_task_down(t1.id, base_dir=workspace)
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert ordered == [t2.id, t1.id, t3.id]
+
+    def test_move_up_on_first_is_noop(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        moved = move_task_up(t1.id, base_dir=workspace)
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert moved.id == t1.id
+        assert ordered == [t1.id, t2.id]
+
+    def test_move_down_on_last_is_noop(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        moved = move_task_down(t2.id, base_dir=workspace)
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert moved.id == t2.id
+        assert ordered == [t1.id, t2.id]
+
+    def test_move_before_reorders_to_target_position(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        t3 = create_task(ws.id, title="T3", base_dir=workspace)
+        t4 = create_task(ws.id, title="T4", base_dir=workspace)
+
+        move_task_before(t4.id, t2.id, base_dir=workspace)
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert ordered == [t1.id, t4.id, t2.id, t3.id]
+
+    def test_move_after_reorders_to_target_position(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        t3 = create_task(ws.id, title="T3", base_dir=workspace)
+        t4 = create_task(ws.id, title="T4", base_dir=workspace)
+
+        move_task_after(t1.id, t3.id, base_dir=workspace)
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert ordered == [t2.id, t3.id, t1.id, t4.id]
+
+    def test_move_to_index_reorders_directly(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        t3 = create_task(ws.id, title="T3", base_dir=workspace)
+
+        move_task_to_index(t3.id, 0, base_dir=workspace)
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert ordered == [t3.id, t1.id, t2.id]
+
+    def test_move_before_requires_same_status(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        update_task(t2.id, status="In Progress", base_dir=workspace)
+
+        with pytest.raises(ValueError, match="same status"):
+            move_task_before(t1.id, t2.id, base_dir=workspace)
 
 
 class TestCommentTask:

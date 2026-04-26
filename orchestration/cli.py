@@ -336,6 +336,36 @@ def cmd_task_detach(args):
     _output(task.to_dict())
 
 
+def cmd_task_move_up(args):
+    from .tasks import move_task_up
+    task = move_task_up(args.task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_move_down(args):
+    from .tasks import move_task_down
+    task = move_task_down(args.task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_move_before(args):
+    from .tasks import move_task_before
+    task = move_task_before(args.task_id, args.target_task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_move_after(args):
+    from .tasks import move_task_after
+    task = move_task_after(args.task_id, args.target_task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_move_to_index(args):
+    from .tasks import move_task_to_index
+    task = move_task_to_index(args.task_id, args.index, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
 # ── Lock commands ────────────────────────────────────────────────────
 
 def cmd_lock_acquire(args):
@@ -719,6 +749,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("task_id")
     p.add_argument("--path", required=True, help="Artifact path to detach")
     p.set_defaults(func=cmd_task_detach)
+
+    p = task_sub.add_parser("move-up")
+    p.add_argument("task_id")
+    p.set_defaults(func=cmd_task_move_up)
+
+    p = task_sub.add_parser("move-down")
+    p.add_argument("task_id")
+    p.set_defaults(func=cmd_task_move_down)
+
+    p = task_sub.add_parser("move-before")
+    p.add_argument("task_id")
+    p.add_argument("target_task_id")
+    p.set_defaults(func=cmd_task_move_before)
+
+    p = task_sub.add_parser("move-after")
+    p.add_argument("task_id")
+    p.add_argument("target_task_id")
+    p.set_defaults(func=cmd_task_move_after)
+
+    p = task_sub.add_parser("move-to-index")
+    p.add_argument("task_id")
+    p.add_argument("index", type=int)
+    p.set_defaults(func=cmd_task_move_to_index)
 
     # ── Lock ─────────────────────────────────────────────────────────
     lock_parser = subparsers.add_parser("lock")

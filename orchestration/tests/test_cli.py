@@ -245,6 +245,34 @@ class TestCLITask:
         error = json.loads(result.stderr)
         assert error["code"] == "INVALID_TRANSITION"
 
+    def test_reorder_commands_before_after_and_index(self, workspace):
+        result = run_cli(
+            "workstream", "create", "--name", "WS",
+            "--states", json.dumps({"To Do": ["Done"], "Done": []}),
+            base_dir=workspace,
+        )
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        t1 = json.loads(run_cli("task", "create", ws_id, "--title", "T1", base_dir=workspace).stdout)["data"]["id"]
+        t2 = json.loads(run_cli("task", "create", ws_id, "--title", "T2", base_dir=workspace).stdout)["data"]["id"]
+        t3 = json.loads(run_cli("task", "create", ws_id, "--title", "T3", base_dir=workspace).stdout)["data"]["id"]
+
+        # Move T3 before T1 -> [T3, T1, T2]
+        result = run_cli("task", "move-before", t3, t1, base_dir=workspace)
+        assert result.returncode == 0
+
+        # Move T1 after T2 -> [T3, T2, T1]
+        result = run_cli("task", "move-after", t1, t2, base_dir=workspace)
+        assert result.returncode == 0
+
+        # Move T2 to index 0 -> [T2, T3, T1]
+        result = run_cli("task", "move-to-index", t2, "0", base_dir=workspace)
+        assert result.returncode == 0
+
+        listed = json.loads(run_cli("task", "list", ws_id, "--status", "To Do", base_dir=workspace).stdout)["data"]
+        ordered_ids = [t["id"] for t in listed]
+        assert ordered_ids == [t2, t3, t1]
+
 
 class TestCLILock:
     def test_lock_lifecycle(self, workspace):

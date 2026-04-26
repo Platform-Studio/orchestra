@@ -8,6 +8,8 @@ from orchestration.agents import (
     _parse_agent_md,
     _build_system_prompt,
     _get_model,
+    _resolve_agent_model,
+    _resolve_agent_effort,
 )
 
 
@@ -77,6 +79,34 @@ class TestGetModel:
         assert _get_model() == "claude-sonnet-4-20250514"
 
 
+class TestModelAndEffortResolution:
+    def test_resolve_agent_model_prefers_x_model(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_LLM", "claude-sonnet-4-6")
+        monkeypatch.setenv("HIGH_LLM", "claude-opus-4-6")
+        agent_def = {"model": "anthropic/claude-haiku-4-5", "model_level": "high"}
+        assert _resolve_agent_model(agent_def) == "claude-haiku-4-5"
+
+    def test_resolve_agent_model_from_level(self, monkeypatch):
+        monkeypatch.setenv("MEDIUM_LLM", "anthropic/claude-sonnet-4-6")
+        agent_def = {"model_level": "medium"}
+        assert _resolve_agent_model(agent_def) == "claude-sonnet-4-6"
+
+    def test_resolve_agent_model_invalid_level_raises(self):
+        with pytest.raises(ValueError, match="Invalid x-model-level"):
+            _resolve_agent_model({"model_level": "urgent"})
+
+    def test_resolve_agent_effort_defaults_none(self):
+        assert _resolve_agent_effort({}) is None
+
+    def test_resolve_agent_effort_valid_values(self):
+        assert _resolve_agent_effort({"effort": "high"}) == "high"
+        assert _resolve_agent_effort({"effort": "XHIGH"}) == "xhigh"
+
+    def test_resolve_agent_effort_invalid_raises(self):
+        with pytest.raises(ValueError, match="Invalid x-effort"):
+            _resolve_agent_effort({"effort": "turbo"})
+
+
 class TestAgentToolDeclaration:
     def test_x_tools_parsed_from_frontmatter(self, workspace):
         agent_path = os.path.join(workspace, "Agents", "tooled_agent.md")
@@ -123,3 +153,21 @@ class TestAgentToolDeclaration:
             )
         agent_def = _parse_agent_md(agent_path)
         assert agent_def["timeout"] is None
+
+    def test_model_headers_parsed_from_frontmatter(self, workspace):
+        agent_path = os.path.join(workspace, "Agents", "model_agent.md")
+        with open(agent_path, "w") as f:
+            f.write(
+                "---\n"
+                "name: Model Agent\n"
+                "description: Model headers\n"
+                "x-model: anthropic/claude-opus-4-6\n"
+                "x-model-level: high\n"
+                "x-effort: medium\n"
+                "---\n"
+                "Do model-aware stuff.\n"
+            )
+        agent_def = _parse_agent_md(agent_path)
+        assert agent_def["model"] == "anthropic/claude-opus-4-6"
+        assert agent_def["model_level"] == "high"
+        assert agent_def["effort"] == "medium"

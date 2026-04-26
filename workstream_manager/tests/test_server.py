@@ -102,6 +102,9 @@ _PATCHES = {
     "archive_task":      "workstream_manager.server.archive_task",
     "get_audit":         "workstream_manager.server.get_audit",
     "clear_schedule":    "workstream_manager.server.clear_schedule",
+    "move_task_before":  "workstream_manager.server.move_task_before",
+    "move_task_after":   "workstream_manager.server.move_task_after",
+    "move_task_to_index": "workstream_manager.server.move_task_to_index",
     "acquire_lock":      "workstream_manager.server.acquire_lock",
     "release_lock":      "workstream_manager.server.release_lock",
     "lock_status":       "workstream_manager.server.lock_status",
@@ -451,6 +454,25 @@ class TestTask:
         api.mocks["clear_schedule"].return_value = _fake_task()
         code, body = api.post("/api/task/clear-schedule/t-1")
         assert code == 200
+
+    def test_reorder_before(self, api):
+        api.mocks["move_task_before"].return_value = _fake_task()
+        code, body = api.post("/api/task/reorder/t-1", {
+            "target_task_id": "t-2",
+            "position": "before",
+        })
+        assert code == 200
+        call = api.mocks["move_task_before"].call_args
+        assert call.args == ("t-1", "t-2")
+        assert call.kwargs.get("base_dir")
+
+    def test_reorder_to_index(self, api):
+        api.mocks["move_task_to_index"].return_value = _fake_task()
+        code, body = api.post("/api/task/reorder/t-1", {"index": 0})
+        assert code == 200
+        call = api.mocks["move_task_to_index"].call_args
+        assert call.args == ("t-1", 0)
+        assert call.kwargs.get("base_dir")
 
 
 # ── Lock handler ────────────────────────────────────────────────

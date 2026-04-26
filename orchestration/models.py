@@ -182,6 +182,7 @@ class Task:
     title: str
     description: str = None
     status: str = "pending"
+    rank: str = None
     creator: str = None
     tags: list = field(default_factory=list)
     retry: RetryConfig = None
@@ -206,6 +207,8 @@ class Task:
         }
         if self.description is not None:
             d["description"] = self.description
+        if self.rank is not None:
+            d["rank"] = self.rank
         if self.creator is not None:
             d["creator"] = self.creator
         if self.retry is not None:
@@ -232,6 +235,7 @@ class Task:
             title=data["title"],
             description=data.get("description"),
             status=data.get("status", "pending"),
+            rank=data.get("rank"),
             creator=data.get("creator"),
             tags=data.get("tags", []),
             retry=retry,

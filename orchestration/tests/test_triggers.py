@@ -171,6 +171,39 @@ class TestStateTriggerViaTick:
         result = tick(workspace)
         assert len(result["state_triggers_fired"]) == 0
 
+    def test_tick_dispatches_first_unlocked_by_order(self, workspace, ws, monkeypatch):
+        from orchestration.locks import acquire_lock
+        from orchestration.tasks import move_task_up
+
+        create_trigger(
+            ws.id, on_state="To Do", action="run_command",
+            command="echo x", base_dir=workspace,
+        )
+
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        t3 = create_task(ws.id, title="T3", base_dir=workspace)
+
+        # Make order T1, T3, T2 and then lock T1 so scheduler should pick T3.
+        move_task_up(t3.id, base_dir=workspace)
+        acquire_lock(t1.id, "busy-agent", base_dir=workspace)
+
+        calls = []
+
+        def _fake_lock_invoke_unlock(_trigger, task_ids, *_args, **_kwargs):
+            calls.append(list(task_ids))
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+        result = tick(workspace)
+
+        assert len(calls) == 1
+        assert calls[0] == [t3.id]
+        assert len(result["state_triggers_fired"]) == 1
+        assert result["state_triggers_fired"][0]["task_ids"] == [t3.id]
+
 
 class TestAgentConcurrency:
     def test_state_trigger_skipped_when_agent_limit_reached(self, workspace, ws, monkeypatch):
@@ -196,7 +229,7 @@ class TestAgentConcurrency:
         assert len(result["state_triggers_fired"]) == 1
         assert result["state_triggers_fired"][0]["result"]["status"] == "skipped"
 
-    def test_state_trigger_dispatches_up_to_agent_limit(self, workspace, ws, monkeypatch):
+    def test_state_trigger_dispatches_single_first_task_when_slots_available(self, workspace, ws, monkeypatch):
         ws.agent_concurrency = {
             "default": 1,
             "overrides": {"test_agent": 2},
@@ -224,9 +257,66 @@ class TestAgentConcurrency:
         _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
         result = tick(workspace)
 
-        assert len(calls) == 2
-        assert len(result["state_triggers_fired"]) == 2
+        assert len(calls) == 1
+        assert len(result["state_triggers_fired"]) == 1
         assert all(x["result"]["status"] == "dispatched" for x in result["state_triggers_fired"])
+
+    def test_same_tick_does_not_overdispatch_same_agent_across_triggers(self, workspace, ws, monkeypatch):
+        # default agent_concurrency is 1
+        create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", base_dir=workspace,
+        )
+        create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", base_dir=workspace,
+        )
+
+        create_task(ws.id, title="T1", base_dir=workspace)
+        create_task(ws.id, title="T2", base_dir=workspace)
+
+        calls = []
+
+        def _fake_lock_invoke_unlock(_trigger, task_ids, *_args, **_kwargs):
+            calls.append((str(_trigger.id), list(task_ids)))
+            return {"status": "dispatched"}
+
+        # Simulate race where active-runs registry has not updated yet.
+        monkeypatch.setattr("orchestration.agents.count_active_agent_runs", lambda *_a, **_k: 0)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+        result = tick(workspace)
+
+        dispatched = [x for x in result["state_triggers_fired"] if x["result"].get("status") == "dispatched"]
+        assert len(calls) == 1
+        assert len(dispatched) == 1
+
+    def test_background_thread_start_failure_releases_lock(self, workspace, ws, monkeypatch):
+        from orchestration.locks import lock_status
+
+        create_trigger(
+            ws.id, on_state="To Do", action="run_agent",
+            agent="test_agent", base_dir=workspace,
+        )
+        task = create_task(ws.id, title="T-lock", base_dir=workspace)
+
+        class _BoomThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("thread start failed")
+
+        monkeypatch.setattr("orchestration.scheduler.threading.Thread", _BoomThread)
+        monkeypatch.setattr("orchestration.agents.count_active_agent_runs", lambda *_a, **_k: 0)
+
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+        result = tick(workspace)
+
+        assert len(result["state_triggers_fired"]) == 1
+        assert result["state_triggers_fired"][0]["result"]["status"] == "error"
+        assert lock_status(task.id, base_dir=workspace) is None
 
 
 class TestTriggerPrompt:

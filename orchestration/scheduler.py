@@ -377,16 +377,23 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
 
         if background and locked_ids:
             # Transfer lock ownership to the background thread.
-            # Copy IDs for the thread, then clear so the finally block does NOT
-            # release — the thread is now responsible for unlock.
+            # Copy IDs for the thread. We only clear local ownership after the
+            # thread starts successfully; otherwise finally will release locks.
             thread_ids = locked_ids[:]
-            locked_ids.clear()
             t = threading.Thread(
                 target=_run_and_unlock,
                 args=(trigger, thread_ids, ws, base_dir, agent_id),
                 daemon=True,
             )
-            t.start()
+            try:
+                t.start()
+            except Exception as e:
+                return {
+                    "trigger_id": trigger.id,
+                    "status": "error",
+                    "message": f"failed to start trigger thread: {e}",
+                }
+            locked_ids.clear()
             return {"trigger_id": trigger.id, "status": "dispatched"}
 
         # Synchronous path: invoke then fall through to finally for unlock
@@ -422,6 +429,10 @@ def tick(base_dir: str = ".") -> dict:
         last_tick = now - timedelta(minutes=1)
 
     results = {"task_schedules_fired": [], "trigger_schedules_fired": [], "state_triggers_fired": []}
+
+    # Tracks optimistic slots consumed in this tick before agent runs are
+    # registered in active_agents.yaml (avoids same-tick over-dispatch races).
+    pending_agent_slots = {}
 
     workstreams = list_workstreams(base_dir)
     for ws in workstreams:
@@ -526,12 +537,13 @@ def tick(base_dir: str = ".") -> dict:
                 from .agents import count_active_agent_runs
                 current_runs = count_active_agent_runs(ws.id, trigger.agent, base_dir=base_dir)
                 max_runs = _workstream_agent_limit(ws, trigger.agent, base_dir=base_dir)
-                free_slots = max(0, max_runs - current_runs)
-                ids_to_run = matching_ids[:free_slots]
+                slot_key = (ws.id, str(trigger.agent or "").strip().lower())
+                pending_slots = pending_agent_slots.get(slot_key, 0)
+                free_slots = max(0, max_runs - current_runs - pending_slots)
             else:
-                ids_to_run = matching_ids
+                free_slots = 1
 
-            if not ids_to_run:
+            if free_slots <= 0:
                 results["state_triggers_fired"].append({
                     "trigger_id": trigger.id,
                     "task_ids": [],
@@ -539,18 +551,21 @@ def tick(base_dir: str = ".") -> dict:
                 })
                 continue
 
-            for task_id in ids_to_run:
-                # background=True: locks acquired here (synchronous), execution on daemon thread.
-                # _audit_trigger is called inside _run_and_unlock for dispatched results.
-                result = _lock_invoke_unlock(trigger, [task_id], ws, base_dir, background=True)
-                if result.get("status") not in ("dispatched",):
-                    # Only audit non-dispatched outcomes (e.g. skipped due to lock contention)
-                    _audit_trigger(trigger, result, ws, base_dir, task_ids=[task_id])
-                results["state_triggers_fired"].append({
-                    "trigger_id": trigger.id,
-                    "task_ids": [task_id],
-                    "result": result,
-                })
+            task_id = matching_ids[0]
+            # background=True: locks acquired here (synchronous), execution on daemon thread.
+            # _audit_trigger is called inside _run_and_unlock for dispatched results.
+            result = _lock_invoke_unlock(trigger, [task_id], ws, base_dir, background=True)
+            if result.get("status") not in ("dispatched",):
+                # Only audit non-dispatched outcomes (e.g. skipped due to lock contention)
+                _audit_trigger(trigger, result, ws, base_dir, task_ids=[task_id])
+            elif trigger.action == "run_agent" and trigger.agent:
+                slot_key = (ws.id, str(trigger.agent or "").strip().lower())
+                pending_agent_slots[slot_key] = pending_agent_slots.get(slot_key, 0) + 1
+            results["state_triggers_fired"].append({
+                "trigger_id": trigger.id,
+                "task_ids": [task_id],
+                "result": result,
+            })
 
     # Update state
     state["last_tick_at"] = now.isoformat()

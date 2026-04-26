@@ -66,10 +66,13 @@ class BrowserManager:
     def start(self, headless=False):
         from playwright.sync_api import sync_playwright
         self.pw = sync_playwright().start()
+        stealth_args = [
+            "--disable-blink-features=AutomationControlled",
+        ]
         try:
-            self.browser = self.pw.chromium.launch(channel="chrome", headless=headless)
+            self.browser = self.pw.chromium.launch(channel="chrome", headless=headless, args=stealth_args)
         except Exception:
-            self.browser = self.pw.chromium.launch(headless=headless)
+            self.browser = self.pw.chromium.launch(headless=headless, args=stealth_args)
 
     def stop(self):
         for sid in list(self.sessions):
@@ -106,6 +109,20 @@ class BrowserManager:
 
     # ── Commands ──
 
+    _STEALTH_INIT = """
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        delete window.__playwright;
+        delete window.__pw_manual;
+        window.chrome = { runtime: {}, };
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) =>
+            parameters.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission})
+                : originalQuery(parameters);
+    """
+
     def cmd_open(self, params):
         sid = uuid.uuid4().hex[:8]
         ctx_kwargs = dict(
@@ -120,10 +137,11 @@ class BrowserManager:
         if auth_path and Path(auth_path).exists():
             ctx_kwargs["storage_state"] = auth_path
         context = self.browser.new_context(**ctx_kwargs)
+        context.add_init_script(self._STEALTH_INIT)
         page = context.new_page()
-        url = params.get("url")
-        if url:
-            page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
+        target_url = params.get("url")
+        if target_url:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
         self.sessions[sid] = {
             "context": context,
             "page": page,

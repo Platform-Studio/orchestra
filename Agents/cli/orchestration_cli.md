@@ -225,6 +225,48 @@ python -m orchestration.cli task list WORKSTREAM_ID --status "pending"
 python -m orchestration.cli task list WORKSTREAM_ID --tags "urgent,sales"
 ```
 
+Tasks are returned in board order for each state (rank-based ordering), not creation time.
+
+#### task move-up — Move a task one position up in its current state
+
+```bash
+python -m orchestration.cli task move-up TASK_ID
+```
+
+This only reorders within the task's current status column.
+
+#### task move-down — Move a task one position down in its current state
+
+```bash
+python -m orchestration.cli task move-down TASK_ID
+```
+
+This only reorders within the task's current status column.
+
+#### task move-before — Move a task directly before another task
+
+```bash
+python -m orchestration.cli task move-before TASK_ID TARGET_TASK_ID
+```
+
+Both tasks must be in the same workstream and status column.
+
+#### task move-after — Move a task directly after another task
+
+```bash
+python -m orchestration.cli task move-after TASK_ID TARGET_TASK_ID
+```
+
+Both tasks must be in the same workstream and status column.
+
+#### task move-to-index — Move a task to a zero-based index within its current state
+
+```bash
+python -m orchestration.cli task move-to-index TASK_ID INDEX
+```
+
+This only reorders within the task's current status column. Index values outside bounds are clamped.
+
 #### task comment — Add a comment to a task
 
 ```bash
@@ -325,7 +367,7 @@ python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "*/5 * * 
 
 Template variables `{task_id}` and `{workstream_id}` are replaced in `run_command` commands.
 
-All triggers are evaluated by the scheduler on each tick (every 60 seconds). State-based triggers match tasks currently in the specified state. Schedule-based triggers match on cron expressions.
+All triggers are evaluated by the scheduler on each tick (every 60 seconds). State-based triggers match tasks currently in the specified state and evaluate them in task order, dispatching only the first currently unlocked match per trigger evaluation. Schedule-based triggers match on cron expressions.
 
 Concurrency for `run_agent` triggers is controlled at the workstream level, per agent, with default `1` run per agent:
 
