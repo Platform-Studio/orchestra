@@ -39,7 +39,7 @@ from orchestration.workstreams import (
 )
 from orchestration.tasks import (
     create_task, read_task, update_task, list_tasks,
-    comment_task, archive_task, get_audit, clear_schedule,
+    comment_task, delete_task_comment, archive_task, get_audit, clear_schedule,
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
 )
@@ -47,7 +47,7 @@ from orchestration.locks import acquire_lock, release_lock, lock_status
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
-from orchestration.agents import list_active_agents, tail_active_agent, list_agent_runs, get_agent_run, kill_agent_run
+from orchestration.agents import list_active_agents, tail_active_agent, list_agent_runs, get_agent_run, kill_agent_run, retry_agent_run
 
 
 def _ok(data):
@@ -271,6 +271,15 @@ def handle_task(method, parts, params):
             base_dir=WORKSPACE_DIR,
         )
         return _ok(task.to_dict())
+    elif m == "delete-comment" and parts:
+        if "index" not in params:
+            return _err("Missing required parameter: index")
+        task = delete_task_comment(
+            parts[0],
+            int(params["index"]),
+            base_dir=WORKSPACE_DIR,
+        )
+        return _ok(task.to_dict())
     elif m == "archive" and parts:
         result = archive_task(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(result)
@@ -458,6 +467,14 @@ def handle_retry(method, parts, params):
     from orchestration.retry import manual_retry
     if method == "task" and parts:
         result = manual_retry(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(result)
+    if method == "agent-run" and parts:
+        allow_paused_workstream = str(params.get("allow_paused_workstream", "")).lower() in {"1", "true", "yes", "on"}
+        result = retry_agent_run(
+            parts[0],
+            base_dir=WORKSPACE_DIR,
+            allow_paused_workstream=allow_paused_workstream,
+        )
         return _ok(result)
     return _err(f"Unknown retry method: {method}")
 

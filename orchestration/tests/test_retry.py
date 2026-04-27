@@ -128,6 +128,25 @@ class TestFindExpiredLocks:
         expired = find_expired_locks(workspace)
         assert len(expired) == 2
 
+    def test_finds_expired_lock_in_mounted_descendant(self, workspace, tmp_path):
+        mount_root = tmp_path / "mounted_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="Mounted Parent", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        from orchestration.workstreams import save_workstream
+        save_workstream(parent, base_dir=workspace)
+
+        mounted_child = create_workstream(name="Mounted Child", parent_id=parent.id, base_dir=workspace)
+        task = create_task(mounted_child.id, title="Mounted Task", base_dir=workspace)
+
+        _make_expired_lock(task.id, workspace)
+
+        expired = find_expired_locks(workspace)
+        assert len(expired) == 1
+        assert expired[0]["task_id"] == task.id
+        assert expired[0]["workstream_id"] == mounted_child.id
+
 
 # ── Force release lock ───────────────────────────────────────────
 

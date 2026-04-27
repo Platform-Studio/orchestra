@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 from .models import Lock, now_iso
 from .tasks import _find_task_file, _tasks_dir
+from .workstreams import list_workstreams
 
 DEFAULT_TTL_SECONDS = 1800  # 30 minutes
 
@@ -158,13 +159,9 @@ def find_expired_locks(base_dir: str = ".") -> list:
 
     Returns list of dicts: {task_id, workstream_id, lock, lock_path}
     """
-    ws_dir = os.path.join(base_dir, "workstreams")
-    if not os.path.isdir(ws_dir):
-        return []
     expired = []
-    for ws_name in os.listdir(ws_dir):
-        ws_path = os.path.join(ws_dir, ws_name)
-        tasks_dir = os.path.join(ws_path, "tasks")
+    for ws in list_workstreams(base_dir=base_dir):
+        tasks_dir = _tasks_dir(base_dir, ws.id)
         if not os.path.isdir(tasks_dir):
             continue
         for fname in os.listdir(tasks_dir):
@@ -181,7 +178,7 @@ def find_expired_locks(base_dir: str = ".") -> list:
                     task_id = fname.replace(".yaml.lock", "")
                     expired.append({
                         "task_id": task_id,
-                        "workstream_id": ws_name,
+                        "workstream_id": ws.id,
                         "lock": lock,
                         "lock_path": lock_path,
                     })

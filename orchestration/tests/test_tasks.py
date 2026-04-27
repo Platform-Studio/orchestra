@@ -13,6 +13,7 @@ from orchestration.tasks import (
     move_task_after,
     move_task_to_index,
     comment_task,
+    delete_task_comment,
     archive_task,
     get_audit,
     move_task,
@@ -288,6 +289,22 @@ class TestCommentTask:
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = comment_task(task.id, "Hello", base_dir=workspace)
         assert updated.comments[0]["author"] == "jeremy"
+
+    def test_delete_comment_by_index(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        comment_task(task.id, "First", base_dir=workspace)
+        comment_task(task.id, "Second", base_dir=workspace)
+
+        updated = delete_task_comment(task.id, 0, base_dir=workspace)
+        assert len(updated.comments) == 1
+        assert updated.comments[0]["message"] == "Second"
+        assert updated.audit[-1].type == "comment_deleted"
+
+    def test_delete_comment_out_of_range(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        comment_task(task.id, "Only", base_dir=workspace)
+        with pytest.raises(IndexError):
+            delete_task_comment(task.id, 1, base_dir=workspace)
 
 
 class TestTaskAttachments:

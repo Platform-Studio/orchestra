@@ -501,6 +501,25 @@ def comment_task(task_id: str, message: str, author: str = None, base_dir: str =
     return task
 
 
+def delete_task_comment(task_id: str, comment_index: int, base_dir: str = ".") -> Task:
+    """Delete a comment from a task by its index in task.comments."""
+    task = read_task(task_id, base_dir)
+
+    try:
+        idx = int(comment_index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("comment_index must be an integer") from exc
+
+    if idx < 0 or idx >= len(task.comments):
+        raise IndexError("comment_index out of range")
+
+    removed = task.comments.pop(idx)
+    removed_message = removed if isinstance(removed, str) else removed.get("message", "")
+    task.add_audit("comment_deleted", f"Comment deleted: {_normalize_comment_message(removed_message)}")
+    _save_task(task, base_dir)
+    return task
+
+
 def attach_to_task(task_id: str, path: str, base_dir: str = ".") -> Task:
     """Attach an artifact path to a task if it is not already attached."""
     task = read_task(task_id, base_dir)

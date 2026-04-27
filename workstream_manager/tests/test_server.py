@@ -99,6 +99,7 @@ _PATCHES = {
     "update_task":       "workstream_manager.server.update_task",
     "list_tasks":        "workstream_manager.server.list_tasks",
     "comment_task":      "workstream_manager.server.comment_task",
+    "delete_task_comment": "workstream_manager.server.delete_task_comment",
     "archive_task":      "workstream_manager.server.archive_task",
     "get_audit":         "workstream_manager.server.get_audit",
     "clear_schedule":    "workstream_manager.server.clear_schedule",
@@ -112,6 +113,7 @@ _PATCHES = {
     "list_triggers":     "workstream_manager.server.list_triggers",
     "delete_trigger":    "workstream_manager.server.delete_trigger",
     "scheduler_status":  "workstream_manager.server.scheduler_status",
+    "retry_agent_run":   "workstream_manager.server.retry_agent_run",
 }
 
 
@@ -214,6 +216,10 @@ class TestRouting:
 
     def test_unknown_scheduler_method(self, api):
         code, body = api.get("/api/scheduler/nope")
+        assert code == 400
+
+    def test_unknown_retry_method(self, api):
+        code, body = api.get("/api/retry/nope")
         assert code == 400
 
 
@@ -437,6 +443,14 @@ class TestTask:
         assert code == 200
         api.mocks["comment_task"].assert_called_once()
 
+    def test_delete_comment(self, api):
+        api.mocks["delete_task_comment"].return_value = _fake_task()
+        code, body = api.post("/api/task/delete-comment/t-1", {"index": 0})
+        assert code == 200
+        call = api.mocks["delete_task_comment"].call_args
+        assert call.args == ("t-1", 0)
+        assert call.kwargs.get("base_dir")
+
     def test_archive(self, api):
         api.mocks["archive_task"].return_value = {"archived": True}
         code, body = api.post("/api/task/archive/t-1")
@@ -509,6 +523,36 @@ class TestLock:
         call_kw = api.mocks["acquire_lock"].call_args
         kw = call_kw.kwargs if call_kw.kwargs else call_kw[1]
         assert kw["ttl_seconds"] == 300
+
+
+class TestRetry:
+    def test_retry_task(self, api):
+        api.mocks["retry_agent_run"].reset_mock()
+        with patch("orchestration.retry.manual_retry") as mock_manual_retry:
+            mock_manual_retry.return_value = {"task_id": "t-1", "status": "pending"}
+            code, body = api.post("/api/retry/task/t-1")
+        assert code == 200
+        assert body["data"]["status"] == "pending"
+        mock_manual_retry.assert_called_once()
+
+    def test_retry_agent_run(self, api):
+        api.mocks["retry_agent_run"].return_value = {"run_id": "new-run", "retried_from_run_id": "old-run"}
+        code, body = api.post("/api/retry/agent-run/old-run")
+        assert code == 200
+        assert body["data"]["run_id"] == "new-run"
+        call = api.mocks["retry_agent_run"].call_args
+        assert call.args == ("old-run",)
+        assert call.kwargs.get("base_dir")
+
+    def test_retry_agent_run_allows_paused_override(self, api):
+        api.mocks["retry_agent_run"].return_value = {"run_id": "new-run", "retried_from_run_id": "old-run"}
+        code, body = api.post("/api/retry/agent-run/old-run?allow_paused_workstream=1")
+        assert code == 200
+        assert body["data"]["run_id"] == "new-run"
+        call = api.mocks["retry_agent_run"].call_args
+        assert call.args == ("old-run",)
+        assert call.kwargs.get("base_dir")
+        assert call.kwargs.get("allow_paused_workstream") is True
 
     def test_release(self, api):
         api.mocks["release_lock"].return_value = True

@@ -411,10 +411,11 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
 def tick(base_dir: str = ".") -> dict:
     """Execute one scheduler tick.
 
-    1. Load all non-paused workstreams
-    2. Fire task-level schedules that have passed
-    3. Evaluate schedule-based triggers
-    4. Update last_tick_at
+    1. Clean up expired locks and schedule retries
+    2. Load all non-paused workstreams
+    3. Fire task-level schedules that have passed
+    4. Evaluate schedule-based triggers
+    5. Update last_tick_at
     """
     now = datetime.now(timezone.utc)
     state = _load_state(base_dir)
@@ -428,7 +429,15 @@ def tick(base_dir: str = ".") -> dict:
         from datetime import timedelta
         last_tick = now - timedelta(minutes=1)
 
-    results = {"task_schedules_fired": [], "trigger_schedules_fired": [], "state_triggers_fired": []}
+    results = {
+        "expired_locks_cleaned": [],
+        "task_schedules_fired": [],
+        "trigger_schedules_fired": [],
+        "state_triggers_fired": [],
+    }
+
+    from .retry import cleanup_expired_locks
+    results["expired_locks_cleaned"] = cleanup_expired_locks(base_dir)
 
     # Tracks optimistic slots consumed in this tick before agent runs are
     # registered in active_agents.yaml (avoids same-tick over-dispatch races).
@@ -570,11 +579,6 @@ def tick(base_dir: str = ".") -> dict:
     # Update state
     state["last_tick_at"] = now.isoformat()
     _save_state(state, base_dir)
-
-    # 4. Expired lock cleanup + retry
-    from .retry import cleanup_expired_locks
-    expired_results = cleanup_expired_locks(base_dir)
-    results["expired_locks_cleaned"] = expired_results
 
     results["last_tick_at"] = now.isoformat()
     return results

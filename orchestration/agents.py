@@ -3,6 +3,7 @@
 import json
 import os
 import glob
+import shlex
 import signal
 import shutil
 import subprocess
@@ -100,6 +101,16 @@ def _read_run_meta_by_id(base_dir: str, run_id: str) -> dict:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Agent run '{run_id}' not found")
     return _read_run_meta(path)
+
+
+def _append_retry_child(base_dir: str, run_id: str, child_run_id: str) -> None:
+    """Record retry lineage on the original run metadata."""
+    meta = _read_run_meta_by_id(base_dir, run_id)
+    existing = list(meta.get("retried_to_run_ids") or [])
+    if child_run_id not in existing:
+        existing.append(child_run_id)
+        meta["retried_to_run_ids"] = existing
+        _write_run_meta(base_dir, run_id, meta)
 
 
 def _workstream_path(base_dir: str, ws_id: str) -> str:
@@ -295,12 +306,15 @@ def list_agent_runs(limit: int = 100, base_dir: str = ".") -> list:
             "tasks": live_tasks,
             "prompt": "",
             "system_prompt": "",
+            "command_line": "",
             "log_path": live.get("log_path"),
             "started_at": live.get("started_at"),
             "ended_at": None,
             "status": "running",
             "exit_code": None,
             "pid": live.get("pid"),
+            "retried_from_run_id": None,
+            "retried_to_run_ids": [],
         })
 
     runs.sort(key=lambda r: r.get("started_at", ""), reverse=True)
@@ -322,11 +336,14 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
             "tasks": [],
             "prompt": "",
             "system_prompt": "",
+            "command_line": "",
             "log_path": None,
             "started_at": None,
             "ended_at": None,
             "status": "running",
             "exit_code": None,
+            "retried_from_run_id": None,
+            "retried_to_run_ids": [],
         }
 
     with _ACTIVE_AGENTS_LOCK:
@@ -464,6 +481,30 @@ def _get_run_retry_info(run: dict, base_dir: str) -> dict:
         "last_failure_at": getattr(task, "last_failure_at", None),
         "policy": "Automatic retries are scheduled by expired-lock cleanup.",
     }
+
+
+def retry_agent_run(run_id: str, base_dir: str = ".", allow_paused_workstream: bool = False) -> dict:
+    """Manually retry a recorded agent run using its stored execution context."""
+    run = _read_run_meta_by_id(base_dir, run_id)
+
+    agent_ref = str(run.get("agent_ref") or run.get("agent") or "").strip()
+    if not agent_ref:
+        raise ValueError(f"Agent run '{run_id}' does not record an agent reference")
+
+    task_ids = list(run.get("task_ids") or [])
+    workstream_id = run.get("workstream_id") or None
+
+    result = run_agent(
+        agent_ref,
+        task_ids=task_ids,
+        workstream_id=workstream_id,
+        base_dir=base_dir,
+        allow_paused_workstream=allow_paused_workstream,
+        retried_from_run_id=run_id,
+    )
+    _append_retry_child(base_dir, run_id, result["run_id"])
+    result["retried_from_run_id"] = run_id
+    return result
 
 
 def tail_active_agent(run_id: str, lines: int = 200, base_dir: str = ".") -> dict:
@@ -920,7 +961,7 @@ def _classify_run_outcome(returncode: int, timeout_expired: bool) -> str:
     return "failed"
 
 
-def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".") -> dict:
+def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None) -> dict:
     """Run an agent via Claude Code CLI against 0-N tasks.
 
     Callers are responsible for locking/unlocking tasks. This function
@@ -936,6 +977,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         prompt: Optional custom prompt from trigger, appended to the task prompt.
         timeout: Execution timeout in seconds. Overrides agent x-timeout. Defaults to DEFAULT_AGENT_TIMEOUT.
         base_dir: Workspace root.
+        allow_paused_workstream: When true, allow manual execution even if the workstream is paused.
+        retried_from_run_id: Optional originating run id when this run is a manual retry/replay.
     """
     if task_ids is None:
         task_ids = []
@@ -961,7 +1004,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         workstream_id = tasks[0].workstream_id
     if workstream_id:
         ws = read_workstream(workstream_id, base_dir)
-        if ws.paused:
+        if ws.paused and not allow_paused_workstream:
             raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
     # Write task IDs to a temp file for the agent to reference (always, even for single task)
@@ -1139,6 +1182,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "ended_at": None,
             "status": "running",
             "exit_code": None,
+            "retried_from_run_id": retried_from_run_id,
+            "retried_to_run_ids": [],
         }
         _write_run_meta(base_dir, run_id, run_meta)
 
@@ -1150,9 +1195,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "--model", model,
             "--output-format", "text",
             "--verbose",
+            "--dangerously-skip-permissions",
         ]
         if effort:
             cmd.extend(["--effort", effort])
+        command_line = shlex.join(cmd)
+
+        run_meta["command_line"] = command_line
+        _write_run_meta(base_dir, run_id, run_meta)
 
         # Use a file-backed log so the Workspace Manager can live-tail active agent output.
         timeout_expired = False
@@ -1213,8 +1263,11 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "tasks": [{"id": t.id, "title": t.title} for t in tasks],
                 "prompt": task_prompt,
                 "system_prompt": system_prompt,
+                "command_line": command_line,
                 "log_path": log_path_rel,
                 "started_at": started_at,
+                "retried_from_run_id": retried_from_run_id,
+                "retried_to_run_ids": [],
             }
         final_status = _classify_run_outcome(returncode, timeout_expired)
         run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
@@ -1265,6 +1318,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "result": output,
             "run_id": run_id,
             "log_path": log_path_rel,
+            "retried_from_run_id": retried_from_run_id,
         }
         if task_ids:
             response["task_ids"] = task_ids

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from orchestration.agents import _classify_run_outcome, _resolve_agent_file, count_active_agent_runs, get_agent_run, list_agent_runs, run_agent
+from orchestration.agents import _classify_run_outcome, _resolve_agent_file, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact
 from orchestration.tasks import create_task, read_task, _save_task
@@ -97,6 +97,91 @@ def test_get_agent_run_retry_info_multi_task_not_eligible(workspace):
     assert retry["eligible"] is False
     assert "Multi-task run" in retry["reason"]
     assert retry["next_retry_at"] is None
+
+
+def test_retry_agent_run_reuses_recorded_context(workspace):
+    ws = create_workstream(name="Retry WS", base_dir=workspace)
+    task = create_task(ws.id, title="T", base_dir=workspace)
+
+    run_id = "run-retry"
+    meta = _base_run(run_id, ws.id, [task.id])
+    meta["agent"] = "SEO Indexer"
+    meta["agent_ref"] = "seo_indexer"
+    _write_run_meta(workspace, run_id, meta)
+
+    with patch("orchestration.agents.run_agent") as mock_run_agent:
+        mock_run_agent.return_value = {"run_id": "new-run", "agent": "SEO Indexer"}
+
+        result = retry_agent_run(run_id, base_dir=workspace)
+
+    mock_run_agent.assert_called_once_with(
+        "seo_indexer",
+        task_ids=[task.id],
+        workstream_id=ws.id,
+        base_dir=workspace,
+        allow_paused_workstream=False,
+        retried_from_run_id=run_id,
+    )
+    assert result["run_id"] == "new-run"
+    assert result["retried_from_run_id"] == run_id
+
+
+def test_retry_agent_run_can_override_paused_workstream(workspace):
+    ws = create_workstream(name="Product Development", base_dir=workspace)
+    task = create_task(ws.id, title="T", base_dir=workspace)
+
+    run_id = "run-retry-paused"
+    meta = _base_run(run_id, ws.id, [task.id])
+    meta["agent"] = "SEO Indexer"
+    meta["agent_ref"] = "seo_indexer"
+    _write_run_meta(workspace, run_id, meta)
+
+    with patch("orchestration.agents.run_agent") as mock_run_agent:
+        mock_run_agent.return_value = {"run_id": "new-run", "agent": "SEO Indexer"}
+
+        result = retry_agent_run(run_id, base_dir=workspace, allow_paused_workstream=True)
+
+    mock_run_agent.assert_called_once_with(
+        "seo_indexer",
+        task_ids=[task.id],
+        workstream_id=ws.id,
+        base_dir=workspace,
+        allow_paused_workstream=True,
+        retried_from_run_id=run_id,
+    )
+    assert result["run_id"] == "new-run"
+    assert result["retried_from_run_id"] == run_id
+
+
+def test_retry_agent_run_persists_retry_lineage(workspace):
+    ws = create_workstream(name="Retry WS", base_dir=workspace)
+    task = create_task(ws.id, title="T", base_dir=workspace)
+
+    run_id = "run-parent"
+    meta = _base_run(run_id, ws.id, [task.id])
+    _write_run_meta(workspace, run_id, meta)
+
+    with patch("orchestration.agents.run_agent") as mock_run_agent:
+        mock_run_agent.return_value = {"run_id": "run-child", "agent": "SEO Indexer"}
+
+        retry_agent_run(run_id, base_dir=workspace)
+
+    parent = get_agent_run(run_id, base_dir=workspace)["run"]
+    assert parent["retried_to_run_ids"] == ["run-child"]
+
+
+def test_get_agent_run_includes_retry_lineage(workspace):
+    ws = create_workstream(name="Retry WS", base_dir=workspace)
+    run_id = "run-lineage"
+    meta = _base_run(run_id, ws.id, [])
+    meta["retried_from_run_id"] = "run-older"
+    meta["retried_to_run_ids"] = ["run-newer-1", "run-newer-2"]
+    _write_run_meta(workspace, run_id, meta)
+
+    details = get_agent_run(run_id, base_dir=workspace)
+
+    assert details["run"]["retried_from_run_id"] == "run-older"
+    assert details["run"]["retried_to_run_ids"] == ["run-newer-1", "run-newer-2"]
 
 
 def test_count_active_agent_runs_ignores_dead_pids_and_prunes_state(workspace):
@@ -308,6 +393,20 @@ def test_run_agent_rejects_paused_workstream(mock_popen, mock_which, workspace):
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_allows_paused_workstream_when_explicitly_overridden(mock_popen, mock_which, workspace):
+    from orchestration.workstreams import save_workstream
+
+    ws = create_workstream(name="Paused WS", base_dir=workspace)
+    ws.paused = True
+    save_workstream(ws, workspace)
+
+    run_agent("test_agent", workstream_id=ws.id, base_dir=workspace, allow_paused_workstream=True)
+
+    mock_popen.assert_called_once()
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_releases_matching_lock(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Lock WS", base_dir=workspace)
     task = create_task(ws.id, title="T", base_dir=workspace)
@@ -385,7 +484,15 @@ def test_run_agent_cli_parameters_include_required_flags(mock_popen, mock_which,
     assert "--output-format" in cmd
     assert cmd[cmd.index("--output-format") + 1] == "text"
     assert "--verbose" in cmd
+    assert "--dangerously-skip-permissions" in cmd
     assert "--effort" not in cmd
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    command_line = latest.get("command_line", "")
+    assert command_line.startswith("/usr/bin/claude ")
+    assert " --append-system-prompt " in command_line
+    assert " --dangerously-skip-permissions" in command_line
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
@@ -407,8 +514,14 @@ def test_run_agent_cli_parameters_include_effort_when_configured(mock_popen, moc
     run_agent("Effort Agent", workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
+    assert "--dangerously-skip-permissions" in cmd
     assert "--effort" in cmd
     assert cmd[cmd.index("--effort") + 1] == "high"
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    command_line = latest.get("command_line", "")
+    assert " --effort high" in command_line
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
