@@ -478,6 +478,11 @@ python -m orchestration.cli artifact create --path "reports/q2_summary.md" --con
 python -m orchestration.cli artifact create --path "ideas/april.md" --content "..." --workstream WORKSTREAM_ID
 ```
 
+Important:
+- `artifact create --content` is for text payloads. It writes string content to disk and is not suitable for arbitrary binary files.
+- Do not use `artifact create --content` to create `.png`, `.jpg`, `.webp`, `.gif`, or other binary image files.
+- For binary outputs produced by external tools, persist the real binary bytes first, then attach the artifact path to the task with `task attach`.
+
 #### artifact read — Read an artifact
 
 ```bash

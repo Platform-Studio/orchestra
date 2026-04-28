@@ -221,6 +221,64 @@ def test_list_agent_runs_demotes_stale_running_status(workspace):
     assert run["status"] == "stale"
 
 
+def test_get_agent_run_demotes_stale_running_status(workspace):
+    run_id = "run-stale-detail"
+    meta = _base_run(run_id, "ws-1", ["t-1"])
+    meta["status"] = "running"
+    meta["ended_at"] = None
+    _write_run_meta(workspace, run_id, meta)
+
+    details = get_agent_run(run_id, base_dir=workspace)
+
+    assert details["run"]["status"] == "stale"
+
+
+def test_get_agent_run_stale_reason_mentions_empty_log_and_missing_completion(workspace):
+    ws = create_workstream(name="Stale WS", base_dir=workspace)
+    task = create_task(ws.id, title="T", base_dir=workspace)
+    run_id = "run-stale-reason"
+    meta = _base_run(run_id, ws.id, [task.id])
+    meta["status"] = "running"
+    meta["ended_at"] = None
+    meta["started_at"] = datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()
+    meta["log_path"] = f".orchestration/agent_runs/{run_id}.log"
+    _write_run_meta(workspace, run_id, meta)
+
+    task_obj = read_task(task.id, workspace)
+    task_obj.add_audit("agent_started", "Agent 'SEO Indexer' started processing")
+    _save_task(task_obj, workspace)
+
+    os.makedirs(os.path.join(workspace, ".orchestration", "agent_runs"), exist_ok=True)
+    with open(os.path.join(workspace, ".orchestration", "agent_runs", f"{run_id}.log"), "w", encoding="utf-8") as f:
+        f.write("")
+
+    details = get_agent_run(run_id, base_dir=workspace)
+
+    assert details["run"]["status"] == "stale"
+    assert "no output was ever written" in details["interruption_reason"].lower()
+
+
+def test_get_agent_run_stale_reason_mentions_retry_scheduled(workspace):
+    ws = create_workstream(name="Stale WS", base_dir=workspace)
+    task = create_task(ws.id, title="T", base_dir=workspace)
+    run_id = "run-stale-retry"
+    meta = _base_run(run_id, ws.id, [task.id])
+    meta["status"] = "running"
+    meta["ended_at"] = None
+    meta["started_at"] = datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()
+    _write_run_meta(workspace, run_id, meta)
+
+    task_obj = read_task(task.id, workspace)
+    task_obj.add_audit("agent_started", "Agent 'SEO Indexer' started processing")
+    task_obj.add_audit("retry_scheduled", "Retry 1/3 scheduled for later")
+    _save_task(task_obj, workspace)
+
+    details = get_agent_run(run_id, base_dir=workspace)
+
+    assert details["run"]["status"] == "stale"
+    assert "scheduled for retry" in details["interruption_reason"].lower()
+
+
 class _FakeProc:
     def __init__(self):
         self.pid = 12345
@@ -453,6 +511,36 @@ def test_run_agent_inlines_attachments_when_workstream_flag_enabled(mock_popen, 
     assert "inline me" in prompt
 
 
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_rejects_invalid_image_attachments_preflight(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Image WS", base_dir=workspace)
+    create_artifact("assets/logo.png", "[binary image file - failed]", base_dir=workspace, workstream_id=ws.id)
+    task = create_task(ws.id, title="Task", attachments=["assets/logo.png"], base_dir=workspace)
+
+    with pytest.raises(RuntimeError, match="Invalid image attachments"):
+        run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    mock_popen.assert_not_called()
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_accepts_valid_image_attachments_preflight(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Image WS", base_dir=workspace)
+    artifacts_dir = os.path.join(workspace, "artifacts", "assets")
+    os.makedirs(artifacts_dir, exist_ok=True)
+    logo_path = os.path.join(artifacts_dir, "logo.png")
+    with open(logo_path, "wb") as f:
+        # Valid PNG signature + padded bytes to satisfy minimum size guard.
+        f.write(b"\x89PNG\r\n\x1a\n" + (b"\x00" * 128))
+
+    task = create_task(ws.id, title="Task", attachments=["assets/logo.png"], base_dir=workspace)
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    mock_popen.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "returncode,timeout_expired,expected",
     [
@@ -477,6 +565,7 @@ def test_run_agent_cli_parameters_include_required_flags(mock_popen, mock_which,
     run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
+    popen_kwargs = mock_popen.call_args.kwargs
     assert cmd[0] == "/usr/bin/claude"
     assert "-p" in cmd
     assert "--append-system-prompt" in cmd
@@ -486,6 +575,7 @@ def test_run_agent_cli_parameters_include_required_flags(mock_popen, mock_which,
     assert "--verbose" in cmd
     assert "--dangerously-skip-permissions" in cmd
     assert "--effort" not in cmd
+    assert popen_kwargs.get("start_new_session") is True
 
     runs = list_agent_runs(limit=5, base_dir=workspace)
     latest = runs[0]

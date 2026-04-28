@@ -14,6 +14,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 import yaml
+from .image_validation import validate_task_image_attachments
 
 try:
     from dotenv import load_dotenv
@@ -369,6 +370,10 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
                 except Exception:
                     continue
             run["tasks"] = task_titles
+    elif run.get("status") == "running":
+        # Keep detail view consistent with list view for orphaned runs whose
+        # metadata was left in a running state after interruption/restart.
+        run["status"] = "stale"
     elif not run.get("started_at"):
         raise FileNotFoundError(f"Agent run '{run_id}' not found")
 
@@ -386,13 +391,82 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
     cli_calls = sorted(cli_calls, key=lambda e: e.get("timestamp", ""))
 
     retry_info = _get_run_retry_info(run, base_dir)
+    interruption_reason = _get_run_interruption_reason(run, base_dir)
 
     return {
         "run": run,
         "output": output,
         "cli_calls": cli_calls,
         "retry": retry_info,
+        "interruption_reason": interruption_reason,
     }
+
+
+def _parse_iso_timestamp(value: str):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        ts = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def _get_run_interruption_reason(run: dict, base_dir: str) -> str | None:
+    """Infer a user-facing reason for stale/orphaned runs when possible."""
+    if str(run.get("status") or "").lower() != "stale":
+        return None
+
+    started_at = _parse_iso_timestamp(run.get("started_at"))
+    log_path = run.get("log_path")
+    log_empty = False
+    if log_path:
+        abs_log_path = log_path if os.path.isabs(log_path) else os.path.join(base_dir, log_path)
+        if os.path.exists(abs_log_path):
+            try:
+                log_empty = os.path.getsize(abs_log_path) == 0
+            except OSError:
+                log_empty = False
+
+    task_ids = list(run.get("task_ids") or [])
+    if len(task_ids) == 1:
+        from .tasks import read_task
+
+        try:
+            task = read_task(task_ids[0], base_dir=base_dir)
+        except Exception:
+            task = None
+
+        if task is not None:
+            relevant_audit = []
+            for entry in task.audit:
+                entry_ts = _parse_iso_timestamp(getattr(entry, "timestamp", None))
+                if started_at and entry_ts and entry_ts < started_at:
+                    continue
+                relevant_audit.append(entry)
+
+            for entry in reversed(relevant_audit):
+                if entry.type == "lock_expired":
+                    return "This run appears to have been interrupted and later had its task lock expire. Retry scheduling likely happened via expired-lock cleanup."
+                if entry.type == "process_killed":
+                    return "This run appears to have been interrupted and its process was later killed during lock cleanup."
+                if entry.type == "retry_scheduled":
+                    return "This run appears to have been interrupted. The linked task was automatically scheduled for retry by expired-lock cleanup."
+                if entry.type == "max_retries_exceeded":
+                    return "This run appears to have been interrupted, and the linked task later exhausted its automatic retries."
+
+            if any(entry.type == "agent_started" for entry in relevant_audit):
+                if log_empty:
+                    return "The agent started, but no output was ever written and no completion or failure audit was recorded. The process likely exited or the app restarted before cleanup finished."
+                return "The agent started, but no completion or failure audit was recorded. The process likely exited or was interrupted before cleanup finished."
+
+    if log_empty:
+        return "No output was captured for this stale run. The process likely exited or was interrupted before it wrote anything to its log."
+
+    return "This run was left in a running state, but no live process still exists for it. It was likely interrupted by a restart or unexpected process exit."
 
 
 def _get_run_retry_info(run: dict, base_dir: str) -> dict:
@@ -1007,6 +1081,38 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         if ws.paused and not allow_paused_workstream:
             raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
+    # Preflight: block obviously invalid image attachments before invoking Claude.
+    invalid_images = []
+    for t in tasks:
+        issues = validate_task_image_attachments(t, base_dir=base_dir)
+        for issue in issues:
+            invalid_images.append((t, issue))
+
+    if invalid_images:
+        details = []
+        by_task = {}
+        for task_obj, issue in invalid_images:
+            by_task.setdefault(task_obj.id, {"task": task_obj, "issues": []})
+            by_task[task_obj.id]["issues"].append(issue)
+
+        for item in by_task.values():
+            task_obj = item["task"]
+            for issue in item["issues"]:
+                details.append(
+                    f"- task {task_obj.id} ({task_obj.title}): {issue['path']} -> {issue['reason']}"
+                )
+            task_obj.add_audit(
+                "agent_failed",
+                "Agent preflight failed due to invalid image attachments. "
+                "Fix or detach invalid image files before retry."
+            )
+            _save_task(task_obj, base_dir)
+
+        raise RuntimeError(
+            "Invalid image attachments detected; refusing to start agent run.\n"
+            + "\n".join(details)
+        )
+
     # Write task IDs to a temp file for the agent to reference (always, even for single task)
     task_file_path = None
     run_id = None
@@ -1214,6 +1320,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 text=True,
                 cwd=abs_base,
                 env=env,
+                # Detach the agent process from the scheduler's process group.
+                # This prevents scheduler restarts/stops from accidentally terminating
+                # in-flight agent runs that should continue independently.
+                start_new_session=True,
             )
 
             active_run = {

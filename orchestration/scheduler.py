@@ -75,10 +75,17 @@ def run(base_dir: str = ".") -> None:
         )
 
     running = True
+    stop_reason = "loop_exit"
 
     def handle_signal(sig, frame):
-        nonlocal running
+        nonlocal running, stop_reason
         running = False
+        if sig == signal.SIGTERM:
+            stop_reason = "signal:SIGTERM"
+        elif sig == signal.SIGINT:
+            stop_reason = "signal:SIGINT"
+        else:
+            stop_reason = f"signal:{sig}"
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
@@ -107,12 +114,20 @@ def run(base_dir: str = ".") -> None:
         state = _load_state(abs_dir)
         state.pop("pid", None)
         _save_state(state, abs_dir)
-        log_event("scheduler_stopped", "Scheduler process stopped", abs_dir)
+        log_event(
+            "scheduler_stopped",
+            f"Scheduler process stopped ({stop_reason})",
+            abs_dir,
+            reason=stop_reason,
+            pid=os.getpid(),
+        )
         print("Scheduler stopped.")
 
 
 def stop(base_dir: str = ".") -> dict:
     """Stop a running scheduler process by sending SIGTERM to its PID."""
+    from .workspace_audit import log_event
+
     state = _load_state(base_dir)
     pid = state.get("pid")
     if pid is None:
@@ -123,6 +138,13 @@ def stop(base_dir: str = ".") -> dict:
         state.pop("pid", None)
         _save_state(state, base_dir)
         return {"message": f"Scheduler pid {pid} is not running (stale)"}
+
+    log_event(
+        "scheduler_stop_requested",
+        f"Scheduler stop requested for pid={pid}",
+        os.path.abspath(base_dir),
+        pid=pid,
+    )
     os.kill(pid, signal.SIGTERM)
     return {"message": f"Sent SIGTERM to scheduler (pid={pid})"}
 
