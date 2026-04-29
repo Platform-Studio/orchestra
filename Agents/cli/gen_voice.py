@@ -9,6 +9,8 @@ Usage:
     python gen_voice.py --source openai --list-voices
     python gen_voice.py --source elevenlabs --list-voices
     python gen_voice.py --source elevenlabs --list-models
+    python gen_voice.py --source elevenlabs --search-shared "warm narrator" --gender female --language en
+    python gen_voice.py --source elevenlabs --add-voice <PUBLIC_OWNER_ID>:<VOICE_ID> --new-name "Hero Narrator"
 
 Sources:
     openai      - OpenAI text-to-speech (gpt-4o-mini-tts, tts-1, tts-1-hd).
@@ -246,6 +248,84 @@ def list_elevenlabs_models() -> None:
         print(f"  - {mid:<32} {name}  (max chars: {max_chars})")
 
 
+def search_elevenlabs_shared(
+    query: str | None,
+    page_size: int,
+    gender: str | None,
+    age: str | None,
+    accent: str | None,
+    language: str | None,
+    category: str | None,
+    use_cases: str | None,
+    descriptives: str | None,
+    featured: bool,
+) -> None:
+    """Search the ElevenLabs public Voice Library (shared voices)."""
+    headers = {"xi-api-key": elevenlabs_headers()["xi-api-key"]}
+    params: dict = {"page_size": page_size}
+    if query:
+        params["search"] = query
+    if gender:
+        params["gender"] = gender
+    if age:
+        params["age"] = age
+    if accent:
+        params["accent"] = accent
+    if language:
+        params["language"] = language
+    if category:
+        params["category"] = category
+    if use_cases:
+        params["use_cases"] = use_cases
+    if descriptives:
+        params["descriptives"] = descriptives
+    if featured:
+        params["featured"] = "true"
+
+    qs = urllib.parse.urlencode(params)
+    url = f"https://api.elevenlabs.io/v1/shared-voices?{qs}"
+    data = http_get_json(url, headers)
+    voices = data.get("voices", [])
+    if not voices:
+        print(f"[elevenlabs] No shared voices matched.")
+        return
+
+    print(f"ElevenLabs shared voices (showing {len(voices)}):")
+    print(f"  {'NAME':<24} {'VOICE_ID':<24} {'PUBLIC_OWNER_ID':<34} GENDER  ACCENT          LANG  CATEGORY")
+    for v in voices:
+        name = (v.get("name") or "")[:24]
+        vid = v.get("voice_id") or ""
+        owner = v.get("public_owner_id") or ""
+        gen = (v.get("gender") or "")[:6]
+        acc = (v.get("accent") or "")[:14]
+        lang = (v.get("language") or "")[:4]
+        cat = v.get("category") or ""
+        print(f"  {name:<24} {vid:<24} {owner:<34} {gen:<7} {acc:<15} {lang:<5} {cat}")
+    print(
+        "\nTo add a voice to your collection:\n"
+        "  python3 cli/gen_voice.py --source elevenlabs \\\n"
+        "    --add-voice <PUBLIC_OWNER_ID>:<VOICE_ID> --new-name 'My Name For It'"
+    )
+
+
+def add_elevenlabs_shared_voice(public_user_id: str, voice_id: str, new_name: str) -> None:
+    """Add a shared voice from the public Voice Library to your account."""
+    headers = elevenlabs_headers()
+    url = f"https://api.elevenlabs.io/v1/voices/add/{public_user_id}/{voice_id}"
+    body = json.dumps({"new_name": new_name}).encode("utf-8")
+    resp = http_post_bytes(url, headers, body)
+    try:
+        data = json.loads(resp)
+    except json.JSONDecodeError:
+        print(resp.decode("utf-8", errors="replace"))
+        return
+    new_voice_id = data.get("voice_id") or "(unknown)"
+    print(f"[elevenlabs] Added voice '{new_name}' to your account.")
+    print(f"  voice_id: {new_voice_id}")
+    print(f"  Use it via: --voice {new_voice_id}")
+    print(f"  Or set ELEVENLABS_VOICE_ID={new_voice_id} in .env")
+
+
 def generate_elevenlabs(
     text: str,
     output_path: Path,
@@ -378,6 +458,24 @@ def main():
     parser.add_argument("--list-voices", action="store_true", help="List available voices for --source and exit")
     parser.add_argument("--list-models", action="store_true", help="List TTS-capable models for --source and exit")
 
+    # ElevenLabs Voice Library (shared voices)
+    parser.add_argument("--search-shared", nargs="?", const="", default=None, metavar="QUERY",
+                        help="ElevenLabs: search the public Voice Library. "
+                             "Pass a query string, or use alone with filters (--gender, --accent, ...)")
+    parser.add_argument("--shared-page-size", type=int, default=20,
+                        help="ElevenLabs --search-shared page size (default: 20)")
+    parser.add_argument("--gender", help="ElevenLabs --search-shared filter: male|female|neutral")
+    parser.add_argument("--age", help="ElevenLabs --search-shared filter: young|middle_aged|old")
+    parser.add_argument("--accent", help="ElevenLabs --search-shared filter (e.g. american, british, australian)")
+    parser.add_argument("--language", help="ElevenLabs --search-shared filter (e.g. en, fr, es)")
+    parser.add_argument("--category", help="ElevenLabs --search-shared filter (e.g. professional, high_quality, famous)")
+    parser.add_argument("--use-cases", help="ElevenLabs --search-shared filter (e.g. narration, social_media, characters)")
+    parser.add_argument("--descriptives", help="ElevenLabs --search-shared filter (e.g. warm, calm, energetic)")
+    parser.add_argument("--featured", action="store_true", help="ElevenLabs --search-shared: only featured voices")
+    parser.add_argument("--add-voice", metavar="PUBLIC_OWNER_ID:VOICE_ID",
+                        help="ElevenLabs: add a shared voice to your account. Requires --new-name.")
+    parser.add_argument("--new-name", help="ElevenLabs: name to assign when --add-voice")
+
     args = parser.parse_args()
 
     # Discovery short-circuits
@@ -398,6 +496,42 @@ def main():
                 list_openai_models()
             else:
                 list_elevenlabs_models()
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.search_shared is not None:
+        if args.source != "elevenlabs":
+            parser.error("--search-shared is only supported for --source elevenlabs")
+        try:
+            search_elevenlabs_shared(
+                query=args.search_shared or None,
+                page_size=args.shared_page_size,
+                gender=args.gender,
+                age=args.age,
+                accent=args.accent,
+                language=args.language,
+                category=args.category,
+                use_cases=args.use_cases,
+                descriptives=args.descriptives,
+                featured=args.featured,
+            )
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.add_voice:
+        if args.source != "elevenlabs":
+            parser.error("--add-voice is only supported for --source elevenlabs")
+        if ":" not in args.add_voice:
+            parser.error("--add-voice expects PUBLIC_OWNER_ID:VOICE_ID")
+        if not args.new_name:
+            parser.error("--add-voice requires --new-name")
+        public_user_id, voice_id = args.add_voice.split(":", 1)
+        try:
+            add_elevenlabs_shared_voice(public_user_id, voice_id, args.new_name)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

@@ -36,6 +36,29 @@ python3 cli/gen_voice.py --source elevenlabs --list-voices   # live /v1/voices o
 python3 cli/gen_voice.py --source elevenlabs --list-models   # /v1/models can_do_text_to_speech
 ```
 
+### ElevenLabs Voice Library (search & add to "My Voices")
+
+Search the public Voice Library and add voices to your account so they show up in `--list-voices` and become usable as a `voice_id`:
+
+```bash
+# Free-text search, optional filters
+python3 cli/gen_voice.py --source elevenlabs --search-shared "warm narrator" \
+  --gender female --language en --accent american --shared-page-size 20
+
+# Filter-only browse (no query)
+python3 cli/gen_voice.py --source elevenlabs --search-shared \
+  --category professional --use-cases narration --featured
+
+# Add a shared voice to your account ("My Voices") under a chosen name.
+# PUBLIC_OWNER_ID and VOICE_ID come from the --search-shared output.
+python3 cli/gen_voice.py --source elevenlabs \
+  --add-voice <PUBLIC_OWNER_ID>:<VOICE_ID> --new-name "Hero Narrator"
+```
+
+Available filters: `--gender` (male|female|neutral), `--age` (young|middle_aged|old), `--accent`, `--language`, `--category` (professional|high_quality|famous|...), `--use-cases` (narration|social_media|characters|...), `--descriptives` (warm|calm|energetic|...), `--featured`. Combine freely.
+
+After `--add-voice` succeeds, the new `voice_id` is printed — pass it via `--voice` or set `ELEVENLABS_VOICE_ID` in `.env`.
+
 ### Voices
 
 - **OpenAI built-in:** `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `marin`, `nova`, `onyx`, `sage`, `shimmer`, `verse`, `cedar`. Custom voices may also be referenced by id but require prior consent + voice creation via OpenAI's audio endpoints.
