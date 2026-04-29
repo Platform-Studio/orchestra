@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-from orchestration.agents import _classify_run_outcome, _resolve_agent_file, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
+from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _resolve_agent_file, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
 from orchestration.locks import acquire_lock, lock_status
-from orchestration.artifacts import create_artifact
+from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
 from orchestration.workstreams import create_workstream, save_workstream
 from orchestration.models import RetryConfig
@@ -342,6 +342,41 @@ def test_run_agent_passes_agent_body_as_system_prompt(mock_popen, mock_which, wo
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_includes_default_learning_prompt(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Learning WS", base_dir=workspace)
+
+    run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    assert "AGENT LEARNING (DEFAULT)" in prompt
+    assert "test_agent_learnings.md" in prompt
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_omits_learning_prompt_when_disabled(mock_popen, mock_which, workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "no_learning_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: No Learning Agent\n"
+            "description: Turns default learning behavior off\n"
+            "x-learning: false\n"
+            "---\n"
+            "You are a test agent.\n"
+        )
+
+    ws = create_workstream(name="Learning WS", base_dir=workspace)
+    run_agent("No Learning Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    assert "AGENT LEARNING (DEFAULT)" not in prompt
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_uses_mounted_workspace_root_for_descendant(mock_popen, mock_which, workspace):
     mount_root = os.path.join(workspace, "mounted_repo")
     os.makedirs(mount_root, exist_ok=True)
@@ -539,6 +574,41 @@ def test_run_agent_accepts_valid_image_attachments_preflight(mock_popen, mock_wh
     run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
 
     mock_popen.assert_called_once()
+
+
+def test_compact_learnings_artifact_if_needed_respects_env_threshold(workspace, monkeypatch):
+    ws = create_workstream(name="Learning WS", base_dir=workspace)
+    learning_path = "test_agent_learnings.md"
+    initial_content = (
+        "# Learnings\n\n"
+        + "\n".join(
+            [
+                "- Prefer narrow prompts tied to explicit task IDs.",
+                "- Prefer narrow prompts tied to explicit task IDs.",
+                "- Always verify artifacts in the workstream root before creating new files.",
+                "- Keep outputs compact and avoid repeating previous conclusions.",
+            ]
+            * 40
+        )
+        + "\n"
+    )
+    create_artifact(learning_path, initial_content, base_dir=workspace, workstream_id=ws.id)
+
+    monkeypatch.setenv("ORCHESTRATION_LEARNINGS_COMPACTION_THRESHOLD_BYTES", "200")
+
+    result = _compact_learnings_artifact_if_needed(
+        {"file": os.path.join(workspace, "Agents", "test_agent.md"), "learning_enabled": True},
+        ws.id,
+        workspace,
+    )
+
+    assert result["checked"] is True
+    assert result["compacted"] is True
+    compacted = read_artifact(learning_path, base_dir=workspace, workstream_id=ws.id)
+    assert "Agent Learnings (Compacted)" in compacted
+
+    artifacts = list_artifacts(base_dir=workspace, workstream_id=ws.id)
+    assert any(path.startswith("test_agent_learnings_archive_") for path in artifacts)
 
 
 @pytest.mark.parametrize(

@@ -489,6 +489,8 @@ def tick(base_dir: str = ".") -> dict:
                         action=action.get("type", "run_command"),
                         agent=action.get("agent"),
                         command=action.get("command"),
+                        prompt=action.get("prompt"),
+                        timeout=action.get("timeout"),
                     )
                     result = _lock_invoke_unlock(
                         temp_trigger, [task.id], ws, base_dir

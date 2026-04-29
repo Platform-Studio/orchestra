@@ -24,8 +24,153 @@ except ImportError:
 
 # Maximum bytes of agent output to store in audit trail
 MAX_AUDIT_OUTPUT = 10_000
+DEFAULT_LEARNINGS_COMPACTION_THRESHOLD_BYTES = 20_000
+LEARNINGS_COMPACTION_THRESHOLD_ENV_VAR = "ORCHESTRATION_LEARNINGS_COMPACTION_THRESHOLD_BYTES"
 
 _ACTIVE_AGENTS_LOCK = threading.Lock()
+
+
+def _coerce_bool(value, default: bool = True) -> bool:
+    """Convert YAML/frontmatter truthy values to a strict bool."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _agent_learning_artifact_name(agent_def: dict) -> str:
+    """Return a stable learnings artifact filename for an agent."""
+    stem = os.path.splitext(os.path.basename(agent_def["file"]))[0]
+    return f"{stem}_learnings.md"
+
+
+def _agent_learning_prompt_section(agent_def: dict, workstream_id: str) -> str:
+    """Default learning behavior injected into agent task prompts."""
+    learning_path = _agent_learning_artifact_name(agent_def)
+    return (
+        "=== AGENT LEARNING (DEFAULT) ===\n"
+        f"Before you start working, review the learnings artifact at '{learning_path}' in the orchestration system, if it exists.\n"
+        f"- Try: python -m orchestration.cli artifact read '{learning_path}' --workstream {workstream_id}\n"
+        "- If it does not exist, continue without failing.\n\n"
+        f"When you are done working, append actionable learnings that will help you work faster and more efficiently to '{learning_path}' in the orchestration system (create it if it does not exist).\n"
+        f"- Read current file first: python -m orchestration.cli artifact read '{learning_path}' --workstream {workstream_id}\n"
+        f"- Save updated content: python -m orchestration.cli artifact create --path '{learning_path}' --content '<updated_markdown>' --workstream {workstream_id}\n"
+        "- Keep entries concise and practical. Do not include secrets, tokens, passwords, or personal data."
+    )
+
+
+def _learnings_compaction_threshold_bytes() -> int:
+    """Resolve learnings compaction threshold from env with safe fallback."""
+    raw = os.getenv(LEARNINGS_COMPACTION_THRESHOLD_ENV_VAR)
+    if not raw:
+        return DEFAULT_LEARNINGS_COMPACTION_THRESHOLD_BYTES
+    try:
+        value = int(raw)
+        if value > 0:
+            return value
+    except ValueError:
+        pass
+    return DEFAULT_LEARNINGS_COMPACTION_THRESHOLD_BYTES
+
+
+def _build_compacted_learnings_content(content: str) -> str:
+    """Create a concise, deduplicated learnings document.
+
+    We intentionally keep this deterministic and model-free so compaction is
+    fast, reproducible, and safe to run automatically after an agent run.
+    """
+    items = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("- ") or stripped.startswith("* "):
+            item = stripped[2:].strip()
+        else:
+            item = stripped
+        if len(item) < 6:
+            continue
+        items.append(item)
+
+    deduped_recent = []
+    seen = set()
+    for item in reversed(items):
+        key = " ".join(item.lower().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_recent.append(item)
+
+    deduped_recent.reverse()
+    # Keep the most recent learnings within a bounded list.
+    kept = deduped_recent[-80:]
+
+    compacted_lines = [
+        "# Agent Learnings (Compacted)",
+        "",
+        f"Compacted at {datetime.now(timezone.utc).isoformat()}.",
+        "",
+        "## Key Learnings",
+    ]
+    compacted_lines.extend([f"- {item}" for item in kept])
+    return "\n".join(compacted_lines).rstrip() + "\n"
+
+
+def _compact_learnings_artifact_if_needed(agent_def: dict, workstream_id: str, base_dir: str) -> dict:
+    """Compact an agent learnings artifact when it exceeds the threshold.
+
+    Returns a small diagnostics dict. Failures are returned as data so callers can
+    treat this as best-effort and avoid impacting agent run outcomes.
+    """
+    if not workstream_id or not agent_def.get("learning_enabled", True):
+        return {"checked": False, "reason": "disabled_or_no_workstream"}
+
+    from .artifacts import create_artifact, read_artifact
+
+    learning_path = _agent_learning_artifact_name(agent_def)
+    try:
+        content = read_artifact(learning_path, base_dir=base_dir, workstream_id=workstream_id)
+    except FileNotFoundError:
+        return {"checked": True, "compacted": False, "reason": "missing"}
+    except Exception as exc:
+        return {"checked": True, "compacted": False, "reason": f"read_error: {exc}"}
+
+    current_size = len(content.encode("utf-8"))
+    threshold = _learnings_compaction_threshold_bytes()
+    if current_size <= threshold:
+        return {
+            "checked": True,
+            "compacted": False,
+            "reason": "below_threshold",
+            "size": current_size,
+            "threshold": threshold,
+        }
+
+    compacted = _build_compacted_learnings_content(content)
+    archive_path = (
+        f"{os.path.splitext(learning_path)[0]}"
+        f"_archive_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.md"
+    )
+    try:
+        create_artifact(archive_path, content, base_dir=base_dir, workstream_id=workstream_id)
+        create_artifact(learning_path, compacted, base_dir=base_dir, workstream_id=workstream_id)
+    except Exception as exc:
+        return {"checked": True, "compacted": False, "reason": f"write_error: {exc}"}
+
+    return {
+        "checked": True,
+        "compacted": True,
+        "size": current_size,
+        "threshold": threshold,
+        "archive_path": archive_path,
+    }
 
 
 def _is_pid_alive(pid) -> bool:
@@ -880,6 +1025,7 @@ def _parse_agent_md(path: str) -> dict:
         "description": header.get("description", ""),
         "agent_type": header.get("x-agent-type", "worker"),
         "tools": header.get("x-tools", []),
+        "learning_enabled": _coerce_bool(header.get("x-learning", True), default=True),
         "timeout": header.get("x-timeout"),
         "model": header.get("x-model"),
         "model_level": header.get("x-model-level"),
@@ -1239,6 +1385,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 f"Follow your instructions now."
             )
 
+        if ws and agent_def.get("learning_enabled", True):
+            task_prompt += "\n\n" + _agent_learning_prompt_section(agent_def, ws.id)
+
         # Append custom trigger prompt if provided
         if prompt:
             task_prompt += f"\n\nAdditional instructions:\n{prompt}"
@@ -1405,6 +1554,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 else:
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
             _save_task(t, base_dir)
+
+        # Best-effort learnings compaction to keep artifacts concise over time.
+        _compact_learnings_artifact_if_needed(agent_def, workstream_id, base_dir)
 
         # Best-effort lock cleanup for this agent/task set.
         # This handles stale lock edge cases when scheduler/thread lifecycles are interrupted.

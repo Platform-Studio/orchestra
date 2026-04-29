@@ -171,3 +171,30 @@ class TestAgentToolDeclaration:
         assert agent_def["model"] == "anthropic/claude-opus-4-6"
         assert agent_def["model_level"] == "high"
         assert agent_def["effort"] == "medium"
+
+    def test_x_learning_defaults_true(self, workspace):
+        agent_path = os.path.join(workspace, "Agents", "learning_default_agent.md")
+        with open(agent_path, "w", encoding="utf-8") as f:
+            f.write(
+                "---\n"
+                "name: Learning Default Agent\n"
+                "description: No explicit x-learning\n"
+                "---\n"
+                "Do work.\n"
+            )
+        agent_def = _parse_agent_md(agent_path)
+        assert agent_def["learning_enabled"] is True
+
+    def test_x_learning_false_disables_feature(self, workspace):
+        agent_path = os.path.join(workspace, "Agents", "learning_off_agent.md")
+        with open(agent_path, "w", encoding="utf-8") as f:
+            f.write(
+                "---\n"
+                "name: Learning Off Agent\n"
+                "description: Turns learning off\n"
+                "x-learning: false\n"
+                "---\n"
+                "Do work.\n"
+            )
+        agent_def = _parse_agent_md(agent_path)
+        assert agent_def["learning_enabled"] is False

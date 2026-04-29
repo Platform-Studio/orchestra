@@ -305,6 +305,38 @@ class TestTick:
         reloaded = read_task(task.id, base_dir=workspace)
         assert reloaded.scheduled_at is not None
 
+    def test_tick_task_schedule_propagates_prompt_and_timeout(self, workspace, ws, monkeypatch):
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        task = create_task(
+            ws.id,
+            title="Scheduled Agent",
+            scheduled_at=past,
+            scheduled_action={
+                "type": "run_agent",
+                "agent": "test_agent",
+                "prompt": "focus on flaky tests only",
+                "timeout": 1800,
+            },
+            base_dir=workspace,
+        )
+
+        captured = {"trigger": None, "task_ids": None}
+
+        def _fake_lock_invoke_unlock(trigger, task_ids, *_args, **_kwargs):
+            captured["trigger"] = trigger
+            captured["task_ids"] = list(task_ids)
+            return {"status": "ok", "result": {"run_id": "r1"}}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        result = tick(workspace)
+        assert len(result["task_schedules_fired"]) == 1
+        assert captured["task_ids"] == [task.id]
+        assert captured["trigger"].action == "run_agent"
+        assert captured["trigger"].agent == "test_agent"
+        assert captured["trigger"].prompt == "focus on flaky tests only"
+        assert captured["trigger"].timeout == 1800
+
     def test_tick_fires_schedule_trigger(self, workspace, ws):
         marker = os.path.join(workspace, "trigger_sched.txt")
         create_trigger(

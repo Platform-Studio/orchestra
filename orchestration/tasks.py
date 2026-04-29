@@ -526,8 +526,17 @@ def attach_to_task(task_id: str, path: str, base_dir: str = ".") -> Task:
     normalized_path = _normalize_attachment_path(path)
 
     # Guardrail: attachments must resolve in the task's workstream artifact root.
-    from .artifacts import read_artifact
-    read_artifact(normalized_path, base_dir=base_dir, workstream_id=task.workstream_id)
+    from .artifacts import read_artifact, _resolve_artifact_root, _validate_path
+    from .image_validation import _is_image_path
+    if _is_image_path(normalized_path):
+        artifacts_dir, rel_path = _resolve_artifact_root(
+            normalized_path, base_dir=base_dir, workstream_id=task.workstream_id
+        )
+        full_path = _validate_path(artifacts_dir, rel_path)
+        if not os.path.exists(full_path):
+            raise FileNotFoundError(f"Artifact not found: {path}")
+    else:
+        read_artifact(normalized_path, base_dir=base_dir, workstream_id=task.workstream_id)
 
     if normalized_path not in task.attachments:
         task.attachments.append(normalized_path)
