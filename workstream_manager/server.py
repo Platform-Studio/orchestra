@@ -41,7 +41,7 @@ from orchestration.workstreams import (
 )
 from orchestration.tasks import (
     create_task, read_task, update_task, list_tasks,
-    comment_task, delete_task_comment, archive_task, get_audit, clear_schedule,
+    comment_task, delete_task_comment, edit_task_comment, archive_task, get_audit, clear_schedule,
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
 )
@@ -58,6 +58,10 @@ def _ok(data):
 
 def _err(msg, code="ERROR"):
     return 400, json.dumps({"status": "error", "message": msg, "code": code})
+
+
+def _human_name() -> str:
+    return (os.environ.get("HUMAN_NAME") or "").strip() or "Anonymous Human"
 
 
 def _run_orchestration_cli(args: list[str]) -> dict:
@@ -340,7 +344,20 @@ def handle_task(method, parts, params):
         task = comment_task(
             parts[0],
             params["message"],
-            author=params.get("author"),
+            author=params.get("author") or _human_name(),
+            base_dir=WORKSPACE_DIR,
+        )
+        return _ok(task.to_dict())
+    elif m == "edit-comment" and parts:
+        if "index" not in params:
+            return _err("Missing required parameter: index")
+        if "message" not in params:
+            return _err("Missing required parameter: message")
+        task = edit_task_comment(
+            parts[0],
+            int(params["index"]),
+            params["message"],
+            author=params.get("author") or _human_name(),
             base_dir=WORKSPACE_DIR,
         )
         return _ok(task.to_dict())

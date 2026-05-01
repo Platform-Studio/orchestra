@@ -14,6 +14,7 @@ from orchestration.tasks import (
     move_task_to_index,
     comment_task,
     delete_task_comment,
+    edit_task_comment,
     archive_task,
     get_audit,
     move_task,
@@ -305,6 +306,31 @@ class TestCommentTask:
         comment_task(task.id, "Only", base_dir=workspace)
         with pytest.raises(IndexError):
             delete_task_comment(task.id, 1, base_dir=workspace)
+
+    def test_edit_comment_by_index(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        updated = comment_task(task.id, "Original", author="Alice", base_dir=workspace)
+
+        edited = edit_task_comment(task.id, 0, "Edited", base_dir=workspace)
+        assert len(edited.comments) == 1
+        assert edited.comments[0]["message"] == "Edited"
+        assert edited.comments[0]["author"] == "Alice"
+        assert "edited_at" in edited.comments[0]
+        assert edited.audit[-1].type == "comment_edited"
+
+    def test_edit_comment_with_explicit_author(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        comment_task(task.id, "Original", author="Alice", base_dir=workspace)
+
+        edited = edit_task_comment(task.id, 0, "Edited", author="Bob", base_dir=workspace)
+        assert edited.comments[0]["author"] == "Bob"
+
+    def test_edit_comment_out_of_range(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        comment_task(task.id, "Only", base_dir=workspace)
+
+        with pytest.raises(IndexError):
+            edit_task_comment(task.id, 2, "Edited", base_dir=workspace)
 
 
 class TestTaskAttachments:

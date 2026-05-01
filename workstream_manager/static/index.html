@@ -802,6 +802,19 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.comment .comment-edit-link {
+  background: none;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.comment .comment-edit-link:hover {
+  color: #c9d1d9;
+}
 .comment .comment-delete-link:hover {
   color: #c9d1d9;
 }
@@ -815,6 +828,57 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   box-shadow: 0 1px 2px rgba(0,0,0,0.2); color: #c9d1d9;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.comment-composer {
+  margin-top: 10px;
+}
+.comment-composer textarea,
+.comment-edit-textarea {
+  width: 100%;
+  min-height: 70px;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+  background: #161b22;
+  color: #c9d1d9;
+  padding: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.comment-composer textarea:focus,
+.comment-edit-textarea:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+.comment-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.comment-save-btn,
+.comment-cancel-btn {
+  border: none;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.comment-save-btn {
+  background: #238636;
+  color: #fff;
+}
+.comment-save-btn:hover {
+  background: #2ea043;
+}
+.comment-cancel-btn {
+  background: #30363d;
+  color: #c9d1d9;
+}
+.comment-cancel-btn:hover {
+  background: #3a4048;
 }
 
 /* ── Audit trail ──────────────────────────────────────────────── */
@@ -1135,6 +1199,8 @@ let workstreamContextDraft = '';
 let boardScrollByWorkstream = {}; // { [wsId]: { boardX: number, columns: { [state]: number } } }
 let taskDragState = null;
 let isBoardDragInProgress = false;
+let taskCommentDraftByTaskId = {}; // { [taskId]: string }
+let taskCommentEditing = null; // { taskId: string, index: number } | null
 let agentRunsScrollState = {
   list: 0,
   detail: 0,
@@ -1242,6 +1308,67 @@ function stripCommentDatePrefix(message) {
   return String(message || '').replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/, '').trim();
 }
 
+function setTaskCommentDraft(taskId, value) {
+  taskCommentDraftByTaskId[taskId] = String(value || '');
+}
+
+function startEditTaskComment(taskId, commentIndex) {
+  taskCommentEditing = { taskId: String(taskId), index: Number(commentIndex) };
+  showTaskDetail(taskId);
+}
+
+function cancelEditTaskComment(taskId) {
+  if (taskCommentEditing && taskCommentEditing.taskId === String(taskId)) {
+    taskCommentEditing = null;
+  }
+  showTaskDetail(taskId);
+}
+
+async function addTaskComment(taskId, btn) {
+  const input = document.getElementById('new-task-comment');
+  if (!input) return;
+  const message = String(input.value || '').trim();
+  if (!message) return;
+
+  if (btn) btn.disabled = true;
+  try {
+    await api('task/comment/' + taskId, {
+      method: 'POST',
+      body: { message },
+    });
+    taskCommentDraftByTaskId[taskId] = '';
+    await showTaskDetail(taskId);
+    await loadBoard({ preserveSelection: true });
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert('Failed to add comment: ' + (e.message || e));
+  }
+}
+
+async function saveEditedTaskComment(taskId, commentIndex, btn) {
+  const input = document.getElementById(`task-comment-edit-${commentIndex}`);
+  if (!input) return;
+  const message = String(input.value || '').trim();
+  if (!message) {
+    alert('Comment cannot be empty.');
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  try {
+    await api('task/edit-comment/' + taskId, {
+      method: 'POST',
+      body: { index: commentIndex, message },
+    });
+    taskCommentEditing = null;
+    await showTaskDetail(taskId);
+    await loadBoard({ preserveSelection: true });
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert('Failed to edit comment: ' + (e.message || e));
+  }
+}
+
 async function deleteTaskComment(taskId, commentIndex, btn) {
   const confirmed = confirm('Delete this comment?');
   if (!confirmed) return;
@@ -1252,6 +1379,9 @@ async function deleteTaskComment(taskId, commentIndex, btn) {
       method: 'POST',
       body: { index: commentIndex },
     });
+    if (taskCommentEditing && taskCommentEditing.taskId === String(taskId)) {
+      taskCommentEditing = null;
+    }
     await showTaskDetail(taskId);
     await loadBoard({ preserveSelection: true });
   } catch (e) {
@@ -2018,46 +2148,77 @@ async function showTaskDetail(taskId) {
   }
 
   // Comments
-  if (task.comments && task.comments.length) {
-    const commentAudit = (task.audit || []).filter(a => a.type === 'comment');
-    main += `<div class="detail-section"><h4>Comments</h4>`;
-    for (const item of task.comments.map((comment, index) => ({ comment, index })).reverse()) {
-      const c = item.comment;
-      const commentIndex = item.index;
-      let message = '';
-      let author = 'Unknown';
-      let timestamp = '';
+  const comments = Array.isArray(task.comments) ? task.comments : [];
+  const commentAudit = (task.audit || []).filter(a => a.type === 'comment');
+  const commentDraft = taskCommentDraftByTaskId[task.id] || '';
+  main += `<div class="detail-section"><h4>Comments</h4>`;
 
-      if (typeof c === 'string') {
-        message = stripCommentDatePrefix(c);
-        // Match by content rather than by index — index-based matching breaks on
-        // duplicated tasks where the audit trail was reset but comments were copied.
-        const needle = message.slice(0, 120);
-        const auditEntry = commentAudit.find(a => String(a.description || '').includes(needle)) || null;
-        if (auditEntry) {
-          timestamp = auditEntry.timestamp || '';
-          const inferred = inferCommentFromAudit(auditEntry);
-          if (inferred.author) author = inferred.author;
-        }
-      } else if (c && typeof c === 'object') {
-        message = stripCommentDatePrefix(c.message || '');
-        author = c.author || 'Unknown';
-        timestamp = c.timestamp || '';
-        if (!c.author) {
-          author = inferAuthorFromAuditTrail(task, message, timestamp);
-        }
+  if (!comments.length) {
+    main += `<div class="attachment-hint">No comments yet.</div>`;
+  }
+
+  for (const item of comments.map((comment, index) => ({ comment, index })).reverse()) {
+    const c = item.comment;
+    const commentIndex = item.index;
+    let message = '';
+    let author = 'Unknown';
+    let timestamp = '';
+
+    if (typeof c === 'string') {
+      message = stripCommentDatePrefix(c);
+      // Match by content rather than by index — index-based matching breaks on
+      // duplicated tasks where the audit trail was reset but comments were copied.
+      const needle = message.slice(0, 120);
+      const auditEntry = commentAudit.find(a => String(a.description || '').includes(needle)) || null;
+      if (auditEntry) {
+        timestamp = auditEntry.timestamp || '';
+        const inferred = inferCommentFromAudit(auditEntry);
+        if (inferred.author) author = inferred.author;
       }
+    } else if (c && typeof c === 'object') {
+      message = stripCommentDatePrefix(c.message || '');
+      author = c.author || 'Unknown';
+      timestamp = c.timestamp || '';
+      if (!c.author) {
+        author = inferAuthorFromAuditTrail(task, message, timestamp);
+      }
+    }
 
-      const when = formatCommentTimestamp(timestamp);
-      main += `<div class="comment">`;
-      main += `<div class="comment-meta">`;
-      main += `<span>${esc(when || '')}</span>`;
-      main += `<button class="comment-delete-link" type="button" onclick="deleteTaskComment('${task.id}', ${commentIndex}, this)">Delete</button>`;
+    const when = formatCommentTimestamp(timestamp);
+    const isEditing = !!taskCommentEditing
+      && taskCommentEditing.taskId === String(task.id)
+      && Number(taskCommentEditing.index) === Number(commentIndex);
+
+    main += `<div class="comment">`;
+    main += `<div class="comment-meta">`;
+    main += `<span>${esc(when || '')}</span>`;
+    main += `<span>`;
+    main += `<button class="comment-edit-link" type="button" onclick="startEditTaskComment('${task.id}', ${commentIndex})">Edit</button>`;
+    main += `&nbsp;`;
+    main += `<button class="comment-delete-link" type="button" onclick="deleteTaskComment('${task.id}', ${commentIndex}, this)">Delete</button>`;
+    main += `</span>`;
+    main += `</div>`;
+
+    if (isEditing) {
+      main += `<textarea id="task-comment-edit-${commentIndex}" class="comment-edit-textarea">${esc(message)}</textarea>`;
+      main += `<div class="comment-actions">`;
+      main += `<button class="comment-save-btn" type="button" onclick="saveEditedTaskComment('${task.id}', ${commentIndex}, this)">Save</button>`;
+      main += `<button class="comment-cancel-btn" type="button" onclick="cancelEditTaskComment('${task.id}')">Cancel</button>`;
       main += `</div>`;
-      main += `<div class="comment-text"><span class="comment-author">${esc(author)}:</span>${esc(message)}</div></div>`;
+    } else {
+      main += `<div class="comment-text"><span class="comment-author">${esc(author)}:</span>${esc(message)}</div>`;
     }
     main += `</div>`;
   }
+
+  main += `<div class="comment-composer">`;
+  main += `<textarea id="new-task-comment" placeholder="Write a comment..." oninput="setTaskCommentDraft('${task.id}', this.value)">${esc(commentDraft)}</textarea>`;
+  main += `<div class="comment-actions">`;
+  main += `<button id="btn-add-comment" class="comment-save-btn" type="button">Save</button>`;
+  main += `</div>`;
+  main += `</div>`;
+
+  main += `</div>`;
 
   // ── Aside column (audit trail) ──
   let aside = '';
@@ -2214,6 +2375,22 @@ async function showTaskDetail(taskId) {
         }
       });
     }
+  }
+
+  // ── Comments wiring ─────────────────────────────────────────
+  const addCommentBtn = content.querySelector('#btn-add-comment');
+  const newCommentInput = content.querySelector('#new-task-comment');
+  if (addCommentBtn && newCommentInput) {
+    addCommentBtn.addEventListener('click', async () => {
+      await addTaskComment(task.id, addCommentBtn);
+    });
+
+    newCommentInput.addEventListener('keydown', async (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        await addTaskComment(task.id, addCommentBtn);
+      }
+    });
   }
 
   // ── Attachment add/remove wiring ──────────────────────────────

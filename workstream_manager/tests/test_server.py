@@ -7,6 +7,7 @@ parsing, response formatting, and error mapping end-to-end.
 
 import json
 import base64
+import os
 import threading
 import urllib.request
 import urllib.error
@@ -101,6 +102,7 @@ _PATCHES = {
     "list_tasks":        "workstream_manager.server.list_tasks",
     "comment_task":      "workstream_manager.server.comment_task",
     "delete_task_comment": "workstream_manager.server.delete_task_comment",
+    "edit_task_comment": "workstream_manager.server.edit_task_comment",
     "archive_task":      "workstream_manager.server.archive_task",
     "get_audit":         "workstream_manager.server.get_audit",
     "clear_schedule":    "workstream_manager.server.clear_schedule",
@@ -250,7 +252,7 @@ class TestArtifactPreview:
         with patch("workstream_manager.server._resolve_artifact_root", return_value=("/tmp/artifacts", "demo.png")), \
              patch("workstream_manager.server._validate_path", return_value="/tmp/artifacts/demo.png"), \
              patch("workstream_manager.server.os.path.exists", return_value=True), \
-             patch("builtins.open", MagicMock()) as mock_open:
+             patch("workstream_manager.server.open", MagicMock()) as mock_open:
             mock_open.return_value.__enter__.return_value.read.return_value = image_bytes
 
             code, body = api.get("/api/artifact/read?path=demo.png&workstream_id=ws-1")
@@ -271,7 +273,7 @@ class TestArtifactPreview:
         with patch("workstream_manager.server._resolve_artifact_root", return_value=("/tmp/artifacts", "notes.md")), \
              patch("workstream_manager.server._validate_path", return_value="/tmp/artifacts/notes.md"), \
              patch("workstream_manager.server.os.path.exists", return_value=True), \
-             patch("builtins.open", MagicMock()) as mock_open:
+             patch("workstream_manager.server.open", MagicMock()) as mock_open:
             mock_open.return_value.__enter__.return_value.read.return_value = text_bytes
 
             code, body = api.get("/api/artifact/read?path=notes.md&workstream_id=ws-1")
@@ -289,7 +291,7 @@ class TestArtifactPreview:
         with patch("workstream_manager.server._resolve_artifact_root", return_value=("/tmp/artifacts", "archive.bin")), \
              patch("workstream_manager.server._validate_path", return_value="/tmp/artifacts/archive.bin"), \
              patch("workstream_manager.server.os.path.exists", return_value=True), \
-             patch("builtins.open", MagicMock()) as mock_open:
+             patch("workstream_manager.server.open", MagicMock()) as mock_open:
             mock_open.return_value.__enter__.return_value.read.return_value = binary_bytes
 
             code, body = api.get("/api/artifact/read?path=archive.bin&workstream_id=ws-1")
@@ -505,7 +507,37 @@ class TestTask:
         api.mocks["comment_task"].return_value = _fake_task()
         code, body = api.post("/api/task/comment/t-1", {"message": "hello"})
         assert code == 200
-        api.mocks["comment_task"].assert_called_once()
+        call = api.mocks["comment_task"].call_args
+        assert call.args[:2] == ("t-1", "hello")
+        assert call.kwargs.get("author") == "Anonymous Human"
+
+    def test_comment_uses_human_name_env(self, api):
+        os.environ["HUMAN_NAME"] = "Jeremy"
+        try:
+            api.mocks["comment_task"].return_value = _fake_task()
+            code, body = api.post("/api/task/comment/t-1", {"message": "hello"})
+            assert code == 200
+            call = api.mocks["comment_task"].call_args
+            assert call.kwargs.get("author") == "Jeremy"
+        finally:
+            os.environ.pop("HUMAN_NAME", None)
+
+    def test_edit_comment(self, api):
+        api.mocks["edit_task_comment"].return_value = _fake_task()
+        code, body = api.post("/api/task/edit-comment/t-1", {"index": 0, "message": "updated"})
+        assert code == 200
+        call = api.mocks["edit_task_comment"].call_args
+        assert call.args[:3] == ("t-1", 0, "updated")
+        assert call.kwargs.get("author") == "Anonymous Human"
+
+    def test_edit_comment_requires_index_and_message(self, api):
+        code, body = api.post("/api/task/edit-comment/t-1", {"message": "updated"})
+        assert code == 400
+        assert "index" in body["message"]
+
+        code, body = api.post("/api/task/edit-comment/t-1", {"index": 0})
+        assert code == 400
+        assert "message" in body["message"]
 
     def test_delete_comment(self, api):
         api.mocks["delete_task_comment"].return_value = _fake_task()

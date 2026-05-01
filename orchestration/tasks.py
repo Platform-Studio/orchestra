@@ -520,6 +520,55 @@ def delete_task_comment(task_id: str, comment_index: int, base_dir: str = ".") -
     return task
 
 
+def edit_task_comment(
+    task_id: str,
+    comment_index: int,
+    message: str,
+    author: str = None,
+    base_dir: str = ".",
+) -> Task:
+    """Edit a comment on a task by index."""
+    task = read_task(task_id, base_dir)
+
+    try:
+        idx = int(comment_index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("comment_index must be an integer") from exc
+
+    if idx < 0 or idx >= len(task.comments):
+        raise IndexError("comment_index out of range")
+
+    original = task.comments[idx]
+    normalized_message = _normalize_comment_message(message)
+
+    existing_author = None
+    existing_timestamp = None
+    if isinstance(original, dict):
+        existing_author = original.get("author")
+        existing_timestamp = original.get("timestamp")
+
+    comment_author = author if author is not None else existing_author
+    if comment_author is None:
+        comment_author = _default_comment_author()
+
+    updated_comment = {
+        "message": normalized_message,
+        "timestamp": existing_timestamp or now_iso(),
+        "edited_at": now_iso(),
+    }
+    if comment_author:
+        updated_comment["author"] = comment_author
+
+    task.comments[idx] = updated_comment
+
+    if comment_author:
+        task.add_audit("comment_edited", f"Comment edited by {comment_author}: {normalized_message}")
+    else:
+        task.add_audit("comment_edited", f"Comment edited: {normalized_message}")
+    _save_task(task, base_dir)
+    return task
+
+
 def attach_to_task(task_id: str, path: str, base_dir: str = ".") -> Task:
     """Attach an artifact path to a task if it is not already attached."""
     task = read_task(task_id, base_dir)
