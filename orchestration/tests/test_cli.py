@@ -318,6 +318,63 @@ class TestCLIArtifact:
         assert result.returncode == 0
         assert "test.md" in json.loads(result.stdout)["data"]
 
+    def test_artifact_copytree_requires_mounted_destination(self, workspace):
+        ws_result = run_cli("workstream", "create", "--name", "Local WS", base_dir=workspace)
+        ws_id = json.loads(ws_result.stdout)["data"]["id"]
+        run_cli(
+            "artifact", "create",
+            "--path", "Stage 2 Research/example/readme.md",
+            "--content", "hello",
+            base_dir=workspace,
+        )
+
+        result = run_cli(
+            "artifact", "copytree", "Stage 2 Research/example",
+            "--workstream", ws_id,
+            base_dir=workspace,
+        )
+        assert result.returncode != 0
+        err = json.loads(result.stderr)
+        assert "not mounted" in err["message"].lower()
+
+    def test_artifact_copytree_copies_to_mounted_workspace(self, workspace):
+        mount_root = Path(workspace) / "mounted_repo"
+        mount_root.mkdir()
+
+        parent_result = run_cli(
+            "workstream", "create",
+            "--name", "Startup",
+            "--mounted-workspace-path", str(mount_root),
+            base_dir=workspace,
+        )
+        parent_id = json.loads(parent_result.stdout)["data"]["id"]
+
+        child_result = run_cli(
+            "workstream", "create",
+            "--name", "Product Development",
+            "--parent", parent_id,
+            base_dir=workspace,
+        )
+        child_id = json.loads(child_result.stdout)["data"]["id"]
+
+        run_cli(
+            "artifact", "create",
+            "--path", "Stage 2 Research/example/readme.md",
+            "--content", "hello",
+            base_dir=workspace,
+        )
+
+        result = run_cli(
+            "artifact", "copytree", "Stage 2 Research/example",
+            "--workstream", child_id,
+            "--source-base", workspace,
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["copy_count"] == 1
+        assert (mount_root / "artifacts" / "Stage 2 Research" / "example" / "readme.md").read_text() == "hello"
+
     def test_artifact_read_logs_audit_when_run_context_present(self, workspace, monkeypatch):
         run_cli("artifact", "create", "--path", "x.md", "--content", "hello", base_dir=workspace)
         monkeypatch.setenv("ORCHESTRATION_AGENT_RUN_ID", "run-123")

@@ -589,6 +589,19 @@ def cmd_artifact_list(args):
     _output(artifacts)
 
 
+def cmd_artifact_copytree(args):
+    from .artifacts import copy_artifact_tree
+    result = copy_artifact_tree(
+        args.source_prefix,
+        base_dir=args.base_dir,
+        workstream_id=args.workstream,
+        source_base_dir=args.source_base,
+        overwrite=args.overwrite,
+        dry_run=args.dry_run,
+    )
+    _output(result)
+
+
 # ── Parser ───────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -894,6 +907,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prefix")
     p.add_argument("--workstream", default=None, help="Optional workstream context for mounted artifact routing")
     p.set_defaults(func=cmd_artifact_list)
+
+    p = artifact_sub.add_parser("copytree")
+    p.add_argument("source_prefix", help="Source artifact subtree path (relative to source artifacts root)")
+    p.add_argument("--workstream", required=True, help="Destination workstream ID (must resolve to a mounted workspace)")
+    p.add_argument("--source-base", default=None, help="Source workspace root (defaults to --base-dir)")
+    p.add_argument("--overwrite", action="store_true", help="Overwrite conflicting destination files")
+    p.add_argument("--dry-run", action="store_true", help="Preview copy actions without writing files")
+    p.set_defaults(func=cmd_artifact_copytree)
 
     return parser
 

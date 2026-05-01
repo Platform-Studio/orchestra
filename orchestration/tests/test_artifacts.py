@@ -2,7 +2,7 @@
 
 import os
 import pytest
-from orchestration.artifacts import create_artifact, read_artifact, list_artifacts
+from orchestration.artifacts import create_artifact, read_artifact, list_artifacts, copy_artifact_tree
 from orchestration.workstreams import create_workstream, save_workstream
 
 
@@ -115,3 +115,69 @@ class TestMountedArtifactRouting:
 
         mounted_paths = list_artifacts(prefix="reports/", base_dir=workspace, workstream_id=child.id)
         assert mounted_paths == ["reports/a.md"]
+
+
+class TestArtifactCopyTree:
+    def test_copytree_requires_mounted_destination(self, workspace):
+        ws = create_workstream(name="local_ws", base_dir=workspace)
+        create_artifact("Stage 2 Research/example/readme.md", "hello", base_dir=workspace)
+
+        with pytest.raises(ValueError, match="not mounted"):
+            copy_artifact_tree(
+                "Stage 2 Research/example",
+                base_dir=workspace,
+                workstream_id=ws.id,
+            )
+
+    def test_copytree_copies_into_mounted_workspace(self, workspace, tmp_path):
+        mount_root = tmp_path / "startup_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="startup", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+        child = create_workstream(name="product_development", parent_id=parent.id, base_dir=workspace)
+
+        create_artifact("Stage 2 Research/example/one.md", "one", base_dir=workspace)
+        create_artifact("Stage 2 Research/example/nested/two.md", "two", base_dir=workspace)
+
+        result = copy_artifact_tree(
+            "Stage 2 Research/example",
+            base_dir=workspace,
+            workstream_id=child.id,
+            source_base_dir=workspace,
+        )
+
+        assert result["copy_count"] == 2
+        assert (mount_root / "artifacts" / "Stage 2 Research" / "example" / "one.md").read_text() == "one"
+        assert (mount_root / "artifacts" / "Stage 2 Research" / "example" / "nested" / "two.md").read_text() == "two"
+
+    def test_copytree_conflict_requires_overwrite(self, workspace, tmp_path):
+        mount_root = tmp_path / "startup_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="startup", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+        child = create_workstream(name="product_development", parent_id=parent.id, base_dir=workspace)
+
+        create_artifact("Stage 2 Research/example/file.md", "source", base_dir=workspace)
+        create_artifact("Stage 2 Research/example/file.md", "dest", base_dir=str(mount_root))
+
+        with pytest.raises(FileExistsError, match="would overwrite"):
+            copy_artifact_tree(
+                "Stage 2 Research/example",
+                base_dir=workspace,
+                workstream_id=child.id,
+                source_base_dir=workspace,
+            )
+
+        result = copy_artifact_tree(
+            "Stage 2 Research/example",
+            base_dir=workspace,
+            workstream_id=child.id,
+            source_base_dir=workspace,
+            overwrite=True,
+        )
+        assert result["overwrite_count"] == 1
+        assert (mount_root / "artifacts" / "Stage 2 Research" / "example" / "file.md").read_text() == "source"

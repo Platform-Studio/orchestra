@@ -114,6 +114,8 @@ _PATCHES = {
     "list_triggers":     "workstream_manager.server.list_triggers",
     "delete_trigger":    "workstream_manager.server.delete_trigger",
     "scheduler_status":  "workstream_manager.server.scheduler_status",
+    "list_active_agents": "workstream_manager.server.list_active_agents",
+    "list_agent_runs": "workstream_manager.server.list_agent_runs",
     "retry_agent_run":   "workstream_manager.server.retry_agent_run",
 }
 
@@ -134,6 +136,8 @@ def api(tmp_path):
     mocks["list_tasks"].return_value = []
     mocks["list_triggers"].return_value = []
     mocks["scheduler_status"].return_value = {"running": False, "last_tick": None}
+    mocks["list_active_agents"].return_value = []
+    mocks["list_agent_runs"].return_value = []
     mocks["list_workstream_hierarchy_env"].return_value = []
     mocks["list_effective_workstream_env"].return_value = {}
     mocks["resolve_workstream_workspace"].return_value = "/tmp/workspace"
@@ -715,6 +719,30 @@ class TestPoll:
         code, body = api.get("/api/poll/ws-1")
         assert code == 200
         assert body["data"]["board"]["tasks"][0]["lock"]["locked"] is True
+
+    def test_poll_active_agent_runs_excludes_pidless_entries(self, api):
+        ws = _fake_workstream()
+        api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["scheduler_status"].return_value = {"running": False}
+        api.mocks["list_active_agents"].return_value = [
+            {"run_id": "live-1", "pid": 12345},
+            {"run_id": "legacy-no-pid"},
+            {"run_id": "live-2", "pid": 67890},
+        ]
+
+        code, body = api.get("/api/poll/all")
+        assert code == 200
+        assert body["data"]["active_agent_runs"] == 2
+
+    def test_poll_active_agent_runs_falls_back_to_zero_on_error(self, api):
+        ws = _fake_workstream()
+        api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["scheduler_status"].return_value = {"running": False}
+        api.mocks["list_active_agents"].side_effect = RuntimeError("boom")
+
+        code, body = api.get("/api/poll/all")
+        assert code == 200
+        assert body["data"]["active_agent_runs"] == 0
 
 
 # ── Concurrency / resilience tests ──────────────────────────────

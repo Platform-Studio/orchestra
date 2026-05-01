@@ -502,6 +502,33 @@ python -m orchestration.cli artifact list
 python -m orchestration.cli artifact list --prefix "reports/"
 ```
 
+#### artifact copytree — Copy an artifact subtree into a mounted startup workspace
+
+```bash
+# Copy a Stage 2 subtree from source workspace artifacts into the mounted destination
+# artifacts root for a specific workstream.
+python -m orchestration.cli artifact copytree "Stage 2 Research/2026/04/calendly_plus" \
+  --workstream WORKSTREAM_ID \
+  --source-base /path/to/source/workspace
+
+# Preview without writing files
+python -m orchestration.cli artifact copytree "Stage 2 Research/2026/04/calendly_plus" \
+  --workstream WORKSTREAM_ID \
+  --source-base /path/to/source/workspace \
+  --dry-run
+
+# Allow overwriting conflicting destination files
+python -m orchestration.cli artifact copytree "Stage 2 Research/2026/04/calendly_plus" \
+  --workstream WORKSTREAM_ID \
+  --source-base /path/to/source/workspace \
+  --overwrite
+```
+
+Notes:
+- Destination workstream must resolve to a mounted workspace. If it does not, the command fails.
+- This command is intended for one-time Stage 3 setup artifact snapshotting into startup repos.
+- Source path is always interpreted relative to the source workspace `artifacts/` root.
+
 ---
 
 ### Typical Agent Workflow

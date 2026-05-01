@@ -488,8 +488,10 @@ def handle_poll(method, parts, params):
     for ws in wss:
         counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
     try:
-        _runs = list_agent_runs(limit=200, base_dir=WORKSPACE_DIR)
-        active_run_count = sum(1 for r in _runs if r.get("status") == "running")
+        # Count only currently live runs from the active registry. This avoids
+        # inflating the sidebar badge with stale historical metadata entries.
+        _active_runs = list_active_agents(base_dir=WORKSPACE_DIR)
+        active_run_count = sum(1 for r in _active_runs if r.get("pid") is not None)
     except Exception:
         active_run_count = 0
     result = {
