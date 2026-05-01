@@ -230,13 +230,6 @@ def cmd_domains(args: argparse.Namespace, env: dict[str, str]) -> None:
 def cmd_send(args: argparse.Namespace, env: dict[str, str]) -> None:
     api_key = get_api_key(env)
 
-    domain = args.domain or env.get("MAILGUN_DOMAIN")
-    if not domain:
-        print("ERROR: --domain is required (or set MAILGUN_DOMAIN in .env)", file=sys.stderr)
-        sys.exit(1)
-
-    assert_domain_registered(domain, api_key)
-
     # Build from address
     from_addr = args.from_addr
     if not from_addr:
@@ -246,6 +239,30 @@ def cmd_send(args: argparse.Namespace, env: dict[str, str]) -> None:
             print("ERROR: --from is required (or set MAILGUN_FROM_EMAIL in .env)", file=sys.stderr)
             sys.exit(1)
         from_addr = f"{from_name} <{from_email}>" if from_name else from_email
+
+    # Determine authenticated Mailgun domain.
+    # Default behavior: match the domain of the From address when possible.
+    from_email_token = from_addr
+    if "<" in from_addr and ">" in from_addr:
+        start = from_addr.rfind("<") + 1
+        end = from_addr.rfind(">")
+        if start > 0 and end > start:
+            from_email_token = from_addr[start:end].strip()
+
+    from_domain = ""
+    if "@" in from_email_token:
+        from_domain = from_email_token.rsplit("@", 1)[1].strip().lower()
+
+    domain = args.domain or from_domain or env.get("MAILGUN_DOMAIN")
+    if not domain:
+        print(
+            "ERROR: Could not determine sending domain. Pass --domain, or use a valid --from address, "
+            "or set MAILGUN_DOMAIN in .env.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    assert_domain_registered(domain, api_key)
 
     if not args.to:
         print("ERROR: At least one --to recipient is required.", file=sys.stderr)
