@@ -342,15 +342,15 @@ def test_run_agent_passes_agent_body_as_system_prompt(mock_popen, mock_which, wo
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
-def test_run_agent_includes_default_learning_prompt(mock_popen, mock_which, workspace):
+def test_run_agent_does_not_inline_default_learning_prompt(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Learning WS", base_dir=workspace)
 
     run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
     prompt = cmd[cmd.index("-p") + 1]
-    assert "AGENT LEARNING (DEFAULT)" in prompt
-    assert "test_agent_learnings.md" in prompt
+    assert "AGENT LEARNING (DEFAULT)" not in prompt
+    assert "test_agent_learnings.md" not in prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
@@ -529,7 +529,7 @@ def test_run_agent_does_not_inline_attachments_by_default(mock_popen, mock_which
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
-def test_run_agent_inlines_attachments_when_workstream_flag_enabled(mock_popen, mock_which, workspace):
+def test_run_agent_does_not_inline_attachments_when_workstream_flag_enabled(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Inline WS", base_dir=workspace)
     ws.inline_attachments = True
     save_workstream(ws, workspace)
@@ -541,9 +541,9 @@ def test_run_agent_inlines_attachments_when_workstream_flag_enabled(mock_popen, 
 
     cmd = mock_popen.call_args.args[0]
     prompt = cmd[cmd.index("-p") + 1]
-    assert "Task attachments (artifact paths + inlined content):" in prompt
-    assert "- Path: reports/brief.md" in prompt
-    assert "inline me" in prompt
+    assert "Task attachments (artifact paths + inlined content):" not in prompt
+    assert "- Path: reports/brief.md" not in prompt
+    assert "inline me" not in prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

@@ -185,3 +185,53 @@ def find_expired_locks(base_dir: str = ".") -> list:
             except Exception:
                 continue
     return expired
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Return True when pid exists, False otherwise."""
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def find_orphaned_locks(base_dir: str = ".") -> list:
+    """Scan all workstreams for non-expired locks whose owner pid is dead.
+
+    Returns list of dicts: {task_id, workstream_id, lock, lock_path}
+    """
+    orphaned = []
+    for ws in list_workstreams(base_dir=base_dir):
+        tasks_dir = _tasks_dir(base_dir, ws.id)
+        if not os.path.isdir(tasks_dir):
+            continue
+        for fname in os.listdir(tasks_dir):
+            if not fname.endswith(".yaml.lock"):
+                continue
+            lock_path = os.path.join(tasks_dir, fname)
+            try:
+                with open(lock_path) as f:
+                    data = yaml.safe_load(f)
+                if data is None:
+                    continue
+                lock = Lock.from_dict(data)
+                # Expired locks are handled by the retry pipeline.
+                if lock.is_expired():
+                    continue
+                if lock.pid is None:
+                    continue
+                if _is_process_alive(lock.pid):
+                    continue
+                task_id = fname.replace(".yaml.lock", "")
+                orphaned.append({
+                    "task_id": task_id,
+                    "workstream_id": ws.id,
+                    "lock": lock,
+                    "lock_path": lock_path,
+                })
+            except Exception:
+                continue
+    return orphaned

@@ -6,6 +6,7 @@ parsing, response formatting, and error mapping end-to-end.
 """
 
 import json
+import base64
 import threading
 import urllib.request
 import urllib.error
@@ -237,6 +238,65 @@ class TestErrorMapping:
         code, body = api.get("/api/task/read/task-bad")
         assert code == 400
         assert body["code"] == "INVALID"
+
+
+class TestArtifactPreview:
+    def test_artifact_read_returns_image_preview_data(self, api):
+        image_bytes = b"\x89PNG\r\n\x1a\nPNGDATA"
+        with patch("workstream_manager.server._resolve_artifact_root", return_value=("/tmp/artifacts", "demo.png")), \
+             patch("workstream_manager.server._validate_path", return_value="/tmp/artifacts/demo.png"), \
+             patch("workstream_manager.server.os.path.exists", return_value=True), \
+             patch("builtins.open", MagicMock()) as mock_open:
+            mock_open.return_value.__enter__.return_value.read.return_value = image_bytes
+
+            code, body = api.get("/api/artifact/read?path=demo.png&workstream_id=ws-1")
+
+        assert code == 200
+        data = body["data"]
+        assert data["resolved_path"] == "/tmp/artifacts/demo.png"
+        assert data["preview_type"] == "image"
+        assert data["mime_type"] == "image/png"
+        assert data["content"] is None
+        assert data["preview_error"] is None
+        assert data["data_url"] == (
+            "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+        )
+
+    def test_artifact_read_returns_text_preview_data(self, api):
+        text_bytes = b"# Hello\nworld\n"
+        with patch("workstream_manager.server._resolve_artifact_root", return_value=("/tmp/artifacts", "notes.md")), \
+             patch("workstream_manager.server._validate_path", return_value="/tmp/artifacts/notes.md"), \
+             patch("workstream_manager.server.os.path.exists", return_value=True), \
+             patch("builtins.open", MagicMock()) as mock_open:
+            mock_open.return_value.__enter__.return_value.read.return_value = text_bytes
+
+            code, body = api.get("/api/artifact/read?path=notes.md&workstream_id=ws-1")
+
+        assert code == 200
+        data = body["data"]
+        assert data["preview_type"] == "text"
+        assert data["mime_type"] == "text/markdown"
+        assert data["content"] == "# Hello\nworld\n"
+        assert data["data_url"] is None
+        assert data["preview_error"] is None
+
+    def test_artifact_read_returns_preview_error_for_binary_files(self, api):
+        binary_bytes = b"\x00\x01\x02\x03"
+        with patch("workstream_manager.server._resolve_artifact_root", return_value=("/tmp/artifacts", "archive.bin")), \
+             patch("workstream_manager.server._validate_path", return_value="/tmp/artifacts/archive.bin"), \
+             patch("workstream_manager.server.os.path.exists", return_value=True), \
+             patch("builtins.open", MagicMock()) as mock_open:
+            mock_open.return_value.__enter__.return_value.read.return_value = binary_bytes
+
+            code, body = api.get("/api/artifact/read?path=archive.bin&workstream_id=ws-1")
+
+        assert code == 200
+        data = body["data"]
+        assert data["preview_type"] == "unsupported"
+        assert data["mime_type"] == "application/octet-stream"
+        assert data["content"] is None
+        assert data["data_url"] is None
+        assert data["preview_error"] == "Preview unavailable for application/octet-stream files."
 
     def test_runtime_error_returns_409(self, api):
         api.mocks["acquire_lock"].side_effect = RuntimeError("already locked")

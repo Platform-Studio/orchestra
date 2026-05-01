@@ -14,6 +14,8 @@ import os
 import shutil
 import subprocess
 import sys
+import base64
+import mimetypes
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
@@ -84,6 +86,77 @@ def _run_orchestration_cli(args: list[str]) -> dict:
     if payload.get("status") != "ok":
         raise RuntimeError(payload.get("message", "Orchestration CLI returned an error"))
     return payload.get("data")
+
+
+_TEXT_PREVIEW_EXTENSIONS = {
+    ".md", ".txt", ".json", ".yaml", ".yml", ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".html", ".css", ".scss", ".sh", ".zsh", ".bash", ".toml", ".ini", ".cfg", ".csv",
+    ".svg", ".xml", ".sql", ".log",
+}
+
+_TEXT_PREVIEW_MIME_OVERRIDES = {
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".json": "application/json",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".py": "text/x-python",
+    ".js": "text/javascript",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".jsx": "text/javascript",
+    ".html": "text/html",
+    ".css": "text/css",
+    ".scss": "text/x-scss",
+    ".sh": "text/x-shellscript",
+    ".zsh": "text/x-shellscript",
+    ".bash": "text/x-shellscript",
+    ".toml": "application/toml",
+    ".ini": "text/plain",
+    ".cfg": "text/plain",
+    ".csv": "text/csv",
+    ".xml": "application/xml",
+    ".sql": "application/sql",
+    ".log": "text/plain",
+}
+
+
+def _build_artifact_preview(resolved_path: str) -> dict:
+    mime_type, _ = mimetypes.guess_type(resolved_path)
+    ext = os.path.splitext(resolved_path)[1].lower()
+    if ext in _TEXT_PREVIEW_MIME_OVERRIDES:
+        mime_type = _TEXT_PREVIEW_MIME_OVERRIDES[ext]
+    else:
+        mime_type = mime_type or "application/octet-stream"
+
+    with open(resolved_path, "rb") as handle:
+        raw = handle.read()
+
+    if mime_type.startswith("image/"):
+        return {
+            "preview_type": "image",
+            "mime_type": mime_type,
+            "content": None,
+            "data_url": f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}",
+            "preview_error": None,
+        }
+
+    if ext in _TEXT_PREVIEW_EXTENSIONS or (b"\x00" not in raw and mime_type.startswith("text/")):
+        return {
+            "preview_type": "text",
+            "mime_type": mime_type,
+            "content": raw.decode("utf-8", errors="replace"),
+            "data_url": None,
+            "preview_error": None,
+        }
+
+    return {
+        "preview_type": "unsupported",
+        "mime_type": mime_type,
+        "content": None,
+        "data_url": None,
+        "preview_error": f"Preview unavailable for {mime_type} files.",
+    }
 
 
 # ── Route handlers ───────────────────────────────────────────────
@@ -493,12 +566,19 @@ def handle_artifact(method, parts, params):
             workstream_id=workstream_id,
         )
         resolved_path = _validate_path(artifacts_root, relative_path)
-        content = read_artifact(path, base_dir=WORKSPACE_DIR, workstream_id=workstream_id)
+        if not os.path.exists(resolved_path):
+            raise FileNotFoundError(f"Artifact not found: {path}")
+
+        preview = _build_artifact_preview(resolved_path)
         return _ok({
             "path": path,
             "workstream_id": workstream_id,
             "resolved_path": resolved_path,
-            "content": content,
+            "content": preview["content"],
+            "preview_type": preview["preview_type"],
+            "mime_type": preview["mime_type"],
+            "data_url": preview["data_url"],
+            "preview_error": preview["preview_error"],
         })
     if m == "open":
         path = params.get("path")

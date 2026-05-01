@@ -1316,20 +1316,20 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"Valid next states: {valid_transitions}\n\n"
                     f"Task IDs file: {task_file_path}\n\n"
                     + _path_context +
-                    f"=== MANDATORY INITIAL STEPS (Execute these before any analysis) ===\n"
-                    f"1. EXECUTE: python -m orchestration.cli task read {task.id}\n"
-                    f"2. Read the complete task output including all comments, audit entries, and artifact references\n"
-                    f"3. For EACH artifact path mentioned in the task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>' --workstream {ws.id}\n"
-                    f"4. Review the full content of each artifact before proceeding\n"
-                    f"5. Only then proceed with your analysis\n\n"
-                    f"Follow your instructions and process this task now."
+                    f"Execution contract:\n"
+                    f"1. Run: python -m orchestration.cli task read {task.id}\n"
+                    f"2. Read the full task payload (description, comments, audit, attachments).\n"
+                    f"3. For each attachment/path referenced in the task payload, run: python -m orchestration.cli artifact read \"<artifact_path>\" --workstream {ws.id}\n"
+                    f"4. Only begin implementation/triage after completing steps 1 to 3.\n"
+                    f"5. Before finishing, post a task comment summarizing what you changed and why.\n"
+                    f"6. If your role owns state movement, transition the task to the next valid state based on outcome.\n\n"
+                    f"Role-specific objective:\n"
+                    f"Follow your agent instructions and complete this task.\n\n"
+                    f"Completion requirements:\n"
+                    f"1. Explicitly state: done, blocked, or needs follow-up.\n"
+                    f"2. If blocked, include blocker details and exact dependency.\n"
+                    f"3. If done, include verification evidence (tests/build/commands run)."
                 )
-                if task.description:
-                    task_prompt += f"\n\nTask description:\n{task.description}"
-                if _should_inline_attachments(ws):
-                    attachment_section = _read_task_attachments_for_prompt(task, base_dir)
-                    if attachment_section:
-                        task_prompt += f"\n\n{attachment_section}"
                 context_section = _workstream_context_prompt_section(ws)
                 if context_section:
                     task_prompt += f"\n\n{context_section}"
@@ -1347,23 +1347,21 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"Tasks:\n" + "\n".join(task_lines) + "\n\n"
                     f"Task IDs file: {task_file_path}\n\n"
                     + _path_context +
-                    f"=== MANDATORY INITIAL STEPS (Execute these before any analysis) ===\n"
-                    f"1. EXECUTE: python -m orchestration.cli task list {ws.id} or read each task ID from the Task IDs file\n"
-                    f"2. For each task, EXECUTE: python -m orchestration.cli task read <task_id>\n"
-                    f"3. Read the complete task output including all comments, audit entries, and artifact references\n"
-                    f"4. For EACH artifact path mentioned in any task or comments, EXECUTE: python -m orchestration.cli artifact read '<full_path>' --workstream {ws.id}\n"
-                    f"5. Review the full content of all artifacts before proceeding\n"
-                    f"6. Only then proceed with your analysis\n\n"
-                    f"Follow your instructions and process these tasks now."
+                    f"Execution contract:\n"
+                    f"1. Run: python -m orchestration.cli task list {ws.id} or read each task ID from the Task IDs file.\n"
+                    f"2. For each task ID, run: python -m orchestration.cli task read <task_id>\n"
+                    f"3. Read the full task payload for each task (description, comments, audit, attachments).\n"
+                    f"4. For each attachment/path referenced by any task payload, run: python -m orchestration.cli artifact read \"<artifact_path>\" --workstream {ws.id}\n"
+                    f"5. Only begin implementation/triage after completing steps 1 to 4.\n"
+                    f"6. Before finishing, post task comments summarizing what you changed and why.\n"
+                    f"7. If your role owns state movement, transition each task to the next valid state based on outcome.\n\n"
+                    f"Role-specific objective:\n"
+                    f"Follow your agent instructions and complete these tasks.\n\n"
+                    f"Completion requirements:\n"
+                    f"1. Explicitly state for each task: done, blocked, or needs follow-up.\n"
+                    f"2. If blocked, include blocker details and exact dependency.\n"
+                    f"3. If done, include verification evidence (tests/build/commands run)."
                 )
-                if _should_inline_attachments(ws):
-                    all_attachment_sections = []
-                    for t in tasks:
-                        section = _read_task_attachments_for_prompt(t, base_dir)
-                        if section:
-                            all_attachment_sections.append(f"Task {t.id}:\n{section}")
-                    if all_attachment_sections:
-                        task_prompt += "\n\n" + "\n\n".join(all_attachment_sections)
                 context_section = _workstream_context_prompt_section(ws)
                 if context_section:
                     task_prompt += f"\n\n{context_section}"
@@ -1384,9 +1382,6 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 f"ORCHESTRATION_ROOT: {orchestration_root}\n\n"
                 f"Follow your instructions now."
             )
-
-        if ws and agent_def.get("learning_enabled", True):
-            task_prompt += "\n\n" + _agent_learning_prompt_section(agent_def, ws.id)
 
         # Append custom trigger prompt if provided
         if prompt:

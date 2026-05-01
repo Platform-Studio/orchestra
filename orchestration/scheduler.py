@@ -433,7 +433,7 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
 def tick(base_dir: str = ".") -> dict:
     """Execute one scheduler tick.
 
-    1. Clean up expired locks and schedule retries
+    1. Clean up orphaned and expired locks
     2. Load all non-paused workstreams
     3. Fire task-level schedules that have passed
     4. Evaluate schedule-based triggers
@@ -452,13 +452,15 @@ def tick(base_dir: str = ".") -> dict:
         last_tick = now - timedelta(minutes=1)
 
     results = {
+        "orphaned_locks_cleaned": [],
         "expired_locks_cleaned": [],
         "task_schedules_fired": [],
         "trigger_schedules_fired": [],
         "state_triggers_fired": [],
     }
 
-    from .retry import cleanup_expired_locks
+    from .retry import cleanup_expired_locks, cleanup_orphaned_locks
+    results["orphaned_locks_cleaned"] = cleanup_orphaned_locks(base_dir)
     results["expired_locks_cleaned"] = cleanup_expired_locks(base_dir)
 
     # Tracks optimistic slots consumed in this tick before agent runs are

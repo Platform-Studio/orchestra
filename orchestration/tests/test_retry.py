@@ -10,11 +10,12 @@ from orchestration.workstreams import create_workstream
 from orchestration.tasks import create_task, read_task, _save_task
 from orchestration.locks import (
     acquire_lock, lock_status, force_release_lock,
-    find_expired_locks, update_lock_pid,
+    find_expired_locks, find_orphaned_locks, update_lock_pid,
 )
 from orchestration.models import RetryConfig, Lock
 from orchestration.retry import (
     handle_expired_lock, cleanup_expired_locks, manual_retry,
+    cleanup_orphaned_locks,
     _compute_backoff, _get_retry_config, _find_last_agent,
     _is_process_alive,
 )
@@ -146,6 +147,27 @@ class TestFindExpiredLocks:
         assert len(expired) == 1
         assert expired[0]["task_id"] == task.id
         assert expired[0]["workstream_id"] == mounted_child.id
+
+
+class TestFindOrphanedLocks:
+    @patch("orchestration.locks._is_process_alive", return_value=False)
+    def test_finds_nonexpired_lock_with_dead_pid(self, _mock_alive, workspace, task):
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        orphaned = find_orphaned_locks(workspace)
+        assert len(orphaned) == 1
+        assert orphaned[0]["task_id"] == task.id
+
+    @patch("orchestration.locks._is_process_alive", return_value=True)
+    def test_skips_lock_with_live_pid(self, _mock_alive, workspace, task):
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        orphaned = find_orphaned_locks(workspace)
+        assert orphaned == []
+
+    @patch("orchestration.locks._is_process_alive", return_value=False)
+    def test_skips_expired_locks(self, _mock_alive, workspace, task):
+        _make_expired_lock(task.id, workspace, pid=424242)
+        orphaned = find_orphaned_locks(workspace)
+        assert orphaned == []
 
 
 # ── Force release lock ───────────────────────────────────────────
@@ -382,6 +404,28 @@ class TestCleanupExpiredLocks:
         assert results == []
 
 
+class TestCleanupOrphanedLocks:
+    @patch("orchestration.locks._is_process_alive", return_value=False)
+    def test_cleans_orphaned_lock(self, _mock_alive, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+
+        results = cleanup_orphaned_locks(workspace)
+        assert len(results) == 1
+        assert results[0]["task_id"] == task.id
+        assert results[0]["released"] is True
+        assert lock_status(task.id, base_dir=workspace) is None
+
+    @patch("orchestration.locks._is_process_alive", return_value=True)
+    def test_no_orphaned_locks_when_pid_alive(self, _mock_alive, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+
+        results = cleanup_orphaned_locks(workspace)
+        assert results == []
+        assert lock_status(task.id, base_dir=workspace) is not None
+
+
 # ── Manual retry ─────────────────────────────────────────────────
 
 class TestManualRetry:
@@ -498,6 +542,20 @@ class TestSchedulerExpiredLockPhase:
         results = tick(workspace)
 
         assert results["expired_locks_cleaned"] == []
+
+    @patch("orchestration.retry._kill_process", return_value=None)
+    @patch("orchestration.locks._is_process_alive", return_value=False)
+    def test_tick_cleans_orphaned_locks(self, _mock_alive, mock_kill, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+
+        from orchestration.scheduler import tick
+        results = tick(workspace)
+
+        assert "orphaned_locks_cleaned" in results
+        assert len(results["orphaned_locks_cleaned"]) == 1
+        assert results["orphaned_locks_cleaned"][0]["task_id"] == task.id
+        assert lock_status(task.id, base_dir=workspace) is None
 
 
 # ── Process alive check ─────────────────────────────────────────

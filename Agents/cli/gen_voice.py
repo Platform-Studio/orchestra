@@ -44,8 +44,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from project root (one level up from cli/)
-load_dotenv(Path(__file__).parent.parent / ".env")
+# Load .env from project root (three levels up from cli/)
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 MANIFEST_NAME = "voice_manifest.json"
 

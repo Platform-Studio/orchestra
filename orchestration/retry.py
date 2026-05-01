@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 from .models import RetryConfig, now_iso
-from .locks import find_expired_locks, force_release_lock
+from .locks import find_expired_locks, find_orphaned_locks, force_release_lock
 from .tasks import read_task, _save_task
 from .workstreams import read_workstream
 
@@ -276,6 +276,57 @@ def cleanup_expired_locks(base_dir: str = ".") -> list:
                 "workstream_id": entry["workstream_id"],
                 "error": str(e),
             })
+    return results
+
+
+def cleanup_orphaned_locks(base_dir: str = ".") -> list:
+    """Release non-expired locks whose owner pid no longer exists.
+
+    This is a fast safety sweep run every scheduler tick to recover from
+    interrupted runs (crash/restart) without waiting for TTL expiry.
+    """
+    from .workspace_audit import log_event
+
+    orphaned = find_orphaned_locks(base_dir)
+    results = []
+
+    for entry in orphaned:
+        task_id = entry["task_id"]
+        workstream_id = entry["workstream_id"]
+        lock = entry["lock"]
+
+        released = force_release_lock(task_id, base_dir)
+        if released:
+            try:
+                task = read_task(task_id, base_dir)
+                task.add_audit(
+                    "lock_orphaned",
+                    f"Released orphaned lock from {lock.agent_id} (pid={lock.pid}).",
+                )
+                _save_task(task, base_dir)
+            except Exception:
+                pass
+
+            log_event(
+                "lock_orphaned",
+                f"Released orphaned lock for task {task_id} (agent={lock.agent_id}, pid={lock.pid})",
+                base_dir,
+                task_id=task_id,
+                workstream_id=workstream_id,
+                agent_id=lock.agent_id,
+                pid=lock.pid,
+            )
+
+        results.append(
+            {
+                "task_id": task_id,
+                "workstream_id": workstream_id,
+                "released": bool(released),
+                "agent_id": lock.agent_id,
+                "pid": lock.pid,
+            }
+        )
+
     return results
 
 
