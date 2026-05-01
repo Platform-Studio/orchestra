@@ -7,7 +7,17 @@ from datetime import datetime, timezone, timedelta
 
 from orchestration.workstreams import create_workstream
 from orchestration.tasks import create_task
-from orchestration.locks import acquire_lock, release_lock, lock_status
+from orchestration.locks import (
+    acquire_lock,
+    release_lock,
+    lock_status,
+    acquire_process_lock,
+    release_process_lock,
+    process_lock_status,
+    find_stale_process_locks,
+    _process_lock_path,
+    _process_locks_dir,
+)
 
 
 @pytest.fixture
@@ -128,3 +138,97 @@ class TestLockStatus:
         # Should be able to acquire since old lock is expired
         lock = acquire_lock(task.id, agent_id="agent-2", base_dir=workspace)
         assert lock.agent_id == "agent-2"
+
+
+class TestProcessLocks:
+    RUN_ID = "test-run-abc123"
+
+    def test_acquire_basic(self, workspace):
+        lock = acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", base_dir=workspace)
+        assert lock.agent_id == "seo-indexer"
+        assert lock.acquired_at is not None
+        assert lock.expires_at is not None
+
+    def test_acquire_creates_lock_file(self, workspace):
+        acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", base_dir=workspace)
+        path = _process_lock_path(self.RUN_ID, workspace)
+        assert os.path.exists(path)
+
+    def test_acquire_stores_pid(self, workspace):
+        lock = acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", pid=99999, base_dir=workspace)
+        assert lock.pid == 99999
+
+    def test_acquire_with_custom_ttl(self, workspace):
+        lock = acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", ttl_seconds=120, base_dir=workspace)
+        acquired = datetime.fromisoformat(lock.acquired_at)
+        expires = datetime.fromisoformat(lock.expires_at)
+        assert abs((expires - acquired).total_seconds() - 120) < 1
+
+    def test_acquire_duplicate_active_lock_raises(self, workspace):
+        acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", base_dir=workspace)
+        with pytest.raises(RuntimeError, match="already held"):
+            acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", base_dir=workspace)
+
+    def test_acquire_after_expired_lock_succeeds(self, workspace):
+        path = _process_lock_path(self.RUN_ID, workspace)
+        os.makedirs(_process_locks_dir(workspace), exist_ok=True)
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        with open(path, "w") as f:
+            yaml.dump({"agent_id": "old-agent", "acquired_at": past.isoformat(), "expires_at": past.isoformat()}, f)
+        lock = acquire_process_lock(self.RUN_ID, agent_id="new-agent", base_dir=workspace)
+        assert lock.agent_id == "new-agent"
+
+    def test_release_removes_file(self, workspace):
+        acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", base_dir=workspace)
+        result = release_process_lock(self.RUN_ID, base_dir=workspace)
+        assert result is True
+        assert not os.path.exists(_process_lock_path(self.RUN_ID, workspace))
+
+    def test_release_nonexistent_returns_false(self, workspace):
+        assert release_process_lock(self.RUN_ID, base_dir=workspace) is False
+
+    def test_status_active(self, workspace):
+        acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", base_dir=workspace)
+        lock = process_lock_status(self.RUN_ID, base_dir=workspace)
+        assert lock is not None
+        assert lock.agent_id == "seo-indexer"
+
+    def test_status_absent(self, workspace):
+        assert process_lock_status(self.RUN_ID, base_dir=workspace) is None
+
+    def test_status_expired_returns_none(self, workspace):
+        path = _process_lock_path(self.RUN_ID, workspace)
+        os.makedirs(_process_locks_dir(workspace), exist_ok=True)
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        with open(path, "w") as f:
+            yaml.dump({"agent_id": "seo-indexer", "acquired_at": past.isoformat(), "expires_at": past.isoformat()}, f)
+        assert process_lock_status(self.RUN_ID, base_dir=workspace) is None
+
+    def test_find_stale_no_locks(self, workspace):
+        assert find_stale_process_locks(base_dir=workspace) == []
+
+    def test_find_stale_expired(self, workspace):
+        path = _process_lock_path(self.RUN_ID, workspace)
+        os.makedirs(_process_locks_dir(workspace), exist_ok=True)
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        with open(path, "w") as f:
+            yaml.dump({"agent_id": "seo-indexer", "acquired_at": past.isoformat(), "expires_at": past.isoformat()}, f)
+        stale = find_stale_process_locks(base_dir=workspace)
+        assert len(stale) == 1
+        assert stale[0]["run_id"] == self.RUN_ID
+        assert stale[0]["reason"] == "expired"
+
+    def test_find_stale_dead_pid(self, workspace):
+        # PID 1 is always alive (init) and 2**22 is almost certainly dead.
+        dead_pid = 2**22
+        acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", pid=dead_pid, ttl_seconds=9999, base_dir=workspace)
+        stale = find_stale_process_locks(base_dir=workspace)
+        assert any(s["run_id"] == self.RUN_ID and s["reason"] == "dead_pid" for s in stale)
+
+    def test_find_stale_live_pid_not_returned(self, workspace):
+        import os as _os
+        acquire_process_lock(self.RUN_ID, agent_id="seo-indexer", pid=_os.getpid(), ttl_seconds=9999, base_dir=workspace)
+        stale = find_stale_process_locks(base_dir=workspace)
+        assert not any(s["run_id"] == self.RUN_ID for s in stale)
+        # Cleanup
+        release_process_lock(self.RUN_ID, base_dir=workspace)

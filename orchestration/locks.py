@@ -235,3 +235,127 @@ def find_orphaned_locks(base_dir: str = ".") -> list:
             except Exception:
                 continue
     return orphaned
+
+
+# ---------------------------------------------------------------------------
+# Process locks — not tied to any task, keyed by run_id
+# ---------------------------------------------------------------------------
+
+_PROCESS_LOCKS_SUBDIR = "process_locks"
+
+
+def _process_locks_dir(base_dir: str) -> str:
+    return os.path.join(base_dir, ".orchestration", _PROCESS_LOCKS_SUBDIR)
+
+
+def _process_lock_path(run_id: str, base_dir: str) -> str:
+    return os.path.join(_process_locks_dir(base_dir), f"{run_id}.lock")
+
+
+def acquire_process_lock(
+    run_id: str,
+    agent_id: str,
+    pid: int = None,
+    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    base_dir: str = ".",
+) -> Lock:
+    """Acquire a process-level lock for an agent run that is not tied to any task.
+
+    Stores the lock under .orchestration/process_locks/{run_id}.lock.
+    Useful for scheduler-driven standalone agents so they can be detected and
+    cleaned up automatically if they hang past their TTL.
+    """
+    os.makedirs(_process_locks_dir(base_dir), exist_ok=True)
+    lock_path = _process_lock_path(run_id, base_dir)
+
+    # Remove expired lock file if present
+    if os.path.exists(lock_path):
+        try:
+            with open(lock_path) as f:
+                data = yaml.safe_load(f)
+            if data:
+                existing = Lock.from_dict(data)
+                if not existing.is_expired():
+                    raise RuntimeError(
+                        f"Process lock for run {run_id} already held by agent {existing.agent_id}"
+                    )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+        os.remove(lock_path)
+
+    now = datetime.now(timezone.utc)
+    lock = Lock(
+        agent_id=agent_id,
+        acquired_at=now.isoformat(),
+        expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat(),
+        pid=pid if pid is not None else os.getpid(),
+    )
+
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise RuntimeError(f"Process lock contention on run {run_id}")
+
+    with os.fdopen(fd, "w") as f:
+        yaml.dump(lock.to_dict(), f, default_flow_style=False, sort_keys=False)
+
+    return lock
+
+
+def release_process_lock(run_id: str, base_dir: str = ".") -> bool:
+    """Release a process lock. Returns True if removed, False if already absent."""
+    lock_path = _process_lock_path(run_id, base_dir)
+    if not os.path.exists(lock_path):
+        return False
+    os.remove(lock_path)
+    return True
+
+
+def process_lock_status(run_id: str, base_dir: str = "."):
+    """Return the Lock if the process lock is active (not expired), else None."""
+    lock_path = _process_lock_path(run_id, base_dir)
+    if not os.path.exists(lock_path):
+        return None
+    try:
+        with open(lock_path) as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+    if not data:
+        return None
+    lock = Lock.from_dict(data)
+    if lock.is_expired():
+        return None
+    return lock
+
+
+def find_stale_process_locks(base_dir: str = ".") -> list:
+    """Return process locks that are expired or whose owner PID is dead.
+
+    Each entry is a dict: {run_id, lock, lock_path, reason}
+    where reason is 'expired' or 'dead_pid'.
+    """
+    locks_dir = _process_locks_dir(base_dir)
+    if not os.path.isdir(locks_dir):
+        return []
+    stale = []
+    for fname in os.listdir(locks_dir):
+        if not fname.endswith(".lock"):
+            continue
+        run_id = fname[: -len(".lock")]
+        lock_path = os.path.join(locks_dir, fname)
+        try:
+            with open(lock_path) as f:
+                data = yaml.safe_load(f)
+            if not data:
+                continue
+            lock = Lock.from_dict(data)
+            if lock.is_expired():
+                stale.append({"run_id": run_id, "lock": lock, "lock_path": lock_path, "reason": "expired"})
+            elif lock.pid is not None and not _is_process_alive(lock.pid):
+                stale.append({"run_id": run_id, "lock": lock, "lock_path": lock_path, "reason": "dead_pid"})
+        except Exception:
+            continue
+    return stale

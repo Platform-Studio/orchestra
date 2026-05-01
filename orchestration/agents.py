@@ -185,19 +185,38 @@ def _is_pid_alive(pid) -> bool:
 
 
 def _prune_dead_active_runs(base_dir: str, runs: list = None) -> list:
-    """Drop stale active-agent entries whose PIDs are no longer alive."""
+    """Drop stale active-agent entries whose PIDs are no longer alive or whose process lock has expired."""
     if runs is None:
         runs = _read_active_agents(base_dir)
+
+    from .locks import process_lock_status
 
     live_runs = []
     changed = False
     for run in runs:
         pid = run.get("pid")
-        # Runs without a pid are kept for backward compatibility.
-        if pid is None or _is_pid_alive(pid):
-            live_runs.append(run)
-        else:
+        run_id = run.get("run_id")
+
+        # If PID is dead, prune immediately.
+        if pid is not None and not _is_pid_alive(pid):
             changed = True
+            continue
+
+        # If there's a process lock for this run and it has expired, prune too.
+        # This catches agents that are alive but have run past their allowed TTL.
+        if run_id is not None:
+            lock = process_lock_status(run_id, base_dir)
+            # lock is None means either no lock exists (pre-feature runs) or it expired.
+            # Only prune if a lock *file* exists and has expired — not if it was never created.
+            from .locks import _process_lock_path
+            lock_path = _process_lock_path(run_id, base_dir)
+            if os.path.exists(lock_path) and lock is None:
+                # Lock file exists but is expired — this run has exceeded its TTL.
+                changed = True
+                continue
+
+        # Runs without a pid are kept for backward compatibility.
+        live_runs.append(run)
 
     if changed:
         _write_active_agents(base_dir, live_runs)
@@ -1484,6 +1503,21 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             }
             _register_active_agent(base_dir, active_run)
 
+            # Acquire a process-level lock so standalone (non-task) agents can be
+            # auto-detected and cleaned up if they hang past their TTL.
+            from .locks import acquire_process_lock
+            _process_lock_ttl = (timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT) + 300
+            try:
+                acquire_process_lock(
+                    run_id,
+                    agent_id=agent_def["name"],
+                    pid=proc.pid,
+                    ttl_seconds=int(_process_lock_ttl),
+                    base_dir=base_dir,
+                )
+            except Exception:
+                pass  # Non-fatal; process lock is best-effort
+
             # Store subprocess PID in lock files for dead-process detection
             from .locks import update_lock_pid
             for tid in task_ids:
@@ -1499,6 +1533,11 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 proc.communicate()
             finally:
                 _unregister_active_agent(base_dir, run_id)
+                from .locks import release_process_lock
+                try:
+                    release_process_lock(run_id, base_dir=base_dir)
+                except Exception:
+                    pass
 
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             output = f.read().strip()
