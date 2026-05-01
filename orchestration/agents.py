@@ -721,8 +721,14 @@ def _get_run_retry_info(run: dict, base_dir: str) -> dict:
     }
 
 
-def retry_agent_run(run_id: str, base_dir: str = ".", allow_paused_workstream: bool = False) -> dict:
-    """Manually retry a recorded agent run using its stored execution context."""
+def retry_agent_run(run_id: str, base_dir: str = ".", allow_paused_workstream: bool = False, background: bool = False) -> dict:
+    """Manually retry a recorded agent run using its stored execution context.
+
+    When background=True, the agent is dispatched on a daemon thread and the
+    pre-generated run_id is returned immediately.  Synchronous validation
+    (paused workstream, missing agent) still happens on the calling thread so
+    errors are surfaced before returning.
+    """
     run = _read_run_meta_by_id(base_dir, run_id)
 
     agent_ref = str(run.get("agent_ref") or run.get("agent") or "").strip()
@@ -731,6 +737,41 @@ def retry_agent_run(run_id: str, base_dir: str = ".", allow_paused_workstream: b
 
     task_ids = list(run.get("task_ids") or [])
     workstream_id = run.get("workstream_id") or None
+
+    # --- Synchronous preflight so callers get errors immediately ---
+    # Only the paused-workstream check is done here because it drives an
+    # interactive "retry anyway?" dialog in the UI. Other errors (missing
+    # agent file, invalid images) surface through the background thread.
+    if workstream_id:
+        from .workstreams import read_workstream
+        ws = read_workstream(workstream_id, base_dir)
+        if ws.paused and not allow_paused_workstream:
+            raise RuntimeError(f"Workstream '{ws.name}' is paused")
+
+    new_run_id = str(uuid.uuid4())
+
+    if background:
+        import threading
+
+        def _run():
+            try:
+                result = run_agent(
+                    agent_ref,
+                    task_ids=task_ids,
+                    workstream_id=workstream_id,
+                    base_dir=base_dir,
+                    allow_paused_workstream=allow_paused_workstream,
+                    retried_from_run_id=run_id,
+                    _run_id=new_run_id,
+                )
+                _append_retry_child(base_dir, run_id, result["run_id"])
+            except Exception as e:
+                import sys
+                print(f"[retry_agent_run] background error for run {new_run_id}: {e}", file=sys.stderr)
+
+        t = threading.Thread(target=_run, daemon=True, name=f"retry-{new_run_id[:8]}")
+        t.start()
+        return {"run_id": new_run_id, "agent": agent_ref, "workstream_id": workstream_id, "task_ids": task_ids, "retried_from_run_id": run_id}
 
     result = run_agent(
         agent_ref,
@@ -1200,7 +1241,7 @@ def _classify_run_outcome(returncode: int, timeout_expired: bool) -> str:
     return "failed"
 
 
-def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None) -> dict:
+def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None) -> dict:
     """Run an agent via Claude Code CLI against 0-N tasks.
 
     Callers are responsible for locking/unlocking tasks. This function
@@ -1417,7 +1458,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Initialize run metadata
         _ensure_state_dirs(base_dir)
-        run_id = str(uuid.uuid4())
+        run_id = _run_id or str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
         log_path = os.path.join(_agent_runs_dir(base_dir), f"{run_id}.log")
         log_path_rel = os.path.relpath(log_path, base_dir)

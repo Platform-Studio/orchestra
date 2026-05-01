@@ -549,6 +549,7 @@ def handle_retry(method, parts, params):
             parts[0],
             base_dir=WORKSPACE_DIR,
             allow_paused_workstream=allow_paused_workstream,
+            background=True,
         )
         return _ok(result)
     return _err(f"Unknown retry method: {method}")
