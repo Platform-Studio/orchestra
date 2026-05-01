@@ -2153,6 +2153,14 @@ async function showTaskDetail(taskId) {
   const commentDraft = taskCommentDraftByTaskId[task.id] || '';
   main += `<div class="detail-section"><h4>Comments</h4>`;
 
+  // Trello-style placement: new comment composer first, thread below.
+  main += `<div class="comment-composer">`;
+  main += `<textarea id="new-task-comment" placeholder="Write a comment..." oninput="setTaskCommentDraft('${task.id}', this.value)">${esc(commentDraft)}</textarea>`;
+  main += `<div class="comment-actions">`;
+  main += `<button id="btn-add-comment" class="comment-save-btn" type="button">Save</button>`;
+  main += `</div>`;
+  main += `</div>`;
+
   if (!comments.length) {
     main += `<div class="attachment-hint">No comments yet.</div>`;
   }
@@ -2210,13 +2218,6 @@ async function showTaskDetail(taskId) {
     }
     main += `</div>`;
   }
-
-  main += `<div class="comment-composer">`;
-  main += `<textarea id="new-task-comment" placeholder="Write a comment..." oninput="setTaskCommentDraft('${task.id}', this.value)">${esc(commentDraft)}</textarea>`;
-  main += `<div class="comment-actions">`;
-  main += `<button id="btn-add-comment" class="comment-save-btn" type="button">Save</button>`;
-  main += `</div>`;
-  main += `</div>`;
 
   main += `</div>`;
 
