@@ -1,0 +1,3288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workstream Manager</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+/* ── Reset & base ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1d23; color: #c9d1d9; }
+.hidden { display: none !important; }
+
+/* ── Layout ───────────────────────────────────────────────────── */
+.app { display: flex; height: 100vh; }
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+.sidebar {
+  width: 260px; min-width: 260px; background: #13161b; color: #c9d1d9;
+  display: flex; flex-direction: column; overflow-y: auto;
+}
+.sidebar-header {
+  padding: 16px; font-size: 18px; font-weight: 700;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  display: flex; align-items: center; gap: 8px;
+}
+.sidebar-header svg { flex-shrink: 0; }
+.sidebar-tree { padding: 8px 0; flex: 1; overflow-y: auto; }
+.sidebar-item {
+  padding: 6px 16px; cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; gap: 4px;
+  transition: background 0.15s;
+}
+.sidebar-item:hover { background: rgba(255,255,255,0.08); }
+.sidebar-item.active { background: rgba(255,255,255,0.14); font-weight: 600; }
+.sidebar-item.depth-1 { padding-left: 32px; font-size: 13px; }
+.sidebar-item.depth-2 { padding-left: 48px; font-size: 13px; }
+.sidebar-item.depth-3 { padding-left: 64px; font-size: 12px; }
+.sidebar-item.depth-4 { padding-left: 80px; font-size: 12px; }
+.sidebar-chevron {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex-shrink: 0;
+  font-size: 10px; color: rgba(255,255,255,0.4);
+  transition: transform 0.15s;
+  user-select: none;
+}
+.sidebar-chevron:hover { color: rgba(255,255,255,0.8); }
+.sidebar-chevron.expanded { transform: rotate(90deg); }
+.sidebar-chevron.leaf { visibility: hidden; }
+.sidebar-children.collapsed { display: none; }
+.sidebar-item .sidebar-count {
+  font-size: 11px; background: rgba(255,255,255,0.1); color: #8b949e;
+  border-radius: 10px; padding: 0 6px; margin-left: auto; font-weight: 600;
+  min-width: 20px; text-align: center;
+}
+.sidebar-item .pause-badge {
+  font-size: 10px; background: rgba(255,255,255,0.15); border-radius: 3px;
+  padding: 1px 5px; margin-left: 6px;
+}
+.sidebar-item .trigger-active-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 6px;
+  background: #3fb950;
+  box-shadow: 0 0 0 1px rgba(63,185,80,0.28), 0 0 8px rgba(63,185,80,0.38);
+  animation: trigger-pulse 2.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.sidebar-item .mount-badge {
+  margin-left: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(88,166,255,0.45);
+  background: rgba(88,166,255,0.14);
+  color: #58a6ff;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* ── Scheduler bar ────────────────────────────────────────────── */
+.scheduler-bar {
+  padding: 10px 16px; border-top: 1px solid rgba(255,255,255,0.1);
+  font-size: 12px; color: rgba(255,255,255,0.5);
+}
+.scheduler-bar .dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 6px; vertical-align: middle;
+}
+.scheduler-bar .dot.running { background: #3fb950; }
+.scheduler-bar .dot.stopped { background: #f85149; }
+.scheduler-bar .log-link {
+  color: rgba(255,255,255,0.35); cursor: pointer; text-decoration: none;
+  margin-left: 4px;
+}
+.scheduler-bar .log-link:hover { color: rgba(255,255,255,0.7); text-decoration: underline; }
+.scheduler-bar .countdown {
+  font-variant-numeric: tabular-nums; color: rgba(255,255,255,0.4);
+}
+.sidebar-footer {
+  padding: 8px 16px 12px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.sidebar-footer-link {
+  color: rgba(255,255,255,0.65);
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.sidebar-footer-link:hover {
+  color: #58a6ff;
+  text-decoration: underline;
+}
+
+/* ── Agent runs modal ───────────────────────────────────────── */
+#active-agents-content {
+  width: min(1200px, 92vw);
+  height: 80vh;
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#active-agents-content .agent-split {
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-split {
+  display: flex;
+  gap: 16px;
+  min-height: 420px;
+  align-items: stretch;
+}
+.agent-list {
+  width: 320px;
+  min-width: 320px;
+  border-right: 1px solid rgba(255,255,255,0.08);
+  padding-right: 12px;
+  overflow-y: auto;
+  max-height: none;
+  min-height: 0;
+}
+.agent-list-item {
+  background: #22272e;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.agent-list-item:hover { border-color: rgba(88,166,255,0.55); }
+.agent-list-item.active {
+  border-color: #58a6ff;
+  background: rgba(88,166,255,0.1);
+}
+.agent-name { font-weight: 700; color: #e6edf3; font-size: 13px; }
+.agent-status {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 1px 7px;
+  border: 1px solid rgba(255,255,255,0.16);
+}
+.agent-status-running { color: #3fb950; border-color: rgba(63,185,80,0.45); background: rgba(63,185,80,0.12); }
+.agent-status-completed { color: #58a6ff; border-color: rgba(88,166,255,0.45); background: rgba(88,166,255,0.12); }
+.agent-status-failed { color: #f85149; border-color: rgba(248,81,73,0.45); background: rgba(248,81,73,0.12); }
+.agent-status-timeout { color: #d29922; border-color: rgba(210,153,34,0.45); background: rgba(210,153,34,0.12); }
+.agent-status-killed { color: #ff7b72; border-color: rgba(255,123,114,0.45); background: rgba(255,123,114,0.14); }
+.agent-meta { color: #8b949e; font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.agent-workstream-link {
+  color: #79c0ff;
+  text-decoration: none;
+}
+.agent-workstream-link:hover {
+  color: #a5d6ff;
+  text-decoration: underline;
+}
+.agent-tail-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding-right: 12px;
+  box-sizing: border-box;
+}
+.agent-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.agent-section {
+  margin-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding-top: 10px;
+}
+.agent-section h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8b949e;
+  margin-bottom: 6px;
+}
+.agent-cli-calls {
+  background: #0d1117;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px;
+}
+.agent-cli-call-row {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+  color: #c9d1d9;
+  line-height: 1.45;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  padding-bottom: 8px;
+}
+.agent-cli-call-row:last-child {
+  margin-bottom: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.agent-cli-call-meta {
+  color: #8b949e;
+}
+.agent-tail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.agent-tail-head h4 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8b949e;
+}
+.agent-tail-pre {
+  background: #0d1117;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ── Audit log modal ──────────────────────────────────────────── */
+.audit-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.audit-table th { text-align: left; color: #8b949e; font-weight: 600; padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.1); }
+.audit-table td { padding: 6px 8px; color: #c9d1d9;
+  border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.audit-table tr:hover td { background: rgba(255,255,255,0.03); }
+.audit-type { font-family: monospace; font-size: 12px; color: #8b949e; }
+.audit-filters { display: flex; gap: 10px; margin-bottom: 14px; }
+.audit-filters select, .audit-filters input {
+  background: #1c2128; border: 1px solid rgba(255,255,255,0.12); color: #c9d1d9;
+  border-radius: 4px; padding: 4px 8px; font-size: 12px;
+}
+
+/* ── Main area ────────────────────────────────────────────────── */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── Board header ─────────────────────────────────────────────── */
+.board-header {
+  padding: 12px 20px; display: flex; align-items: center; gap: 12px;
+  background: rgba(0,0,0,0.25); color: #c9d1d9;
+}
+.board-header h2 { font-size: 20px; font-weight: 700; color: #e6edf3; }
+.board-header .ws-status {
+  font-size: 12px; padding: 3px 10px; border-radius: 3px;
+  font-weight: 600; text-transform: uppercase; color: #fff;
+}
+.board-header .ws-status.active { background: #238636; }
+.board-header .ws-status.paused { background: #da3633; }
+.board-header .pause-btn {
+  margin-left: auto; background: rgba(255,255,255,0.1); border: none;
+  color: #c9d1d9; padding: 6px 14px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; font-weight: 600; transition: background 0.15s;
+}
+.board-header .pause-btn:hover { background: rgba(255,255,255,0.18); }
+.board-header .trigger-btn {
+  background: rgba(255,255,255,0.06); border: none; color: #c9d1d9;
+  padding: 6px 14px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; transition: background 0.15s;
+}
+.board-header .trigger-btn:hover { background: rgba(255,255,255,0.14); }
+.board-header .info-btn {
+  background: rgba(255,255,255,0.06); border: none; color: #c9d1d9;
+  padding: 6px 14px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; transition: background 0.15s;
+}
+.board-header .info-btn:hover { background: rgba(255,255,255,0.14); }
+.board-header .context-btn {
+  background: rgba(255,255,255,0.06); border: none; color: #c9d1d9;
+  padding: 6px 14px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; transition: background 0.15s;
+}
+.board-header .context-btn:hover { background: rgba(255,255,255,0.14); }
+.board-header .trigger-btn-active {
+  background: rgba(35,134,54,0.25); color: #3fb950; font-weight: 600;
+  animation: trigger-pulse 2s ease-in-out infinite;
+}
+@keyframes trigger-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ── Board columns ────────────────────────────────────────────── */
+.board {
+  flex: 1; display: flex; gap: 12px; padding: 12px 20px;
+  overflow-x: auto; overflow-y: hidden; align-items: flex-start;
+}
+.column {
+  min-width: 272px; max-width: 272px; background: #21252b;
+  border-radius: 6px; display: flex; flex-direction: column;
+  max-height: 100%;
+}
+.column-header {
+  padding: 10px 12px; font-size: 14px; font-weight: 700; color: #8b949e;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.column-header .count {
+  background: rgba(255,255,255,0.1); color: #8b949e; border-radius: 10px;
+  font-size: 12px; padding: 0 7px; font-weight: 600;
+}
+.column-cards {
+  padding: 4px 8px 8px; overflow-y: auto; flex: 1;
+}
+
+/* ── Task cards ───────────────────────────────────────────────── */
+.card {
+  background: #2d333b; border-radius: 4px; padding: 8px 10px;
+  margin-bottom: 6px; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: background 0.12s;
+}
+.card[draggable="true"] { cursor: grab; }
+.card.card-dragging { opacity: 0.5; cursor: grabbing; }
+.card.drop-before { box-shadow: inset 0 2px 0 #58a6ff; }
+.card.drop-after { box-shadow: inset 0 -2px 0 #58a6ff; }
+.column-cards.drop-active { outline: 1px dashed rgba(88,166,255,0.55); outline-offset: -4px; }
+.card:hover { background: #353b44; }
+.card-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px; }
+.card-tag {
+  font-size: 11px; font-weight: 600; color: #fff; height: auto;
+  min-width: 40px; border-radius: 4px; padding: 2px 8px;
+}
+.card-title { font-size: 14px; margin-bottom: 4px; color: #e6edf3; }
+.card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.card-lock {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: #58a6ff; font-weight: 600;
+}
+.card-lock svg { width: 12px; height: 12px; }
+.card-schedule {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: #bc8cff;
+}
+.card-schedule svg { width: 12px; height: 12px; }
+.card.card-error {
+  background: #3d2020; border: 1px solid #6e3030;
+}
+.card.card-error:hover { background: #4a2828; }
+.card-error-msg {
+  font-size: 11px; color: #f08080; margin-top: 4px;
+  font-family: monospace; word-break: break-all;
+  max-height: 60px; overflow: hidden;
+}
+.card.card-failed {
+  background: #3d2020; border: 1px solid #6e3030;
+}
+.card.card-failed:hover { background: #4a2828; }
+.card-failed-info {
+  font-size: 11px; color: #f08080; margin-top: 4px;
+  display: flex; align-items: center; gap: 6px;
+}
+.card-retry-btn {
+  font-size: 10px; color: #58a6ff; background: #1c2128;
+  border: 1px solid #58a6ff; border-radius: 3px;
+  padding: 1px 6px; cursor: pointer; font-weight: 600;
+}
+.card-retry-btn:hover { background: #263040; }
+
+/* ── Modal overlay ────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+  display: flex; justify-content: center; align-items: flex-start;
+  padding-top: 60px; z-index: 100;
+}
+.modal-overlay.hidden { display: none; }
+.modal {
+  background: #2d333b; border-radius: 6px; width: 860px; max-width: 92vw;
+  max-height: 80vh; overflow-y: auto; overflow-x: hidden; padding: 24px; position: relative;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.modal-close {
+  background: none; border: none;
+  font-size: 20px; cursor: pointer; color: #8b949e; padding: 4px 8px;
+  border-radius: 4px;
+}
+.modal-close:hover { background: rgba(255,255,255,0.1); }
+.modal h3 { font-size: 20px; margin-bottom: 4px; color: #e6edf3; }
+.task-uid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #8b949e;
+  margin-bottom: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+.uid-copy-btn {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 4px;
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.uid-copy-btn:hover {
+  color: #c9d1d9;
+  border-color: rgba(255,255,255,0.32);
+  background: rgba(255,255,255,0.05);
+}
+.uid-copy-btn.copied {
+  color: #3fb950;
+  border-color: rgba(63,185,80,0.65);
+  background: rgba(63,185,80,0.1);
+}
+.modal .status-badge {
+  display: inline-block; font-size: 12px; font-weight: 600;
+  background: rgba(255,255,255,0.1); color: #8b949e;
+  padding: 2px 8px; border-radius: 3px;
+}
+.state-control { position: relative; }
+.state-badge-btn {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.08);
+  color: #c9d1d9;
+  cursor: pointer;
+}
+.state-badge-btn:hover { background: rgba(255,255,255,0.14); }
+.state-badge-btn.locked,
+.state-badge-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+.state-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 120;
+  min-width: 260px;
+  background: #22272e;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+  padding: 6px;
+}
+.state-menu.hidden { display: none; }
+.state-option-btn {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #c9d1d9;
+  padding: 7px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.state-option-btn:hover { background: rgba(255,255,255,0.08); }
+.state-option-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.state-option-icon { font-size: 10px; color: #8b949e; flex-shrink: 0; }
+.state-option-btn.disallowed { opacity: 0.6; }
+.state-option-btn.disallowed:hover { background: rgba(248,81,73,0.1); }
+.state-option-btn.current { opacity: 0.5; cursor: default; }
+.state-option-btn.current:hover { background: transparent; }
+
+/* ── Move / Duplicate panel (lives inside .state-menu) ─────────── */
+.move-panel {
+  padding: 4px 2px 2px;
+}
+.move-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8b949e;
+  margin-bottom: 8px;
+}
+.move-panel select {
+  width: 100%;
+  background: #161b22;
+  border: 1px solid rgba(255,255,255,0.12);
+  color: #c9d1d9;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  appearance: auto;
+}
+.move-panel select:focus { outline: none; border-color: #388bfd; }
+.move-panel-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.move-panel-actions .btn-move {
+  flex: 1;
+  background: #388bfd;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.move-panel-actions .btn-move:hover { background: #58a6ff; }
+.move-panel-actions .btn-move:disabled { opacity: 0.5; cursor: not-allowed; }
+.move-panel-actions .btn-duplicate {
+  flex: 1;
+  background: transparent;
+  color: #8b949e;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.move-panel-actions .btn-duplicate:hover { background: rgba(255,255,255,0.06); color: #c9d1d9; }
+.move-panel-actions .btn-duplicate:disabled { opacity: 0.5; cursor: not-allowed; }
+.modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 12px; margin-bottom: 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.modal-header-left { display: flex; align-items: center; gap: 10px; }
+.modal-header-actions { display: flex; align-items: center; gap: 6px; }
+.action-btn {
+  background: none; border: 1px solid rgba(255,255,255,0.12); color: #8b949e;
+  padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 13px;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.action-btn:hover { background: rgba(255,255,255,0.06); color: #e6edf3; }
+.action-btn.danger:hover { background: rgba(248,81,73,0.15); color: #f85149; border-color: rgba(248,81,73,0.3); }
+/* Two-column detail layout */
+.modal-body { display: flex; gap: 24px; min-width: 0; }
+.modal-main { flex: 1; min-width: 0; }
+.modal-aside {
+  width: 240px; min-width: 240px; max-width: 240px; border-left: 1px solid rgba(255,255,255,0.08);
+  padding-left: 20px;
+  min-inline-size: 0;
+}
+
+/* ── Modal sections ───────────────────────────────────────────── */
+.detail-section { margin-bottom: 16px; }
+.detail-section h4 {
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+  color: #8b949e; margin-bottom: 6px; letter-spacing: 0.5px;
+}
+.detail-description { font-size: 14px; line-height: 1.6; color: #c9d1d9; }
+.detail-description p { margin: 0 0 8px; }
+.detail-description p:last-child { margin-bottom: 0; }
+.detail-description strong { color: #e6edf3; }
+.detail-description ul, .detail-description ol { margin: 4px 0 8px 20px; }
+.detail-description code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+.detail-description pre { background: rgba(255,255,255,0.06); padding: 10px; border-radius: 4px; overflow-x: auto; margin: 8px 0; }
+.detail-description pre code { background: none; padding: 0; }
+.detail-description a { color: #58a6ff; }
+.detail-description blockquote { border-left: 3px solid rgba(255,255,255,0.15); padding-left: 12px; color: #8b949e; margin: 8px 0; }
+.detail-description h1, .detail-description h2, .detail-description h3,
+.detail-description h4, .detail-description h5, .detail-description h6 { color: #e6edf3; margin: 12px 0 6px; }
+.detail-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.detail-tag {
+  font-size: 12px; border-radius: 4px;
+  padding: 4px 10px; color: #fff; font-weight: 600;
+}
+.detail-lock {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: #58a6ff; font-weight: 600;
+}
+.detail-schedule {
+  font-size: 13px; color: #bc8cff; line-height: 1.5;
+}
+
+/* ── Attachments ─────────────────────────────────────────────── */
+.attachment-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+.attachment-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #22272e;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  padding: 7px 10px;
+}
+.attachment-path {
+  color: #c9d1d9;
+  font-size: 13px;
+  word-break: break-all;
+}
+.attachment-path-btn {
+  background: transparent;
+  border: none;
+  color: #79c0ff;
+  text-align: left;
+  padding: 0;
+  margin: 0;
+  font-size: 13px;
+  cursor: pointer;
+  word-break: break-all;
+}
+.attachment-path-btn:hover {
+  color: #a5d6ff;
+  text-decoration: underline;
+}
+.attachment-preview {
+  margin-top: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  background: #1b2027;
+  overflow: hidden;
+}
+.attachment-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  background: #232a33;
+}
+.attachment-preview-label {
+  color: #8b949e;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.attachment-preview-path {
+  color: #c9d1d9;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+.attachment-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.attachment-open-link {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(88,166,255,0.45);
+  border-radius: 4px;
+  color: #79c0ff;
+  background: transparent;
+  text-decoration: none;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+.attachment-open-link:hover {
+  background: rgba(88,166,255,0.12);
+  color: #a5d6ff;
+}
+.attachment-preview-close {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 4px;
+  color: #c9d1d9;
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.attachment-preview-close:hover { background: rgba(255,255,255,0.08); }
+.attachment-preview-body {
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px;
+}
+.attachment-preview-content {
+  margin: 0;
+  color: #c9d1d9;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.attachment-preview-content.text-preview {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.attachment-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  margin: 0 auto;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.02);
+}
+.attachment-remove-btn {
+  background: transparent;
+  border: 1px solid rgba(248,81,73,0.45);
+  color: #f85149;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.attachment-remove-btn:hover { background: rgba(248,81,73,0.12); }
+.attachment-input-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.attachment-input {
+  flex: 1;
+  background: #1c2128;
+  border: 1px solid rgba(255,255,255,0.12);
+  color: #c9d1d9;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.attachment-input:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+.attachment-add-btn {
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.attachment-add-btn:hover { background: #2ea043; }
+.attachment-hint {
+  margin-top: 6px;
+  color: #8b949e;
+  font-size: 12px;
+}
+
+/* ── Comments ─────────────────────────────────────────────────── */
+.comment { margin-bottom: 8px; font-size: 13px; line-height: 1.4; }
+.comment .comment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #8b949e;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.comment .comment-delete-link {
+  background: none;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.comment .comment-delete-link:hover {
+  color: #c9d1d9;
+}
+.comment .comment-author {
+  color: #e6edf3;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.comment .comment-text {
+  background: #22272e; padding: 8px 12px; border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2); color: #c9d1d9;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* ── Audit trail ──────────────────────────────────────────────── */
+.audit-entry {
+  font-size: 12px; color: #c9d1d9; padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06); line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.audit-entry .audit-icon { margin-right: 4px; }
+.audit-entry .audit-type { font-weight: 600; color: #e6edf3; }
+.audit-entry .audit-desc { color: #8b949e; }
+.audit-entry .audit-time {
+  display: block; font-size: 11px; color: #6e7681; margin-top: 2px;
+}
+
+/* ── Triggers modal ───────────────────────────────────────────── */
+.trigger-item {
+  background: #22272e; border-radius: 4px; padding: 10px 12px;
+  margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.2); font-size: 13px;
+}
+.trigger-item .trigger-type {
+  font-weight: 600; color: #58a6ff; margin-bottom: 2px;
+}
+.trigger-item .trigger-action { color: #8b949e; }
+.trigger-item .run-now-btn {
+  margin-top: 6px; background: #238636; border: none; color: #fff;
+  padding: 4px 12px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-weight: 600; transition: background 0.15s;
+}
+.trigger-item .run-now-btn:hover { background: #2ea043; }
+.trigger-item .run-now-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.trigger-item .run-now-error {
+  margin-top: 4px; padding: 4px 8px; background: #3d1f1f; border: 1px solid #6e3630;
+  border-radius: 4px; color: #f85149; font-size: 11px; word-break: break-word;
+}
+.trigger-item.trigger-running {
+  border-left: 3px solid #3fb950;
+}
+.trigger-running-badge {
+  display: inline-block; background: #238636; color: #fff; font-size: 11px;
+  font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 8px;
+  animation: trigger-pulse 2s ease-in-out infinite;
+}
+
+/* ── Workstream info modal ───────────────────────────────────── */
+.ws-info-uid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #8b949e;
+  margin-bottom: 14px;
+}
+.ws-info-path {
+  font-size: 12px;
+  color: #8b949e;
+  margin-bottom: 10px;
+  line-height: 1.45;
+}
+.ws-env-section {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.02);
+}
+.ws-env-title {
+  color: #8b949e;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.ws-env-pre {
+  background: #1f242d;
+  border-radius: 4px;
+  padding: 10px;
+  color: #c9d1d9;
+  overflow-x: auto;
+  font-size: 12px;
+  margin: 0;
+}
+.ws-env-breakdown {
+  margin-top: 14px;
+}
+.ws-env-breakdown summary {
+  cursor: pointer;
+  color: #8b949e;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.ws-context-note {
+  font-size: 12px;
+  color: #8b949e;
+  margin-bottom: 10px;
+  line-height: 1.45;
+}
+.ws-context-textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  background: #1c2128;
+  border: 1px solid rgba(255,255,255,0.12);
+  color: #c9d1d9;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.ws-context-textarea:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+.ws-context-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.ws-context-save {
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ws-context-save:hover { background: #2ea043; }
+.ws-context-cancel {
+  background: rgba(255,255,255,0.1);
+  color: #c9d1d9;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ws-context-cancel:hover { background: rgba(255,255,255,0.16); }
+.ws-context-status {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #8b949e;
+}
+.ws-sm-section {
+  margin-top: 16px;
+}
+.ws-sm-note {
+  color: #8b949e;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.ws-sm-pre {
+  background: #1f242d;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 12px;
+  color: #c9d1d9;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+/* ── Empty state ──────────────────────────────────────────────── */
+.empty-state {
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; width: 100%; height: 100%; color: rgba(255,255,255,0.35);
+  font-size: 18px; gap: 8px; align-self: center;
+}
+.empty-state svg { opacity: 0.3; }
+
+/* ── Confirmation dialog ──────────────────────────────────────── */
+.confirmation-dialog {
+  background: #2d333b; border-radius: 6px; padding: 24px;
+  border: 1px solid rgba(255,255,255,0.08);
+  max-width: 400px; text-align: center;
+}
+.confirmation-dialog h3 {
+  font-size: 18px; margin-bottom: 12px; color: #e6edf3;
+}
+.confirmation-dialog p {
+  color: #8b949e; margin-bottom: 20px; line-height: 1.5;
+}
+.confirmation-dialog .confirmation-transition {
+  background: rgba(255,255,255,0.08); padding: 12px;
+  border-radius: 4px; margin-bottom: 20px; font-family: monospace;
+  font-size: 13px; color: #f85149;
+}
+.confirmation-dialog .confirmation-buttons {
+  display: flex; gap: 10px; justify-content: center;
+}
+.confirmation-dialog .confirmation-btn {
+  padding: 8px 16px; border-radius: 4px; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background 0.15s;
+}
+.confirmation-dialog .confirmation-btn.confirm {
+  background: #f85149; color: #fff;
+}
+.confirmation-dialog .confirmation-btn.confirm:hover {
+  background: #da3633;
+}
+.confirmation-dialog .confirmation-btn.cancel {
+  background: rgba(255,255,255,0.1); color: #c9d1d9;
+}
+.confirmation-dialog .confirmation-btn.cancel:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="10" rx="1"/></svg>
+      Workstreams
+    </div>
+    <div class="sidebar-tree" id="sidebar-tree"></div>
+    <div class="scheduler-bar" id="scheduler-bar"></div>
+    <div class="sidebar-footer"><a id="active-agents-link" class="sidebar-footer-link" href="javascript:void(0)">Agent Runs</a></div>
+  </div>
+
+  <!-- Main board area -->
+  <div class="main">
+    <div class="board-header" id="board-header" style="display:none;"></div>
+    <div class="board" id="board">
+      <div class="empty-state" id="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="10" rx="1"/></svg>
+        <div>Select a workstream to view its board</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Task detail modal -->
+<div class="modal-overlay hidden" id="task-modal">
+  <div class="modal" id="task-modal-content"></div>
+</div>
+
+<!-- Triggers modal -->
+<div class="modal-overlay hidden" id="trigger-modal">
+  <div class="modal" id="trigger-modal-content"></div>
+</div>
+
+<!-- Workstream info modal -->
+<div class="modal-overlay hidden" id="workstream-info-modal">
+  <div class="modal" id="workstream-info-content"></div>
+</div>
+
+<!-- Workstream context modal -->
+<div class="modal-overlay hidden" id="workstream-context-modal">
+  <div class="modal" id="workstream-context-content"></div>
+</div>
+
+<!-- Audit log modal -->
+<div class="modal-overlay hidden" id="audit-modal">
+  <div class="modal" id="audit-modal-content"></div>
+</div>
+
+<!-- Agent runs modal -->
+<div class="modal-overlay hidden" id="active-agents-modal">
+  <div class="modal" id="active-agents-content"></div>
+</div>
+
+<!-- Confirmation dialog modal -->
+<div class="modal-overlay hidden" id="confirmation-modal">
+  <div class="confirmation-dialog" id="confirmation-dialog-content"></div>
+</div>
+
+<script>
+// ── API helper ──────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const method = opts.method || 'GET';
+  const fetchOpts = { method };
+  if (opts.body) {
+    fetchOpts.headers = { 'Content-Type': 'application/json' };
+    fetchOpts.body = JSON.stringify(opts.body);
+  }
+  // Allow longer timeouts for heavier endpoints like board loads.
+  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 10000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  fetchOpts.signal = controller.signal;
+  try {
+    const resp = await fetch('/api/' + path, fetchOpts);
+    const data = await resp.json();
+    if (data.status !== 'ok') throw new Error(data.message || 'API error');
+    return data.data;
+  } finally { clearTimeout(timer); }
+}
+
+// ── State ───────────────────────────────────────────────────────
+let allWorkstreams = [];
+let selectedWsId = null;
+let selectedWs = null;
+let pollTimer = null;
+let taskCounts = {};  // { wsId: count }
+let activeTriggerIds = [];  // trigger IDs currently executing
+let activeAgentRuns = [];
+let activeAgentPollTimer = null;
+let activeAgentTailTimer = null;
+let selectedAgentRunId = null;
+let selectedAgentArtifacts = null;  // selected run details (prompt/output/cli_calls)
+let selectedAgentArtifactsError = '';
+let retryingAgentRunId = null;
+let agentRunStatusFilter = '';
+let workstreamContextDraft = '';
+let boardScrollByWorkstream = {}; // { [wsId]: { boardX: number, columns: { [state]: number } } }
+let taskDragState = null;
+let isBoardDragInProgress = false;
+let agentRunsScrollState = {
+  list: 0,
+  detail: 0,
+  prompt: 0,
+  output: 0,
+  calls: 0,
+  outputStickToBottom: true,
+};
+
+// ── Tag color palette (Trello-style) ────────────────────────────
+const TAG_PALETTE = [
+  '#61bd4f', '#f2d600', '#ff9f1a', '#eb5a46', '#c377e0',
+  '#0079bf', '#00c2e0', '#51e898', '#ff78cb', '#344563',
+  '#b3bac5', '#055a8c', '#89609e', '#cd8313', '#4bbf6b',
+];
+const tagColorCache = {};  // per-workstream: { wsId: { tagName: color } }
+
+function getTagColor(wsId, tagName) {
+  if (!tagColorCache[wsId]) tagColorCache[wsId] = {};
+  const wsCache = tagColorCache[wsId];
+  if (!wsCache[tagName]) {
+    const idx = Object.keys(wsCache).length % TAG_PALETTE.length;
+    wsCache[tagName] = TAG_PALETTE[idx];
+  }
+  return wsCache[tagName];
+}
+
+// ── Icons (inline SVG) ──────────────────────────────────────────
+const ICON_LOCK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/></svg>';
+const ICON_SCHEDULE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>';
+const ICON_AGENT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><circle cx="15" cy="10" r="1.5"/><path d="M9 15h6"/></svg>';
+
+function formatRelativeTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = Date.now();
+  const diffSec = Math.round((d.getTime() - now) / 1000);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+  const abs = Math.abs(diffSec);
+  if (abs < 60) return `about ${rtf.format(diffSec, 'second')}`;
+  if (abs < 3600) return `about ${rtf.format(Math.round(diffSec / 60), 'minute')}`;
+  if (abs < 86400) return `about ${rtf.format(Math.round(diffSec / 3600), 'hour')}`;
+  return `about ${rtf.format(Math.round(diffSec / 86400), 'day')}`;
+}
+
+function formatCommentTimestamp(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const absolute = d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+  const relative = formatRelativeTime(ts);
+  return relative ? `${absolute} (${relative})` : absolute;
+}
+
+function formatCardScheduleDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const weekday = d.toLocaleDateString(undefined, { weekday: 'short' });
+  const date = d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  });
+  return `${weekday} ${date}`;
+}
+
+function inferCommentFromAudit(entry) {
+  const prefix = 'Comment added by ';
+  const fallbackPrefix = 'Comment added: ';
+  if (!entry || !entry.description) {
+    return { author: 'Unknown', message: '' };
+  }
+
+  const desc = String(entry.description);
+  if (desc.startsWith(prefix)) {
+    const rest = desc.slice(prefix.length);
+    const idx = rest.indexOf(': ');
+    if (idx > -1) {
+      return {
+        author: rest.slice(0, idx),
+        message: rest.slice(idx + 2),
+      };
+    }
+  }
+  if (desc.startsWith(fallbackPrefix)) {
+    return {
+      author: 'Unknown',
+      message: desc.slice(fallbackPrefix.length),
+    };
+  }
+  return { author: 'Unknown', message: '' };
+}
+
+function stripCommentDatePrefix(message) {
+  return String(message || '').replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/, '').trim();
+}
+
+async function deleteTaskComment(taskId, commentIndex, btn) {
+  const confirmed = confirm('Delete this comment?');
+  if (!confirmed) return;
+
+  if (btn) btn.disabled = true;
+  try {
+    await api('task/delete-comment/' + taskId, {
+      method: 'POST',
+      body: { index: commentIndex },
+    });
+    await showTaskDetail(taskId);
+    await loadBoard({ preserveSelection: true });
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert('Failed to delete comment: ' + (e.message || e));
+  }
+}
+
+function inferAuthorFromAuditTrail(task, message, timestamp) {
+  const audit = task.audit || [];
+  const normalizedMessage = stripCommentDatePrefix(message);
+  const commentAudit = audit.filter(a => a.type === 'comment');
+
+  // Prefer exact matching comment audit row.
+  let match = null;
+  if (timestamp) {
+    match = commentAudit.find(a => a.timestamp === timestamp) || null;
+  }
+  if (!match) {
+    match = commentAudit.find(a => {
+      const desc = String(a.description || '');
+      return desc.includes(normalizedMessage);
+    }) || null;
+  }
+  if (match) {
+    const inferred = inferCommentFromAudit(match);
+    if (inferred.author && inferred.author !== 'Unknown') return inferred.author;
+  }
+
+  // Fallback: nearest prior agent_started entry.
+  if (timestamp) {
+    const ts = Date.parse(timestamp);
+    if (!Number.isNaN(ts)) {
+      let nearest = null;
+      for (const entry of audit) {
+        if (entry.type !== 'agent_started') continue;
+        const ets = Date.parse(entry.timestamp || '');
+        if (Number.isNaN(ets) || ets > ts) continue;
+        if (!nearest || ets > nearest.ts) nearest = { entry, ts: ets };
+      }
+      if (nearest && nearest.entry && nearest.entry.description) {
+        const m = String(nearest.entry.description).match(/Agent '([^']+)' started processing/);
+        if (m && m[1]) return m[1];
+      }
+    }
+  }
+
+  return 'Unknown';
+}
+
+// ── Load workstreams ────────────────────────────────────────────
+async function loadWorkstreams() {
+  const [wss, counts] = await Promise.all([
+    api('workstream/list'),
+    api('workstream/counts').catch(() => ({})),
+  ]);
+  allWorkstreams = wss;
+  taskCounts = counts || {};
+  renderSidebar();
+}
+
+// ── Sidebar expand/collapse persistence ─────────────────────────
+const EXPAND_KEY = 'wsm_expanded';
+function _loadExpanded() {
+  try { return JSON.parse(localStorage.getItem(EXPAND_KEY)) || {}; } catch { return {}; }
+}
+function _saveExpanded(map) {
+  localStorage.setItem(EXPAND_KEY, JSON.stringify(map));
+}
+let expandedMap = _loadExpanded();
+
+function toggleExpand(wsId, e) {
+  e.stopPropagation();
+  if (expandedMap[wsId]) { delete expandedMap[wsId]; } else { expandedMap[wsId] = true; }
+  _saveExpanded(expandedMap);
+  renderSidebar();
+}
+
+// ── Render sidebar ──────────────────────────────────────────────
+function renderSidebar() {
+  const tree = document.getElementById('sidebar-tree');
+  const childMap = {};
+  const roots = [];
+
+  function getActiveTriggerCount(ws) {
+    const triggers = ws.triggers || [];
+    if (!triggers.length || !activeTriggerIds.length) return 0;
+    let count = 0;
+    for (const t of triggers) {
+      if (activeTriggerIds.includes(t.id)) count += 1;
+    }
+    return count;
+  }
+
+  const sorted = [...allWorkstreams].sort((a, b) => a.name.localeCompare(b.name));
+  for (const ws of sorted) {
+    if (ws.parent_id) {
+      (childMap[ws.parent_id] = childMap[ws.parent_id] || []).push(ws);
+    } else {
+      roots.push(ws);
+    }
+  }
+
+  let html = '';
+  function renderItem(ws, depth) {
+    const active = ws.id === selectedWsId ? ' active' : '';
+    const cls = depth > 0 ? ` depth-${Math.min(depth, 4)}` : '';
+    const pause = ws.paused ? '<span class="pause-badge">PAUSED</span>' : '';
+    const activeTriggerCount = getActiveTriggerCount(ws);
+    const activeDot = activeTriggerCount > 0
+      ? `<span class="trigger-active-dot" title="${activeTriggerCount} active trigger${activeTriggerCount === 1 ? '' : 's'}"></span>`
+      : '';
+    const hasMount = !!ws.mounted_workspace_path;
+    const mountBadge = hasMount
+      ? `<span class="mount-badge" title="Mounted workspace: ${esc(ws.mounted_workspace_path)}">M</span>`
+      : '';
+    const count = taskCounts[ws.id] || 0;
+    const countBadge = count > 0 ? `<span class="sidebar-count">${count}</span>` : '';
+    const kids = childMap[ws.id] || [];
+    const hasKids = kids.length > 0;
+    const isExpanded = !!expandedMap[ws.id];
+    const chevronCls = hasKids ? (isExpanded ? 'sidebar-chevron expanded' : 'sidebar-chevron') : 'sidebar-chevron leaf';
+    const chevron = `<span class="${chevronCls}" data-toggle-id="${ws.id}">&#9654;</span>`;
+    html += `<div class="sidebar-item${cls}${active}" data-ws-id="${ws.id}">${chevron}<span class="sidebar-label">${esc(ws.name)}</span>${mountBadge}${activeDot}${countBadge}${pause}</div>`;
+    if (hasKids) {
+      const collapsedCls = isExpanded ? 'sidebar-children' : 'sidebar-children collapsed';
+      html += `<div class="${collapsedCls}">`;
+      for (const kid of kids) renderItem(kid, depth + 1);
+      html += `</div>`;
+    }
+  }
+  for (const root of roots) renderItem(root, 0);
+  tree.innerHTML = html;
+
+  tree.querySelectorAll('.sidebar-item').forEach(el => {
+    el.addEventListener('click', () => selectWorkstream(el.dataset.wsId));
+  });
+  tree.querySelectorAll('.sidebar-chevron:not(.leaf)').forEach(el => {
+    el.addEventListener('click', (e) => toggleExpand(el.dataset.toggleId, e));
+  });
+}
+
+// ── Scheduler status ────────────────────────────────────────────
+let _schedulerLastTick = null;
+let _schedulerRunning = false;
+let _countdownTimer = null;
+
+function _updateCountdown() {
+  const el = document.getElementById('scheduler-countdown');
+  if (!el || !_schedulerRunning || !_schedulerLastTick) return;
+  const nextTick = _schedulerLastTick.getTime() + 60_000;
+  const remaining = Math.max(0, Math.ceil((nextTick - Date.now()) / 1000));
+  el.textContent = `Next tick: ${remaining}s`;
+}
+
+async function loadSchedulerStatus() {
+  try {
+    const data = await api('scheduler/status');
+    _applySchedulerStatus(data);
+  } catch { /* ignore if scheduler not available */ }
+}
+
+function _applySchedulerStatus(data) {
+    const bar = document.getElementById('scheduler-bar');
+    const dot = data.running ? 'running' : 'stopped';
+    const label = data.running ? 'Running' : 'Stopped';
+    _schedulerRunning = data.running;
+    let lastTick = '';
+    let countdown = '';
+    if (data.last_tick_at) {
+      _schedulerLastTick = new Date(data.last_tick_at);
+      lastTick = `<br>Last tick: ${_schedulerLastTick.toLocaleTimeString()} · <a class="log-link" href="javascript:void(0)" id="audit-log-link">Log</a>`;
+      if (data.running) {
+        countdown = `<br><span class="countdown" id="scheduler-countdown"></span>`;
+      }
+    }
+    bar.innerHTML = `<span class="dot ${dot}"></span>Scheduler: ${label}${lastTick}${countdown}`;
+    _updateCountdown();
+    if (!_countdownTimer && data.running) {
+      _countdownTimer = setInterval(_updateCountdown, 1000);
+    } else if (!data.running && _countdownTimer) {
+      clearInterval(_countdownTimer);
+      _countdownTimer = null;
+    }
+    const link = document.getElementById('audit-log-link');
+    if (link) link.addEventListener('click', (e) => { e.preventDefault(); openAuditLog(); });
+}
+
+// ── Select workstream ───────────────────────────────────────────
+async function selectWorkstream(wsId) {
+  selectedWsId = wsId;
+  renderSidebar();
+  await loadBoard();
+}
+
+async function openAgentRunWorkstream(wsId) {
+  if (!wsId) return;
+  closeActiveAgentsModal();
+  await selectWorkstream(wsId);
+}
+
+// ── Load board ──────────────────────────────────────────────────
+async function loadBoard() {
+  if (!selectedWsId) return;
+
+  let board;
+  try {
+    // Single bulk call: returns workstream + tasks with locks embedded.
+    // Some workstreams (e.g. with many tasks) can take longer to load.
+    board = await api('board/' + selectedWsId, { timeoutMs: 30000 });
+  } catch (e) {
+    const boardEl = document.getElementById('board');
+    if (boardEl) {
+      boardEl.innerHTML = `<div style="padding:16px;color:#f85149;">Failed to load workstream board: ${esc(e.message || e)}</div>`;
+    }
+    return;
+  }
+
+  const ws = board.workstream;
+  const tasks = board.tasks;
+  selectedWs = ws;
+
+  // Build lockMap from embedded lock data
+  const lockMap = {};
+  for (const t of tasks) {
+    lockMap[t.id] = t.lock || { locked: false };
+  }
+
+  renderBoardHeader(ws);
+  renderBoard(ws, tasks, lockMap);
+  const emptyState = document.getElementById('empty-state');
+  if (emptyState) emptyState.style.display = 'none';
+}
+
+// ── Render board header ─────────────────────────────────────────
+function renderBoardHeader(ws) {
+  const header = document.getElementById('board-header');
+  header.style.display = 'flex';
+  const statusCls = ws.paused ? 'paused' : 'active';
+  const statusLabel = ws.paused ? 'Paused' : 'Active';
+  const btnLabel = ws.paused ? 'Resume' : 'Pause';
+  const triggerCount = (ws.triggers || []).length;
+  const activeCount = (ws.triggers || []).filter(t => activeTriggerIds.includes(t.id)).length;
+  const triggerLabel = activeCount > 0
+    ? `Triggers (${triggerCount}, ${activeCount} active)`
+    : `Triggers (${triggerCount})`;
+  const triggerBtn = triggerCount > 0
+    ? `<button class="trigger-btn${activeCount > 0 ? ' trigger-btn-active' : ''}" onclick="showTriggers()">${triggerLabel}</button>`
+    : '';
+  const infoBtn = `<button class="info-btn" onclick="showWorkstreamInfo()">Info</button>`;
+  const contextBtn = `<button class="context-btn" onclick="showWorkstreamContext()">Context</button>`;
+  header.innerHTML = `
+    <h2>${esc(ws.name)}</h2>
+    <span class="ws-status ${statusCls}">${statusLabel}</span>
+    ${triggerBtn}
+    ${infoBtn}
+    ${contextBtn}
+    <button class="pause-btn" onclick="togglePause()">${btnLabel}</button>
+  `;
+}
+
+// ── Render board columns ────────────────────────────────────────
+function renderBoard(ws, tasks, lockMap) {
+  const board = document.getElementById('board');
+  const wsScroll = boardScrollByWorkstream[selectedWsId] || { boardX: 0, columns: {} };
+  // Capture latest in-DOM scroll before replacing markup.
+  wsScroll.boardX = board.scrollLeft;
+  board.querySelectorAll('.column[data-state] .column-cards').forEach(el => {
+    const state = el.closest('.column')?.dataset?.state;
+    if (state) wsScroll.columns[state] = el.scrollTop;
+  });
+  boardScrollByWorkstream[selectedWsId] = wsScroll;
+  const states = Object.keys(ws.task_states || {});
+
+  let html = '';
+  for (const state of states) {
+    const stateTasks = tasks.filter(t => t.status === state);
+    html += `<div class="column" data-state="${esc(state)}">
+      <div class="column-header">
+        ${esc(state)}
+        <span class="count">${stateTasks.length}</span>
+      </div>
+      <div class="column-cards">`;
+
+    for (const task of stateTasks) {
+      const lock = lockMap[task.id];
+      html += renderCard(task, lock, state);
+    }
+
+    html += `</div></div>`;
+  }
+  // Add _error column if any broken tasks exist
+  const errorTasks = tasks.filter(t => t._error);
+  if (errorTasks.length) {
+    html += `<div class="column">
+      <div class="column-header" style="color: #f08080;">
+        ⚠ corrupt
+        <span class="count">${errorTasks.length}</span>
+      </div>
+      <div class="column-cards">`;
+    for (const task of errorTasks) {
+      html += renderCard(task, { locked: false });
+    }
+    html += `</div></div>`;
+  }
+
+  board.innerHTML = html;
+
+  // Restore scroll positions after re-render.
+  const restored = boardScrollByWorkstream[selectedWsId] || { boardX: 0, columns: {} };
+  board.scrollLeft = restored.boardX || 0;
+  board.querySelectorAll('.column[data-state] .column-cards').forEach(el => {
+    const state = el.closest('.column')?.dataset?.state;
+    if (state && Number.isFinite(restored.columns[state])) {
+      el.scrollTop = restored.columns[state];
+    }
+  });
+
+  board.querySelectorAll('.card').forEach(el => {
+    el.addEventListener('click', () => showTaskDetail(el.dataset.taskId));
+  });
+
+  setupTaskReorderDnD(board);
+}
+
+// ── Render a single card ────────────────────────────────────────
+function renderCard(task, lock, state) {
+  // Tags above title
+  let tagsHtml = '';
+  if (task.tags && task.tags.length) {
+    tagsHtml = '<div class="card-tags">';
+    for (const tag of task.tags) {
+      const color = getTagColor(selectedWsId, tag);
+      tagsHtml += `<span class="card-tag" style="background:${color}">${esc(tag)}</span>`;
+    }
+    tagsHtml += '</div>';
+  }
+
+  // Meta line (lock, schedule — no tags here)
+  let meta = '';
+  if (lock && lock.locked) {
+    meta += `<span class="card-lock">${ICON_AGENT} ${esc(lock.agent_id)}</span>`;
+  }
+  if (task.scheduled_at) {
+    const scheduleLabel = formatCardScheduleDate(task.scheduled_at);
+    meta += `<span class="card-schedule">${ICON_SCHEDULE} ${esc(scheduleLabel)}</span>`;
+  }
+
+  const errorClass = task._error ? ' card-error' : (task.status === 'failed' ? ' card-failed' : '');
+  const errorMsg = task._error ? `<div class="card-error-msg" title="${esc(task._error)}">⚠ ${esc(task._error)}</div>` : '';
+
+  let failedInfo = '';
+  if (task.status === 'failed' && !task._error) {
+    const retryCount = task.retry_count || 0;
+    const failedAt = task.last_failure_at ? new Date(task.last_failure_at).toLocaleString() : '';
+    failedInfo = `<div class="card-failed-info">`
+      + `<span>⚠ Failed${retryCount ? ` (${retryCount} retries)` : ''}${failedAt ? ` · ${failedAt}` : ''}</span>`
+      + `<button class="card-retry-btn" onclick="event.stopPropagation(); retryTask('${task.id}')">↻ Retry</button>`
+      + `</div>`;
+  }
+
+  const canDrag = !task._error && !(lock && lock.locked);
+  return `<div class="card${errorClass}" data-task-id="${task.id}" data-state="${esc(state)}" draggable="${canDrag ? 'true' : 'false'}">
+    ${tagsHtml}
+    <div class="card-title">${esc(task.title)}</div>
+    ${errorMsg}
+    ${failedInfo}
+    ${meta ? `<div class="card-meta">${meta}</div>` : ''}
+  </div>`;
+}
+
+function clearTaskDropIndicators(board = document.getElementById('board')) {
+  if (!board) return;
+  board.querySelectorAll('.drop-before, .drop-after').forEach((el) => {
+    el.classList.remove('drop-before', 'drop-after');
+  });
+  board.querySelectorAll('.column-cards.drop-active').forEach((el) => {
+    el.classList.remove('drop-active');
+  });
+}
+
+async function reorderTaskRelative(taskId, targetTaskId, position) {
+  await api('task/reorder/' + taskId, {
+    method: 'POST',
+    body: { target_task_id: targetTaskId, position },
+  });
+}
+
+function setupTaskReorderDnD(board) {
+  if (!board || !selectedWs) return;
+
+  const cards = Array.from(board.querySelectorAll('.column[data-state] .card[draggable="true"]'));
+  const columns = Array.from(board.querySelectorAll('.column[data-state] .column-cards'));
+
+  for (const card of cards) {
+    card.addEventListener('dragstart', (e) => {
+      const taskId = card.dataset.taskId;
+      const state = card.dataset.state;
+      if (!taskId || !state) {
+        e.preventDefault();
+        return;
+      }
+      taskDragState = { taskId, state };
+      isBoardDragInProgress = true;
+      card.classList.add('card-dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', taskId);
+      }
+    });
+
+    card.addEventListener('dragend', () => {
+      card.classList.remove('card-dragging');
+      taskDragState = null;
+      isBoardDragInProgress = false;
+      clearTaskDropIndicators(board);
+    });
+
+    card.addEventListener('dragover', (e) => {
+      if (!taskDragState) return;
+      if (taskDragState.taskId === card.dataset.taskId) return;
+      if (taskDragState.state !== card.dataset.state) return;
+      e.preventDefault();
+
+      clearTaskDropIndicators(board);
+      const rect = card.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      if (e.clientY < midpoint) {
+        card.classList.add('drop-before');
+      } else {
+        card.classList.add('drop-after');
+      }
+    });
+
+    card.addEventListener('drop', async (e) => {
+      if (!taskDragState) return;
+      if (taskDragState.taskId === card.dataset.taskId) return;
+      if (taskDragState.state !== card.dataset.state) return;
+      e.preventDefault();
+
+      const rect = card.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      const position = e.clientY < midpoint ? 'before' : 'after';
+      const targetTaskId = card.dataset.taskId;
+
+      clearTaskDropIndicators(board);
+      try {
+        await reorderTaskRelative(taskDragState.taskId, targetTaskId, position);
+        await loadBoard();
+      } catch (err) {
+        alert('Reorder failed: ' + (err.message || err));
+      } finally {
+        taskDragState = null;
+        isBoardDragInProgress = false;
+      }
+    });
+  }
+
+  for (const columnCards of columns) {
+    const column = columnCards.closest('.column[data-state]');
+    const state = column?.dataset?.state;
+    if (!state) continue;
+
+    columnCards.addEventListener('dragover', (e) => {
+      if (!taskDragState) return;
+      if (taskDragState.state !== state) return;
+      e.preventDefault();
+      if (!e.target.closest('.card')) {
+        clearTaskDropIndicators(board);
+        columnCards.classList.add('drop-active');
+      }
+    });
+
+    columnCards.addEventListener('drop', async (e) => {
+      if (!taskDragState) return;
+      if (taskDragState.state !== state) return;
+      if (e.target.closest('.card')) return;
+      e.preventDefault();
+
+      const candidates = Array.from(columnCards.querySelectorAll('.card[draggable="true"]'))
+        .filter((el) => el.dataset.taskId !== taskDragState.taskId);
+      const last = candidates[candidates.length - 1];
+
+      clearTaskDropIndicators(board);
+      if (!last) {
+        taskDragState = null;
+        isBoardDragInProgress = false;
+        return;
+      }
+
+      try {
+        await reorderTaskRelative(taskDragState.taskId, last.dataset.taskId, 'after');
+        await loadBoard();
+      } catch (err) {
+        alert('Reorder failed: ' + (err.message || err));
+      } finally {
+        taskDragState = null;
+        isBoardDragInProgress = false;
+      }
+    });
+  }
+}
+
+// ── Retry a failed task ─────────────────────────────────────────
+async function retryTask(taskId) {
+  try {
+    await api('retry/task/' + taskId, { method: 'POST' });
+    await loadBoard(selectedWsId);
+  } catch (e) {
+    alert('Retry failed: ' + (e.message || e));
+  }
+}
+
+// ── Show confirmation dialog for invalid transitions ──────────────────
+function showTransitionConfirmation(fromState, toState, onConfirm, onCancel) {
+  const modal = document.getElementById('confirmation-modal');
+  const content = document.getElementById('confirmation-dialog-content');
+
+  content.innerHTML = `
+    <h3>Invalid State Transition</h3>
+    <p>The transition from <strong>${esc(fromState)}</strong> to <strong>${esc(toState)}</strong> is not allowed by the state machine.</p>
+    <div class="confirmation-transition">${esc(fromState)} → ${esc(toState)}</div>
+    <p>Do you want to proceed with this override?</p>
+    <div class="confirmation-buttons">
+      <button class="confirmation-btn confirm">Proceed</button>
+      <button class="confirmation-btn cancel">Cancel</button>
+    </div>
+  `;
+
+  const confirmBtn = content.querySelector('.confirmation-btn.confirm');
+  const cancelBtn = content.querySelector('.confirmation-btn.cancel');
+
+  confirmBtn.addEventListener('click', () => {
+    modal.classList.add('hidden');
+    if (onConfirm) onConfirm();
+  });
+
+  cancelBtn.addEventListener('click', () => {
+    modal.classList.add('hidden');
+    if (onCancel) onCancel();
+  });
+
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.classList.add('hidden');
+      if (onCancel) onCancel();
+    }
+  });
+
+  modal.classList.remove('hidden');
+}
+
+// ── Task detail modal ───────────────────────────────────────────
+// ── Build hierarchical workstream <option> list ─────────────────
+// Returns an HTML string of <optgroup> / <option> suitable for a <select>.
+// Parents come first, children indented with em-dash prefix.
+function buildWorkstreamOptions(workstreams, selectedId) {
+  // Group by parent_id
+  const roots = workstreams.filter(w => !w.parent_id);
+  const byParent = {};
+  for (const w of workstreams) {
+    if (w.parent_id) {
+      if (!byParent[w.parent_id]) byParent[w.parent_id] = [];
+      byParent[w.parent_id].push(w);
+    }
+  }
+
+  function renderOption(ws, depth) {
+    const prefix = depth > 0 ? '— '.repeat(depth) : '';
+    const sel = ws.id === selectedId ? ' selected' : '';
+    return `<option value="${esc(ws.id)}"${sel}>${prefix}${esc(ws.name)}</option>`;
+  }
+
+  function renderGroup(ws, depth) {
+    let html = renderOption(ws, depth);
+    const children = byParent[ws.id] || [];
+    children.sort((a, b) => a.name.localeCompare(b.name));
+    for (const child of children) {
+      html += renderGroup(child, depth + 1);
+    }
+    return html;
+  }
+
+  roots.sort((a, b) => a.name.localeCompare(b.name));
+  return roots.map(r => renderGroup(r, 0)).join('');
+}
+
+async function showTaskDetail(taskId) {
+  let task, lockData;
+  try {
+    [task, lockData] = await Promise.all([
+      api('task/read/' + taskId),
+      api('lock/status/' + taskId).catch(() => ({ locked: false })),
+    ]);
+  } catch {
+    alert('Cannot open this task — its YAML file is corrupt.\n\nTask ID: ' + taskId + '\n\nFix or delete the file at:\nworkstreams/*/tasks/' + taskId + '.yaml');
+    return;
+  }
+
+  const modal = document.getElementById('task-modal');
+  const content = document.getElementById('task-modal-content');
+
+  // Get all possible states and categorize them
+  const allStates = selectedWs && selectedWs.task_states ? Object.keys(selectedWs.task_states) : [];
+  const allowedStates = (selectedWs && selectedWs.task_states)
+    ? (selectedWs.task_states[task.status] || [])
+    : [];
+  const disallowedStates = allStates.filter(s => s !== task.status && !allowedStates.includes(s));
+
+  // Only show state change UI if not locked
+  const hasAnyStates = allStates.length > 0;
+  const canChangeState = !lockData?.locked && hasAnyStates;
+
+  // Build state menu with all states + move/duplicate panel
+  let stateMenu = '';
+  if (canChangeState) {
+    // Allowed transitions
+    if (allowedStates.length > 0) {
+      stateMenu += allowedStates
+        .map(s => `<button class="state-option-btn allowed" data-next-state="${encodeURIComponent(s)}" data-valid="true"><span class="state-option-icon">✓</span>${esc(s)}</button>`)
+        .join('');
+    }
+    // Disallowed transitions
+    if (disallowedStates.length > 0) {
+      if (allowedStates.length > 0) {
+        stateMenu += `<div style="border-top: 1px solid rgba(255,255,255,0.1); margin: 6px 0;"></div>`;
+      }
+      stateMenu += disallowedStates
+        .map(s => `<button class="state-option-btn disallowed" data-next-state="${encodeURIComponent(s)}" data-valid="false"><span class="state-option-icon">✗</span>${esc(s)}</button>`)
+        .join('');
+    }
+    // Move / Duplicate section
+    const wsOpts = buildWorkstreamOptions(allWorkstreams, task.workstream_id);
+    const curWsStates = selectedWs && selectedWs.task_states ? Object.keys(selectedWs.task_states) : [];
+    const stateOpts = curWsStates
+      .map(s => `<option value="${esc(s)}" ${s === task.status ? 'selected' : ''}>${esc(s)}</option>`)
+      .join('');
+    stateMenu += `<div style="border-top: 1px solid rgba(255,255,255,0.1); margin: 6px 0;"></div>
+      <div class="move-panel">
+        <div class="move-panel-title">Move / Duplicate to</div>
+        <select id="move-target-ws">${wsOpts}</select>
+        <select id="move-target-state">${stateOpts}</select>
+        <div class="move-panel-actions">
+          <button class="btn-move" id="btn-do-move">Move</button>
+          <button class="btn-duplicate" id="btn-do-duplicate">Duplicate</button>
+        </div>
+      </div>`;
+  }
+
+  const stateLabel = canChangeState ? `${esc(task.status)} ▾` : esc(task.status);
+  const lockTitle = lockData?.locked
+    ? `Cannot change state while locked by ${lockData.agent_id}`
+    : '';
+
+  // ── Header bar: state left, actions right ──
+  let html = `<div class="modal-header">
+    <div class="modal-header-left">
+      <div class="state-control">
+        <button
+          type="button"
+          class="status-badge state-badge-btn${lockData?.locked ? ' locked' : ''}"
+          ${canChangeState ? '' : 'disabled'}
+          ${lockTitle ? `title="${esc(lockTitle)}"` : ''}
+        >${stateLabel}</button>
+        ${canChangeState ? `<div class="state-menu hidden">${stateMenu}</div>` : ''}
+      </div>
+    </div>
+    <div class="modal-header-actions">
+      <button class="action-btn danger" onclick="archiveTask('${task.id}')">Archive</button>
+      <button class="modal-close" onclick="closeModal('task-modal')">&times;</button>
+    </div>
+  </div>`;
+
+  // ── Main column ──
+  let main = '';
+
+  // Title
+  main += `<h3>${esc(task.title)}</h3>`;
+  main += `<div class="task-uid">Task UID: ${esc(task.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(task.id)}', this)">Copy</button></div>`;
+
+  // Tags (colored)
+  if (task.tags && task.tags.length) {
+    main += `<div class="detail-section"><h4>Tags</h4><div class="detail-tags">`;
+    for (const tag of task.tags) {
+      const color = getTagColor(selectedWsId, tag);
+      main += `<span class="detail-tag" style="background:${color}">${esc(tag)}</span>`;
+    }
+    main += `</div></div>`;
+  }
+
+  // Description
+  if (task.description) {
+    main += `<div class="detail-section">
+      <h4>Description</h4>
+      <div class="detail-description">${renderMarkdown(task.description)}</div>
+    </div>`;
+  }
+
+  // Attachments (artifact paths)
+  const attachments = Array.isArray(task.attachments) ? task.attachments : [];
+  const attachmentsLocked = !!(lockData && lockData.locked);
+  main += `<div class="detail-section"><h4>Attachments</h4>`;
+  main += `<div class="attachment-hint">Attachments are artifact paths and will be inlined into agent prompts.</div>`;
+  if (attachments.length) {
+    main += `<ul class="attachment-list">`;
+    for (const path of attachments) {
+      const encPath = encodeURIComponent(path);
+      const removeBtn = attachmentsLocked
+        ? `<button class="attachment-remove-btn" data-attachment-path="${encPath}" disabled>Remove</button>`
+        : `<button class="attachment-remove-btn" data-attachment-path="${encPath}">Remove</button>`;
+      main += `<li class="attachment-item">
+        <button class="attachment-path-btn" data-preview-attachment-path="${encPath}" title="Preview attachment">${esc(path)}</button>
+        ${removeBtn}
+      </li>`;
+    }
+    main += `</ul>`;
+  } else {
+    main += `<div class="attachment-hint">No attachments yet.</div>`;
+  }
+
+  main += `<div id="attachment-preview" class="attachment-preview hidden">
+    <div class="attachment-preview-head">
+      <div>
+        <div class="attachment-preview-label">Resolved file path</div>
+        <div id="attachment-preview-path" class="attachment-preview-path"></div>
+      </div>
+      <div class="attachment-preview-actions">
+        <button id="attachment-preview-open" class="attachment-open-link hidden" type="button">Open in VS Code</button>
+        <button id="attachment-preview-close" class="attachment-preview-close" type="button">Close</button>
+      </div>
+    </div>
+    <div class="attachment-preview-body">
+      <div id="attachment-preview-content" class="attachment-preview-content"></div>
+    </div>
+  </div>`;
+
+  main += `<div class="attachment-input-row">
+    <input id="new-attachment-path" class="attachment-input" type="text" placeholder="Artifact path (e.g. Stage 2 Research/2026/04/foo.md)" ${attachmentsLocked ? 'disabled' : ''} />
+    <button id="btn-add-attachment" class="attachment-add-btn" ${attachmentsLocked ? 'disabled' : ''}>Add</button>
+  </div>`;
+  main += `</div>`;
+
+  // Lock
+  if (lockData && lockData.locked) {
+    const expires = new Date(lockData.expires_at).toLocaleTimeString();
+    main += `<div class="detail-section">
+      <h4>Agent Lock</h4>
+      <div class="detail-lock">${ICON_AGENT} ${esc(lockData.agent_id)} &nbsp;·&nbsp; expires ${expires}</div>
+    </div>`;
+  }
+
+  // Schedule
+  if (task.scheduled_at) {
+    const schedDate = new Date(task.scheduled_at).toLocaleString();
+    const actionDesc = task.scheduled_action
+      ? (task.scheduled_action.type === 'run_agent'
+          ? `Run agent: ${task.scheduled_action.agent}`
+          : `Command: ${task.scheduled_action.command}`)
+      : 'No action defined';
+    main += `<div class="detail-section">
+      <h4>Scheduled Action</h4>
+      <div class="detail-schedule">${ICON_SCHEDULE} ${schedDate}<br>${esc(actionDesc)}</div>
+    </div>`;
+  }
+
+  // Comments
+  if (task.comments && task.comments.length) {
+    const commentAudit = (task.audit || []).filter(a => a.type === 'comment');
+    main += `<div class="detail-section"><h4>Comments</h4>`;
+    for (const item of task.comments.map((comment, index) => ({ comment, index })).reverse()) {
+      const c = item.comment;
+      const commentIndex = item.index;
+      let message = '';
+      let author = 'Unknown';
+      let timestamp = '';
+
+      if (typeof c === 'string') {
+        message = stripCommentDatePrefix(c);
+        // Match by content rather than by index — index-based matching breaks on
+        // duplicated tasks where the audit trail was reset but comments were copied.
+        const needle = message.slice(0, 120);
+        const auditEntry = commentAudit.find(a => String(a.description || '').includes(needle)) || null;
+        if (auditEntry) {
+          timestamp = auditEntry.timestamp || '';
+          const inferred = inferCommentFromAudit(auditEntry);
+          if (inferred.author) author = inferred.author;
+        }
+      } else if (c && typeof c === 'object') {
+        message = stripCommentDatePrefix(c.message || '');
+        author = c.author || 'Unknown';
+        timestamp = c.timestamp || '';
+        if (!c.author) {
+          author = inferAuthorFromAuditTrail(task, message, timestamp);
+        }
+      }
+
+      const when = formatCommentTimestamp(timestamp);
+      main += `<div class="comment">`;
+      main += `<div class="comment-meta">`;
+      main += `<span>${esc(when || '')}</span>`;
+      main += `<button class="comment-delete-link" type="button" onclick="deleteTaskComment('${task.id}', ${commentIndex}, this)">Delete</button>`;
+      main += `</div>`;
+      main += `<div class="comment-text"><span class="comment-author">${esc(author)}:</span>${esc(message)}</div></div>`;
+    }
+    main += `</div>`;
+  }
+
+  // ── Aside column (audit trail) ──
+  let aside = '';
+  if (task.audit && task.audit.length) {
+    aside += `<div class="detail-section"><h4>Audit Trail</h4>`;
+    const auditEmojis = {
+      created: '🆕',
+      status_change: '🔀',
+      updated: '✏️',
+      scheduled: '📅',
+      schedule_cleared: '🚫',
+      schedule_fired: '🚀',
+      comment: '💬',
+      agent_run: '🤖',
+      archived: '📦',
+    };
+    for (const a of [...task.audit].reverse()) {
+      const time = new Date(a.timestamp).toLocaleString();
+      const emoji = auditEmojis[a.type] || '📋';
+      const desc = a.type === 'comment' ? 'Comment added' : esc(a.description);
+      aside += `<div class="audit-entry"><span class="audit-icon">${emoji}</span><span class="audit-type">${esc(a.type)}</span> <span class="audit-desc">${desc}</span><span class="audit-time">${time}</span></div>`;
+    }
+    aside += `</div>`;
+  }
+
+  html += `<div class="modal-body">`;
+  html += `<div class="modal-main">${main}</div>`;
+  if (aside) html += `<div class="modal-aside">${aside}</div>`;
+  html += `</div>`;
+
+  content.innerHTML = html;
+
+  const stateBtn = content.querySelector('.state-badge-btn');
+  const stateMenuEl = content.querySelector('.state-menu');
+  if (stateBtn && stateMenuEl && canChangeState) {
+    stateBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      stateMenuEl.classList.toggle('hidden');
+    });
+
+    stateMenuEl.addEventListener('click', (e) => e.stopPropagation());
+
+    stateMenuEl.querySelectorAll('[data-next-state]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const nextState = decodeURIComponent(btn.dataset.nextState || '');
+        const isValid = btn.dataset.valid === 'true';
+
+        if (isValid) {
+          // Allowed transition: execute immediately
+          btn.disabled = true;
+          try {
+            await api('task/update/' + task.id, {
+              method: 'POST',
+              body: { status: nextState },
+            });
+            closeModal('task-modal');
+            await loadBoard();
+          } catch (e) {
+            btn.disabled = false;
+            alert('State change failed: ' + (e.message || e));
+          }
+        } else {
+          // Disallowed transition: show confirmation
+          showTransitionConfirmation(task.status, nextState, async () => {
+            btn.disabled = true;
+            try {
+              await api('task/update/' + task.id, {
+                method: 'POST',
+                body: { status: nextState, force: true },
+              });
+              closeModal('task-modal');
+              await loadBoard();
+            } catch (e) {
+              btn.disabled = false;
+              alert('State change failed: ' + (e.message || e));
+            }
+          }, () => {
+            // Cancelled
+          });
+        }
+      });
+    });
+
+    content.addEventListener('click', () => stateMenuEl.classList.add('hidden'));
+  }
+
+  // ── Move / Duplicate panel wiring ──────────────────────────────
+  const wsSelect = content.querySelector('#move-target-ws');
+  const stateSelect = content.querySelector('#move-target-state');
+  const moveBtn = content.querySelector('#btn-do-move');
+  const dupBtn = content.querySelector('#btn-do-duplicate');
+
+  async function refreshStateDropdown(wsId) {
+    try {
+      const ws = await api('workstream/read/' + wsId);
+      const states = ws && ws.task_states ? Object.keys(ws.task_states) : [];
+      stateSelect.innerHTML = states.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    } catch {
+      stateSelect.innerHTML = '<option value="">— failed to load —</option>';
+    }
+  }
+
+  if (wsSelect && stateSelect) {
+    wsSelect.addEventListener('change', () => refreshStateDropdown(wsSelect.value));
+
+    if (moveBtn) {
+      moveBtn.addEventListener('click', async () => {
+        const targetWsId = wsSelect.value;
+        const targetState = stateSelect.value;
+        if (!targetState) return;
+        moveBtn.disabled = true;
+        dupBtn.disabled = true;
+        try {
+          await api('task/move/' + task.id, {
+            method: 'POST',
+            body: { workstream_id: targetWsId, status: targetState },
+          });
+          closeModal('task-modal');
+          // If moved to a different workstream, stay on current board
+          await loadBoard();
+        } catch (e) {
+          moveBtn.disabled = false;
+          dupBtn.disabled = false;
+          alert('Move failed: ' + (e.message || e));
+        }
+      });
+    }
+
+    if (dupBtn) {
+      dupBtn.addEventListener('click', async () => {
+        const targetWsId = wsSelect.value;
+        const targetState = stateSelect.value;
+        if (!targetState) return;
+        moveBtn.disabled = true;
+        dupBtn.disabled = true;
+        try {
+          const newTask = await api('task/duplicate/' + task.id, {
+            method: 'POST',
+            body: { workstream_id: targetWsId, status: targetState },
+          });
+          closeModal('task-modal');
+          await loadBoard();
+          // Brief confirmation
+          const inSameWs = targetWsId === task.workstream_id;
+          const msg = inSameWs
+            ? `Duplicated! New task "${newTask.title}" created in state "${newTask.status}".`
+            : `Duplicated to workstream "${targetWsId}" in state "${newTask.status}".`;
+          // Use a non-blocking toast if available, else console
+          console.info(msg);
+        } catch (e) {
+          moveBtn.disabled = false;
+          dupBtn.disabled = false;
+          alert('Duplicate failed: ' + (e.message || e));
+        }
+      });
+    }
+  }
+
+  // ── Attachment add/remove wiring ──────────────────────────────
+  const addAttachmentBtn = content.querySelector('#btn-add-attachment');
+  const newAttachmentInput = content.querySelector('#new-attachment-path');
+  if (addAttachmentBtn && newAttachmentInput) {
+    const addAttachment = async () => {
+      const path = String(newAttachmentInput.value || '').trim();
+      if (!path) return;
+      addAttachmentBtn.disabled = true;
+      try {
+        await api('task/attach/' + task.id, {
+          method: 'POST',
+          body: { path },
+        });
+        await showTaskDetail(task.id);
+      } catch (e) {
+        addAttachmentBtn.disabled = false;
+        alert('Add attachment failed: ' + (e.message || e));
+      }
+    };
+
+    addAttachmentBtn.addEventListener('click', addAttachment);
+    newAttachmentInput.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        await addAttachment();
+      }
+    });
+  }
+
+  content.querySelectorAll('[data-attachment-path]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const path = decodeURIComponent(btn.dataset.attachmentPath || '');
+      if (!path) return;
+      if (!confirm(`Remove attachment?\n\n${path}`)) return;
+      btn.disabled = true;
+      try {
+        await api('task/detach/' + task.id, {
+          method: 'POST',
+          body: { path },
+        });
+        await showTaskDetail(task.id);
+      } catch (e) {
+        btn.disabled = false;
+        alert('Remove attachment failed: ' + (e.message || e));
+      }
+    });
+  });
+
+  // ── Attachment preview wiring ─────────────────────────────────
+  const previewEl = content.querySelector('#attachment-preview');
+  const previewPathEl = content.querySelector('#attachment-preview-path');
+  const previewContentEl = content.querySelector('#attachment-preview-content');
+  const previewOpenEl = content.querySelector('#attachment-preview-open');
+  const previewCloseBtn = content.querySelector('#attachment-preview-close');
+  let currentPreviewAttachmentPath = '';
+
+  function setAttachmentPreviewText(value, extraClass = '') {
+    if (!previewContentEl) return;
+    previewContentEl.innerHTML = '';
+    previewContentEl.className = `attachment-preview-content text-preview ${extraClass}`.trim();
+    previewContentEl.textContent = value;
+  }
+
+  function setAttachmentPreviewImage(src, altText) {
+    if (!previewContentEl) return;
+    previewContentEl.innerHTML = '';
+    previewContentEl.className = 'attachment-preview-content';
+    const img = document.createElement('img');
+    img.className = 'attachment-preview-image';
+    img.src = src;
+    img.alt = altText || 'Attachment preview';
+    previewContentEl.appendChild(img);
+  }
+
+  function hideAttachmentPreview() {
+    if (!previewEl) return;
+    previewEl.classList.add('hidden');
+    if (previewPathEl) previewPathEl.textContent = '';
+    if (previewContentEl) {
+      previewContentEl.innerHTML = '';
+      previewContentEl.className = 'attachment-preview-content';
+    }
+    if (previewOpenEl) {
+      previewOpenEl.classList.add('hidden');
+      previewOpenEl.disabled = false;
+    }
+    currentPreviewAttachmentPath = '';
+  }
+
+  if (previewCloseBtn) {
+    previewCloseBtn.addEventListener('click', hideAttachmentPreview);
+  }
+
+  if (previewOpenEl) {
+    previewOpenEl.addEventListener('click', async () => {
+      const path = currentPreviewAttachmentPath;
+      if (!path) return;
+      previewOpenEl.disabled = true;
+      try {
+        const qs = `?path=${encodeURIComponent(path)}&workstream_id=${encodeURIComponent(task.workstream_id || '')}`;
+        await api('artifact/open' + qs);
+      } catch (e) {
+        alert('Open in VS Code failed: ' + (e.message || e));
+      } finally {
+        previewOpenEl.disabled = false;
+      }
+    });
+  }
+
+  content.querySelectorAll('[data-preview-attachment-path]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const path = decodeURIComponent(btn.dataset.previewAttachmentPath || '');
+      if (!path || !previewEl || !previewPathEl || !previewContentEl) return;
+      currentPreviewAttachmentPath = path;
+      previewEl.classList.remove('hidden');
+      previewPathEl.textContent = 'Loading...';
+      setAttachmentPreviewText('Loading...');
+      if (previewOpenEl) {
+        previewOpenEl.classList.remove('hidden');
+        previewOpenEl.disabled = false;
+      }
+      try {
+        const qs = `?path=${encodeURIComponent(path)}&workstream_id=${encodeURIComponent(task.workstream_id || '')}`;
+        const data = await api('artifact/read' + qs);
+        previewPathEl.textContent = data.resolved_path || '(unresolved)';
+        if (data.preview_type === 'image' && data.data_url) {
+          setAttachmentPreviewImage(data.data_url, path);
+        } else if (data.preview_error) {
+          setAttachmentPreviewText('Preview failed: ' + data.preview_error);
+        } else {
+          setAttachmentPreviewText(String(data.content || ''));
+        }
+        if (previewOpenEl && data.resolved_path) {
+          previewOpenEl.classList.remove('hidden');
+        }
+      } catch (e) {
+        previewPathEl.textContent = '(failed to resolve path)';
+        setAttachmentPreviewText('Preview failed: ' + (e.message || e));
+        if (previewOpenEl) {
+          previewOpenEl.classList.remove('hidden');
+          previewOpenEl.disabled = false;
+        }
+      }
+    });
+  });
+
+  modal.classList.remove('hidden');
+}
+
+// ── Archive task ────────────────────────────────────────────────
+async function archiveTask(taskId) {
+  if (!confirm('Archive this task? It will be hidden from the board.')) return;
+  await api('task/archive/' + taskId, { method: 'POST' });
+  closeModal('task-modal');
+  await loadBoard();
+}
+
+// ── Triggers modal ──────────────────────────────────────────────
+function cronToHuman(expr) {
+  const p = expr.trim().split(/\s+/);
+  if (p.length !== 5) return expr;
+  const [min, hr, dom, mon, dow] = p;
+  const all = v => v === '*';
+  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const monNames = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  // Convert UTC hour:minute to local time string with GMT offset
+  function utcTimeToLocal(utcHr, utcMin) {
+    const now = new Date();
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), +utcHr, +utcMin));
+    const localHr = d.getHours();
+    const localMin = String(d.getMinutes()).padStart(2, '0');
+    const offMin = -d.getTimezoneOffset();
+    const offSign = offMin >= 0 ? '+' : '-';
+    const absOff = Math.abs(offMin);
+    const offHr = Math.floor(absOff / 60);
+    const offM = absOff % 60;
+    const gmt = offM ? `GMT${offSign}${offHr}:${String(offM).padStart(2,'0')}` : `GMT${offSign}${offHr}`;
+    return `${localHr}:${localMin} (${gmt})`;
+  }
+
+  if (all(min) && all(hr) && all(dom) && all(mon) && all(dow)) return 'Every minute';
+  if (!all(min) && all(hr) && all(dom) && all(mon) && all(dow))
+    return min === '0' ? 'Every hour' : `Every hour at :${min.padStart(2,'0')}`;
+  if (!all(min) && !all(hr) && all(dom) && all(mon) && all(dow))
+    return `Daily at ${utcTimeToLocal(hr, min)}`;
+  if (!all(min) && !all(hr) && all(dom) && all(mon) && !all(dow))
+    return `${dayNames[+dow] || dow}s at ${utcTimeToLocal(hr, min)}`;
+  if (!all(min) && !all(hr) && !all(dom) && all(mon) && all(dow))
+    return `${dom}${ordSuffix(+dom)} of every month at ${utcTimeToLocal(hr, min)}`;
+  return expr;
+}
+function ordSuffix(n) {
+  const s = ['th','st','nd','rd'];
+  const v = n % 100;
+  return s[(v-20)%10] || s[v] || s[0];
+}
+
+function showTriggers() {
+  if (!selectedWs) return;
+  const modal = document.getElementById('trigger-modal');
+  const content = document.getElementById('trigger-modal-content');
+
+  let html = '';
+  // Modal header: title left, close button right, rule underneath
+  html += `<div class="modal-header">
+    <div class="modal-header-left">
+      <h3 style="margin-bottom:0;">Triggers — ${esc(selectedWs.name)}</h3>
+    </div>
+    <button class="modal-close" onclick="closeModal('trigger-modal')">&times;</button>
+  </div>`;
+
+  html += `<div class="modal-body"><div class="modal-main">`;
+  if ((selectedWs.triggers || []).length) {
+    for (const t of selectedWs.triggers) {
+      const isRunning = activeTriggerIds.includes(t.id);
+      let typeLabel;
+      if (t.on_state) {
+        typeLabel = `On state → ${esc(t.on_state)}`;
+      } else if (t.on_schedule) {
+        typeLabel = `Schedule: ${esc(cronToHuman(t.on_schedule))}`;
+        if (t.filter) typeLabel += ` (filter: ${esc(JSON.stringify(t.filter))})`;
+      }
+      if (isRunning) typeLabel += ` <span class="trigger-running-badge">Running</span>`;
+
+      let actionLabel;
+      if (t.action === 'run_agent') {
+        actionLabel = `Run agent: ${esc(t.agent || '?')}`;
+        if (t.prompt) actionLabel += `<br><span style=\"color:#8b949e;\">Prompt: ${esc(t.prompt)}</span>`;
+      } else {
+        actionLabel = `Command: ${esc(t.command || '?')}`;
+      }
+
+      const runNowBtn = t.on_schedule
+        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Run Now</button>`
+        : '';
+
+      html += `<div class="trigger-item${isRunning ? ' trigger-running' : ''}">
+        <div class="trigger-type">${typeLabel}</div>
+        <div class="trigger-action">${actionLabel}</div>
+        ${runNowBtn}
+      </div>`;
+    }
+  } else {
+    html += `<p style=\"color:#6b778c;\">No triggers configured.</p>`;
+  }
+  html += `</div></div>`;
+
+  content.innerHTML = html;
+  modal.classList.remove('hidden');
+}
+
+async function showWorkstreamInfo() {
+  if (!selectedWsId) return;
+  const modal = document.getElementById('workstream-info-modal');
+  const content = document.getElementById('workstream-info-content');
+  const info = await api('workstream/info/' + selectedWsId);
+
+  function buildStateMachineFlowchart(taskStates) {
+    if (!taskStates || typeof taskStates !== 'object') return '(no state machine defined)';
+    const states = Object.keys(taskStates);
+    if (!states.length) return '(no state machine defined)';
+
+    const initial = states[0];
+    const lines = [initial];
+    const expanded = new Set([initial]);
+
+    function walk(state, prefix, pathSet) {
+      const nextStates = Array.isArray(taskStates[state]) ? taskStates[state] : [];
+      nextStates.forEach((nextState, idx) => {
+        const isLast = idx === nextStates.length - 1;
+        const branchPrefix = `${prefix}${isLast ? '└─> ' : '├─> '}`;
+        const childIndent = `${prefix}${isLast ? '    ' : '│   '}`;
+
+        if (pathSet.has(nextState)) {
+          lines.push(`${branchPrefix}${nextState} (cycle)`);
+          return;
+        }
+
+        lines.push(`${branchPrefix}${nextState}`);
+        const childNext = Array.isArray(taskStates[nextState]) ? taskStates[nextState] : [];
+        if (!childNext.length) return;
+
+        if (expanded.has(nextState)) {
+          lines.push(`${childIndent}↳ (continues from above)`);
+          return;
+        }
+
+        expanded.add(nextState);
+        const nextPath = new Set(pathSet);
+        nextPath.add(nextState);
+        walk(nextState, childIndent, nextPath);
+      });
+    }
+
+    walk(initial, '', new Set([initial]));
+
+    const reachable = new Set();
+    const queue = [initial];
+    while (queue.length) {
+      const s = queue.shift();
+      if (reachable.has(s)) continue;
+      reachable.add(s);
+      const next = Array.isArray(taskStates[s]) ? taskStates[s] : [];
+      next.forEach(n => {
+        if (!reachable.has(n)) queue.push(n);
+      });
+    }
+
+    const disconnected = states.filter(s => !reachable.has(s));
+    if (disconnected.length) {
+      lines.push('');
+      lines.push('# Disconnected states:');
+      disconnected.forEach(s => lines.push(`- ${s}`));
+    }
+
+    return lines.join('\n');
+  }
+
+  let html = `
+    <div class="modal-header">
+      <div class="modal-header-left"><h3>Workstream Info</h3></div>
+      <div class="modal-header-actions">
+        <button class="modal-close" onclick="closeModal('workstream-info-modal')">&times;</button>
+      </div>
+    </div>
+    <div class="ws-info-uid">Workstream UID: ${esc(info.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(info.id)}', this)">Copy</button></div>
+    <div class="ws-info-path">Mounted workspace path: ${info.mounted_workspace_path ? esc(info.mounted_workspace_path) : '<em>none</em>'}</div>
+    <div class="ws-info-path">Resolved workspace root: ${info.resolved_workspace_path ? esc(info.resolved_workspace_path) : '<em>unknown</em>'}</div>
+    <div class="detail-section">
+      <h4>Environment Variables</h4>
+  `;
+
+  const effectiveEnv = info.effective_env || {};
+  const effectiveLines = Object.keys(effectiveEnv)
+    .sort()
+    .map(k => `${k}=${effectiveEnv[k]}`)
+    .join('\n');
+  html += `
+    <div class="ws-env-section">
+      <div class="ws-env-title">Effective (resolved)</div>
+      <pre class="ws-env-pre">${effectiveLines ? esc(effectiveLines) : '# none resolved from hierarchy .env files'}</pre>
+    </div>
+  `;
+
+  const levels = info.env_hierarchy || [];
+  if (!levels.length) {
+    html += `<p style="color:#8b949e;">No .env files defined in this workstream hierarchy.</p>`;
+  } else {
+    html += `<details class="ws-env-breakdown"><summary>Hierarchy breakdown (.env files)</summary>`;
+    for (const level of levels) {
+      const envMap = level.env || {};
+      const lines = Object.keys(envMap)
+        .sort()
+        .map(k => `${k}=${envMap[k]}`)
+        .join('\n');
+      html += `
+        <div class="ws-env-section">
+          <div class="ws-env-title">${esc(level.name)} (${esc(level.id)})</div>
+          <pre class="ws-env-pre">${lines ? esc(lines) : '# empty .env'}</pre>
+        </div>
+      `;
+    }
+    html += `</details>`;
+  }
+
+  html += `
+    <div class="ws-sm-section">
+      <h4>STATE MACHINE</h4>
+      <div class="ws-sm-note">Flowchart view of this workstream's state transitions.</div>
+      <pre class="ws-sm-pre">${esc(buildStateMachineFlowchart(info.task_states || {}))}</pre>
+    </div>
+  `;
+
+  html += `</div>`;
+  content.innerHTML = html;
+  modal.classList.remove('hidden');
+}
+
+async function showWorkstreamContext() {
+  if (!selectedWsId) return;
+  const modal = document.getElementById('workstream-context-modal');
+  const content = document.getElementById('workstream-context-content');
+  const data = await api('workstream/context/' + selectedWsId);
+  workstreamContextDraft = String(data.context || '');
+
+  content.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-header-left"><h3>Workstream Context</h3></div>
+      <div class="modal-header-actions">
+        <button class="modal-close" onclick="closeModal('workstream-context-modal')">&times;</button>
+      </div>
+    </div>
+    <div class="ws-info-uid">${esc(data.name)} (${esc(data.id)})</div>
+    <div class="ws-context-note">This context is injected into agent runs as <strong>Workstream Operating Context</strong>. Use it for shared, transient guidance for this workstream.</div>
+    <textarea id="workstream-context-textarea" class="ws-context-textarea" placeholder="Add shared operating guidance for this workstream...">${esc(workstreamContextDraft)}</textarea>
+    <div class="ws-context-actions">
+      <button class="ws-context-cancel" onclick="closeModal('workstream-context-modal')">Cancel</button>
+      <button class="ws-context-save" onclick="saveWorkstreamContext()">Save</button>
+    </div>
+    <div id="workstream-context-status" class="ws-context-status"></div>
+  `;
+  modal.classList.remove('hidden');
+}
+
+async function saveWorkstreamContext() {
+  if (!selectedWsId) return;
+  const textarea = document.getElementById('workstream-context-textarea');
+  const status = document.getElementById('workstream-context-status');
+  if (!textarea) return;
+  const nextContext = textarea.value;
+  if (status) status.textContent = 'Saving...';
+  try {
+    const updated = await api('workstream/context/' + selectedWsId, {
+      method: 'POST',
+      body: { context: nextContext },
+    });
+    workstreamContextDraft = String(updated.context || '');
+    if (selectedWs && selectedWs.id === selectedWsId) {
+      selectedWs.context = updated.context || null;
+    }
+    if (status) status.textContent = 'Saved.';
+    setTimeout(() => closeModal('workstream-context-modal'), 250);
+  } catch (e) {
+    if (status) status.textContent = `Save failed: ${e.message || e}`;
+  }
+}
+
+async function runTriggerNow(triggerId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  try {
+    await api('trigger/run-now/' + triggerId, { method: 'POST' });
+    btn.textContent = 'Kicked off ✓';
+    setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.textContent = 'Failed';
+    const errBox = btn.parentElement.querySelector('.run-now-error');
+    if (errBox) errBox.remove();
+    const detail = document.createElement('div');
+    detail.className = 'run-now-error';
+    detail.textContent = e.message;
+    btn.parentElement.appendChild(detail);
+    setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; }, 5000);
+  }
+}
+
+// ── Pause / Resume ──────────────────────────────────────────────
+async function togglePause() {
+  if (!selectedWs) return;
+  const action = selectedWs.paused ? 'resume' : 'pause';
+  await api(`workstream/${action}/${selectedWsId}`, { method: 'POST' });
+  await Promise.all([loadWorkstreams(), loadBoard()]);
+}
+
+// ── Modal close ─────────────────────────────────────────────────
+function closeModal(id) {
+  document.getElementById(id).classList.add('hidden');
+}
+
+// ── Audit log ───────────────────────────────────────────────────
+async function openAuditLog(filterType) {
+  const overlay = document.getElementById('audit-modal');
+  const content = document.getElementById('audit-modal-content');
+  const entries = await api('audit/log?limit=100');
+
+  // Collect unique event types for filter dropdown
+  const types = [...new Set(entries.map(e => e.type))].sort();
+
+  const typeOptions = types.map(t =>
+    `<option value="${esc(t)}"${t === filterType ? ' selected' : ''}>${esc(t)}</option>`
+  ).join('');
+
+  const filtered = filterType ? entries.filter(e => e.type === filterType) : entries;
+
+  const rows = filtered.map(e => {
+    const d = new Date(e.timestamp);
+    const time = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      + ' ' + d.toLocaleTimeString();
+    return `<tr>
+      <td style="white-space:nowrap">${esc(time)}</td>
+      <td><span class="audit-type">${esc(e.type)}</span></td>
+      <td>${esc(e.description)}</td>
+    </tr>`;
+  }).join('');
+
+  content.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-header-left"><h3>Audit Log</h3></div>
+      <div class="modal-header-actions">
+        <button class="modal-close" onclick="document.getElementById('audit-modal').classList.add('hidden')">&times;</button>
+      </div>
+    </div>
+    <div class="audit-filters">
+      <select onchange="openAuditLog(this.value || undefined)">
+        <option value="">All events</option>
+        ${typeOptions}
+      </select>
+    </div>
+    <table class="audit-table">
+      <thead><tr><th>Time</th><th>Event</th><th>Description</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="3" style="color:#8b949e">No audit entries yet</td></tr>'}</tbody>
+    </table>
+  `;
+  overlay.classList.remove('hidden');
+}
+
+// ── Agent runs modal ──────────────────────────────────────────
+async function openActiveAgentsModal() {
+  const overlay = document.getElementById('active-agents-modal');
+  overlay.classList.remove('hidden');
+  await refreshActiveAgentsModal();
+  if (activeAgentPollTimer) clearInterval(activeAgentPollTimer);
+  activeAgentPollTimer = setInterval(refreshActiveAgentsModal, 3000);
+}
+
+function closeActiveAgentsModal() {
+  const overlay = document.getElementById('active-agents-modal');
+  overlay.classList.add('hidden');
+  if (activeAgentPollTimer) {
+    clearInterval(activeAgentPollTimer);
+    activeAgentPollTimer = null;
+  }
+  if (activeAgentTailTimer) {
+    clearInterval(activeAgentTailTimer);
+    activeAgentTailTimer = null;
+  }
+  selectedAgentRunId = null;
+  selectedAgentArtifacts = null;
+  selectedAgentArtifactsError = '';
+  agentRunStatusFilter = '';
+}
+
+function captureAgentRunsScrollState() {
+  const listEl = document.querySelector('#active-agents-content .agent-list');
+  const detailEl = document.querySelector('#active-agents-content .agent-tail-panel');
+  const promptEl = document.getElementById('active-agent-input-prompt');
+  const outputEl = document.getElementById('active-agent-tail-output');
+  const callsEl = document.getElementById('active-agent-artifacts');
+
+  if (listEl) agentRunsScrollState.list = listEl.scrollTop;
+  if (detailEl) agentRunsScrollState.detail = detailEl.scrollTop;
+  if (promptEl) agentRunsScrollState.prompt = promptEl.scrollTop;
+  if (outputEl) {
+    agentRunsScrollState.output = outputEl.scrollTop;
+    const nearBottom = (outputEl.scrollHeight - outputEl.clientHeight - outputEl.scrollTop) < 24;
+    agentRunsScrollState.outputStickToBottom = nearBottom;
+  }
+  if (callsEl) agentRunsScrollState.calls = callsEl.scrollTop;
+}
+
+function restoreAgentRunsScrollState() {
+  const listEl = document.querySelector('#active-agents-content .agent-list');
+  const detailEl = document.querySelector('#active-agents-content .agent-tail-panel');
+  const promptEl = document.getElementById('active-agent-input-prompt');
+  const outputEl = document.getElementById('active-agent-tail-output');
+  const callsEl = document.getElementById('active-agent-artifacts');
+
+  if (listEl) listEl.scrollTop = agentRunsScrollState.list || 0;
+  if (detailEl) detailEl.scrollTop = agentRunsScrollState.detail || 0;
+  if (promptEl) promptEl.scrollTop = agentRunsScrollState.prompt || 0;
+  if (outputEl) {
+    if (agentRunsScrollState.outputStickToBottom) {
+      outputEl.scrollTop = outputEl.scrollHeight;
+    } else {
+      outputEl.scrollTop = agentRunsScrollState.output || 0;
+    }
+  }
+  if (callsEl) callsEl.scrollTop = agentRunsScrollState.calls || 0;
+}
+
+function normalizedRunStatus(run) {
+  const status = String(run && run.status ? run.status : '').toLowerCase();
+  if (status) return status;
+  return run && run.ended_at ? 'completed' : 'running';
+}
+
+function isKillableStatus(status) {
+  return status === 'running';
+}
+
+function isRetryableStatus(status) {
+  return status === 'failed' || status === 'timeout' || status === 'killed';
+}
+
+async function killSelectedAgentRun() {
+  if (!selectedAgentRunId) return;
+  const run = activeAgentRuns.find(r => r.run_id === selectedAgentRunId);
+  const status = normalizedRunStatus(run);
+  if (!isKillableStatus(status)) return;
+  if (!confirm('Kill this agent run?')) return;
+
+  try {
+    await api(`agent/kill/${encodeURIComponent(selectedAgentRunId)}`, { method: 'POST' });
+    await refreshActiveAgentsModal();
+    await refreshActiveAgentTail();
+  } catch (e) {
+    alert(`Failed to kill run: ${e.message || e}`);
+  }
+}
+
+async function retrySelectedAgentRun() {
+  if (!selectedAgentRunId) return;
+  const run = activeAgentRuns.find(r => r.run_id === selectedAgentRunId);
+  if (!run) return;
+  const status = normalizedRunStatus(run);
+  if (!isRetryableStatus(status)) return;
+
+  async function submitRetry(allowPausedWorkstream = false) {
+    retryingAgentRunId = selectedAgentRunId;
+    renderActiveAgentsModal();
+    try {
+      const suffix = allowPausedWorkstream ? '?allow_paused_workstream=1' : '';
+      const data = await api(`retry/agent-run/${encodeURIComponent(selectedAgentRunId)}${suffix}`, { method: 'POST', timeoutMs: 30000 });
+      retryingAgentRunId = null;
+      renderActiveAgentsModal();
+      await refreshActiveAgentsModal();
+      await refreshActiveAgentTail();
+      if (data && data.run_id) {
+        console.info(`Started retry agent run ${data.run_id} from ${selectedAgentRunId}`);
+      }
+      return true;
+    } catch (e) {
+      retryingAgentRunId = null;
+      renderActiveAgentsModal();
+
+      const message = String(e && e.message ? e.message : e);
+      const pausedMatch = message.match(/^Workstream '(.+)' is paused$/);
+      if (!allowPausedWorkstream && pausedMatch) {
+        const workstreamName = pausedMatch[1];
+        const confirmed = confirm(`Workstream \`${workstreamName}\` is paused. Retry?`);
+        if (confirmed) {
+          return submitRetry(true);
+        }
+        return false;
+      }
+
+      alert(`Failed to retry run: ${message}`);
+      return false;
+    }
+  }
+
+  await submitRetry(false);
+}
+
+function setAgentRunStatusFilter(value) {
+  agentRunStatusFilter = String(value || '').trim().toLowerCase();
+  const selected = selectedAgentRunId
+    ? activeAgentRuns.find(r => r.run_id === selectedAgentRunId)
+    : null;
+  if (selected && agentRunStatusFilter && normalizedRunStatus(selected) !== agentRunStatusFilter) {
+    selectedAgentRunId = null;
+    selectedAgentArtifacts = null;
+    if (activeAgentTailTimer) {
+      clearInterval(activeAgentTailTimer);
+      activeAgentTailTimer = null;
+    }
+  }
+  renderActiveAgentsModal();
+}
+
+async function refreshActiveAgentsModal() {
+  const content = document.getElementById('active-agents-content');
+  try {
+    activeAgentRuns = await api('agent/runs?limit=100');
+  } catch (e) {
+    content.innerHTML = `
+      <div class="modal-header">
+        <div class="modal-header-left"><h3>Agent Runs</h3></div>
+        <div class="modal-header-actions">
+          <button class="modal-close" onclick="closeActiveAgentsModal()">&times;</button>
+        </div>
+      </div>
+      <p style="color:#f85149;">Failed to load agent runs: ${esc(e.message || e)}</p>
+    `;
+    return;
+  }
+
+  if (selectedAgentRunId && !activeAgentRuns.some(r => r.run_id === selectedAgentRunId)) {
+    selectedAgentRunId = null;
+    if (activeAgentTailTimer) {
+      clearInterval(activeAgentTailTimer);
+      activeAgentTailTimer = null;
+    }
+  }
+
+  renderActiveAgentsModal();
+
+  const selectedRun = selectedAgentRunId
+    ? activeAgentRuns.find(r => r.run_id === selectedAgentRunId)
+    : null;
+  if ((!selectedRun || normalizedRunStatus(selectedRun) !== 'running') && activeAgentTailTimer) {
+    clearInterval(activeAgentTailTimer);
+    activeAgentTailTimer = null;
+  }
+
+  if (!selectedAgentRunId && activeAgentRuns.length > 0) {
+    await selectActiveAgentRun(activeAgentRuns[0].run_id);
+  }
+}
+
+function renderActiveAgentsModal() {
+  captureAgentRunsScrollState();
+  const content = document.getElementById('active-agents-content');
+
+  function formatRunDuration(startIso, endIso) {
+    if (!startIso) return 'unknown';
+    const startMs = Date.parse(startIso);
+    if (!Number.isFinite(startMs)) return 'unknown';
+
+    const endMs = endIso ? Date.parse(endIso) : Date.now();
+    const safeEndMs = Number.isFinite(endMs) ? endMs : Date.now();
+    const totalSec = Math.max(0, Math.floor((safeEndMs - startMs) / 1000));
+    const minutes = Math.floor(totalSec / 60);
+    const seconds = totalSec % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  const totalRunCount = activeAgentRuns.length;
+  const filteredRuns = agentRunStatusFilter
+    ? activeAgentRuns.filter(r => normalizedRunStatus(r) === agentRunStatusFilter)
+    : activeAgentRuns;
+  const runCount = filteredRuns.length;
+  let listHtml = '';
+  if (!runCount) {
+    listHtml = '<p style="color:#8b949e;">No recent agent runs.</p>';
+  } else {
+    for (const run of filteredRuns) {
+      const activeCls = run.run_id === selectedAgentRunId ? ' active' : '';
+      const ws = run.workstream_path || run.workstream_id || 'none';
+      const wsHtml = run.workstream_id
+        ? `<a href="#" class="agent-workstream-link" data-workstream-id="${esc(run.workstream_id)}">${esc(ws)}</a>`
+        : esc(ws);
+      const tasks = Array.isArray(run.tasks) ? run.tasks.map(t => t.title).filter(Boolean) : [];
+      const taskLabel = tasks.length ? tasks.join(', ') : 'none';
+      const started = run.started_at ? new Date(run.started_at).toLocaleString() : 'unknown';
+      const ended = run.ended_at ? new Date(run.ended_at).toLocaleString() : 'running';
+      const duration = formatRunDuration(run.started_at, run.ended_at);
+      const status = normalizedRunStatus(run);
+      const statusClass = `agent-status-${esc(status)}`;
+      listHtml += `<div class="agent-list-item${activeCls}" data-agent-run-id="${esc(run.run_id)}">
+        <div class="agent-name">${esc(run.agent || run.agent_ref || 'unknown')} <span class="agent-status ${statusClass}">${esc(status)}</span></div>
+        <div class="agent-meta">Started: ${esc(started)}<br>Ended: ${esc(ended)}<br>Duration: ${esc(duration)}<br>Workstream: ${wsHtml}<br>Tasks: ${esc(taskLabel)}</div>
+      </div>`;
+    }
+  }
+
+  const selected = activeAgentRuns.find(r => r.run_id === selectedAgentRunId) || null;
+  const selectedModel = selected && selected.model ? esc(selected.model.replace(/^anthropic\//, '')) : 'unknown';
+  const selectedEffort = selected && selected.effort ? esc(selected.effort) : 'default';
+  const selectedModelEffort = `Model: ${selectedModel} | Effort: ${selectedEffort}`;
+  const selectedStatus = selected ? normalizedRunStatus(selected) : '';
+  const showKill = !!selected && isKillableStatus(selectedStatus);
+  const showRetryButton = !!selected && isRetryableStatus(selectedStatus);
+  const canRetrySelectedRun = showRetryButton && retryingAgentRunId !== selectedAgentRunId;
+  const selectedDetails = selectedAgentArtifacts || null;
+  const selectedRunDetails = selectedDetails && selectedDetails.run ? selectedDetails.run : null;
+  const interruptionReason = selectedDetails && selectedDetails.interruption_reason
+    ? String(selectedDetails.interruption_reason)
+    : '';
+  const retry = selectedDetails && selectedDetails.retry ? selectedDetails.retry : null;
+  const retriedFromRunId = selectedRunDetails && selectedRunDetails.retried_from_run_id ? String(selectedRunDetails.retried_from_run_id) : '';
+  const retriedToRunIds = selectedRunDetails && Array.isArray(selectedRunDetails.retried_to_run_ids)
+    ? selectedRunDetails.retried_to_run_ids.map(id => String(id)).filter(Boolean)
+    : [];
+  const runLineageHtml = selected
+    ? (selectedAgentArtifactsError
+      ? `<div style="font-size:12px;color:#f85149;">Unable to load run lineage: ${esc(selectedAgentArtifactsError)}</div>`
+      : `<div style="font-size:12px;line-height:1.55;color:#c9d1d9;">
+           <div><strong>Status:</strong> ${esc(selectedStatus || 'unknown')}</div>
+           <div><strong>Retryable:</strong> ${showRetryButton ? 'Yes' : 'No'}</div>
+         ${interruptionReason ? `<div><strong>Interruption:</strong> ${esc(interruptionReason)}</div>` : ''}
+           ${retriedFromRunId ? `<div><strong>Retry Of:</strong> <a href="#" class="agent-run-link" data-agent-run-id="${esc(retriedFromRunId)}">${esc(retriedFromRunId)}</a></div>` : '<div><strong>Retry Of:</strong> none</div>'}
+           ${retriedToRunIds.length
+             ? `<div><strong>Retried As:</strong> ${retriedToRunIds.map(id => `<a href="#" class="agent-run-link" data-agent-run-id="${esc(id)}">${esc(id)}</a>`).join(', ')}</div>`
+             : '<div><strong>Retried As:</strong> none</div>'}
+         </div>`)
+    : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>';
+  const retryHtml = selected
+    ? (selectedAgentArtifactsError
+      ? `<div style="font-size:12px;color:#f85149;">Unable to load task retry policy: ${esc(selectedAgentArtifactsError)}</div>`
+      : retry
+        ? `<div style="font-size:12px;line-height:1.55;color:#c9d1d9;">
+             <div><strong>Eligible:</strong> ${retry.eligible ? 'Yes' : 'No'}</div>
+             ${retry.reason ? `<div><strong>Reason:</strong> ${esc(retry.reason)}</div>` : ''}
+             ${retry.max_retries != null ? `<div><strong>Retries Remaining:</strong> ${esc(String(retry.retries_remaining))} / ${esc(String(retry.max_retries))}</div>` : '<div><strong>Retries Remaining:</strong> n/a</div>'}
+             <div><strong>Next Retry:</strong> ${retry.next_retry_at ? esc(new Date(retry.next_retry_at).toLocaleString()) : 'none scheduled'}</div>
+             ${retry.last_failure_at ? `<div><strong>Last Failure:</strong> ${esc(new Date(retry.last_failure_at).toLocaleString())}</div>` : ''}
+             ${retry.policy ? `<div style="color:#8b949e;margin-top:4px;">${esc(retry.policy)}</div>` : ''}
+           </div>`
+        : '<div style="font-size:12px;color:#8b949e;">Loading retry diagnostics...</div>')
+    : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>';
+  const selectedPrompt = selectedDetails && selectedDetails.run ? String(selectedDetails.run.prompt || '') : '';
+  const selectedCommandLine = selectedDetails && selectedDetails.run ? String(selectedDetails.run.command_line || '') : '';
+  const selectedOutput = selectedDetails ? String(selectedDetails.output || '') : '';
+  const outputFallback = !selected
+    ? 'Select an agent run from the list.'
+    : selectedAgentArtifactsError
+      ? `Unable to read run output.\n\n${selectedAgentArtifactsError}`
+      : selectedDetails
+        ? (selectedOutput
+          ? selectedOutput
+          : (selectedStatus === 'running'
+            ? 'Loading output...'
+            : 'No output was captured for this run. This usually means the run exited or was interrupted before anything was written to its log.'))
+        : 'Loading output...';
+  const cliCalls = selectedDetails && Array.isArray(selectedDetails.cli_calls) ? selectedDetails.cli_calls : [];
+  const cliRows = cliCalls.length
+    ? cliCalls.map(c => {
+        const ts = c.timestamp ? new Date(c.timestamp).toLocaleString() : '';
+        const status = c.status || 'unknown';
+        const command = c.command || c.description || '';
+        const err = c.error_message ? `<div style="color:#f85149;">${esc(c.error_message)}</div>` : '';
+        return `<div class="agent-cli-call-row">
+          <div class="agent-cli-call-meta">${esc(ts)} · ${esc(status)}</div>
+          <div>${esc(command)}</div>
+          ${err}
+        </div>`;
+      }).join('')
+    : '<div style="font-size:12px;color:#8b949e;">No orchestration CLI calls recorded.</div>';
+
+  content.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-header-left"><h3>Agent Runs (${runCount}${agentRunStatusFilter ? ` filtered / ${totalRunCount} total` : ''})</h3></div>
+      <div class="modal-header-actions">
+        <select onchange="setAgentRunStatusFilter(this.value)" style="background:#22272e;color:#c9d1d9;border:1px solid rgba(255,255,255,0.14);border-radius:4px;padding:6px 8px;font-size:12px;">
+          <option value="" ${agentRunStatusFilter === '' ? 'selected' : ''}>All statuses</option>
+          <option value="running" ${agentRunStatusFilter === 'running' ? 'selected' : ''}>Running</option>
+          <option value="completed" ${agentRunStatusFilter === 'completed' ? 'selected' : ''}>Completed</option>
+          <option value="failed" ${agentRunStatusFilter === 'failed' ? 'selected' : ''}>Failed</option>
+          <option value="timeout" ${agentRunStatusFilter === 'timeout' ? 'selected' : ''}>Timeout</option>
+          <option value="killed" ${agentRunStatusFilter === 'killed' ? 'selected' : ''}>Killed</option>
+        </select>
+        <button class="action-btn" onclick="refreshActiveAgentsModal()">Refresh</button>
+        <button class="modal-close" onclick="closeActiveAgentsModal()">&times;</button>
+      </div>
+    </div>
+    <div class="agent-split">
+      <div class="agent-list">${listHtml}</div>
+      <div class="agent-tail-panel">
+        <div class="agent-tail-head">
+          <h4>RUN DETAIL ${showKill ? `- <button class="action-btn danger" onclick="killSelectedAgentRun()">Kill</button>` : ''}</h4>
+          <span style="font-size:12px;color:#8b949e;">${selectedModelEffort}</span>
+        </div>
+        <div class="agent-section">
+          <div class="agent-section-header">
+            <h4>RUN RETRY</h4>
+            ${showRetryButton ? `<button class="action-btn" onclick="retrySelectedAgentRun()" ${canRetrySelectedRun ? '' : 'disabled'}>${retryingAgentRunId === selectedAgentRunId ? 'Retrying...' : 'Retry Now'}</button>` : ''}
+          </div>
+          <div class="agent-cli-calls">${runLineageHtml}</div>
+        </div>
+        <div class="agent-section">
+          <h4>TASK RETRY POLICY</h4>
+          <div class="agent-cli-calls">${retryHtml}</div>
+        </div>
+        <div class="agent-section">
+          <h4>Claude Command</h4>
+          <pre class="agent-tail-pre">${selected ? esc(selectedCommandLine || 'Command line not recorded for this run.') : 'Select an agent run from the list.'}</pre>
+        </div>
+        <div class="agent-section">
+          <h4>Input Prompt</h4>
+          <pre class="agent-tail-pre" id="active-agent-input-prompt">${selected ? esc(selectedPrompt || 'Loading prompt...') : 'Select an agent run from the list.'}</pre>
+        </div>
+        <div class="agent-section">
+          <h4>Output</h4>
+          <pre class="agent-tail-pre" id="active-agent-tail-output">${esc(outputFallback)}</pre>
+        </div>
+        <div class="agent-section">
+          <h4>Orchestration CLI Calls</h4>
+          <div id="active-agent-artifacts" class="agent-cli-calls">${selected ? cliRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  content.querySelectorAll('.agent-list-item').forEach(el => {
+    el.addEventListener('click', () => selectActiveAgentRun(el.dataset.agentRunId));
+  });
+  content.querySelectorAll('.agent-run-link').forEach(el => {
+    el.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await selectActiveAgentRun(el.dataset.agentRunId);
+    });
+  });
+  content.querySelectorAll('.agent-workstream-link').forEach(el => {
+    el.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await openAgentRunWorkstream(el.dataset.workstreamId);
+    });
+  });
+  restoreAgentRunsScrollState();
+}
+
+async function selectActiveAgentRun(runId) {
+  captureAgentRunsScrollState();
+  selectedAgentRunId = runId;
+  selectedAgentArtifacts = null;
+  selectedAgentArtifactsError = '';
+  agentRunsScrollState.prompt = 0;
+  agentRunsScrollState.output = 0;
+  agentRunsScrollState.calls = 0;
+  agentRunsScrollState.outputStickToBottom = true;
+  renderActiveAgentsModal();
+  await refreshActiveAgentTail();
+  if (activeAgentTailTimer) clearInterval(activeAgentTailTimer);
+  const run = activeAgentRuns.find(r => r.run_id === runId);
+  if (run && normalizedRunStatus(run) === 'running') {
+    activeAgentTailTimer = setInterval(async () => {
+      await refreshActiveAgentTail();
+    }, 2000);
+  }
+}
+
+async function refreshActiveAgentTail() {
+  if (!selectedAgentRunId) return;
+  try {
+    captureAgentRunsScrollState();
+    const data = await api(`agent/run/${encodeURIComponent(selectedAgentRunId)}`);
+    selectedAgentArtifacts = data;
+    selectedAgentArtifactsError = '';
+    renderActiveAgentsModal();
+  } catch (e) {
+    selectedAgentArtifacts = null;
+    selectedAgentArtifactsError = e && (e.message || String(e)) ? (e.message || String(e)) : 'unknown error';
+    renderActiveAgentsModal();
+    const out = document.getElementById('active-agent-tail-output');
+    if (out) out.textContent = `Unable to read run output.\n\n${e.message || e}`;
+  }
+}
+
+// Close modals on overlay click
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', (e) => {
+    if (e.target === el) {
+      if (el.id === 'active-agents-modal') {
+        closeActiveAgentsModal();
+      } else {
+        el.classList.add('hidden');
+      }
+    }
+  });
+});
+
+// Close modals on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay').forEach(el => {
+      if (el.id === 'active-agents-modal') {
+        closeActiveAgentsModal();
+      } else {
+        el.classList.add('hidden');
+      }
+    });
+  }
+});
+
+// ── Utility ─────────────────────────────────────────────────────
+function esc(str) {
+  if (str == null) return '';
+  const div = document.createElement('div');
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
+function renderMarkdown(str) {
+  if (str == null) return '';
+  if (typeof marked !== 'undefined') {
+    return marked.parse(String(str), { breaks: true });
+  }
+  return '<p>' + esc(str) + '</p>';
+}
+
+async function copyToClipboard(text, btn) {
+  const value = String(text || '');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    if (btn) {
+      const prev = btn.textContent;
+      btn.textContent = 'Copied';
+      btn.classList.add('copied');
+      window.setTimeout(() => {
+        btn.textContent = prev;
+        btn.classList.remove('copied');
+      }, 1000);
+    }
+  } catch (e) {
+    console.warn('Copy failed:', e);
+    if (btn) {
+      const prev = btn.textContent;
+      btn.textContent = 'Failed';
+      window.setTimeout(() => { btn.textContent = prev; }, 1200);
+    }
+  }
+}
+
+// ── Polling for live data (single combined request) ─────────────
+let _polling = false;
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    if (_polling) return;  // skip if previous poll still in-flight
+    _polling = true;
+    try {
+      const boardParam = selectedWsId ? `/${selectedWsId}` : '/all';
+      const data = await api('poll' + boardParam);
+      // Update workstreams
+      allWorkstreams = data.workstreams;
+      taskCounts = data.counts || {};
+      activeTriggerIds = data.active_triggers || [];
+      renderSidebar();
+      // Update scheduler
+      _applySchedulerStatus(data.scheduler);
+      // Update Agent Runs sidebar link
+      const _arLink = document.getElementById('active-agents-link');
+      if (_arLink) {
+        const _arc = data.active_agent_runs || 0;
+        _arLink.textContent = _arc > 0 ? `Agent Runs (${_arc} active)` : 'Agent Runs';
+      }
+      // Update board if present
+      if (data.board && selectedWsId && !isBoardDragInProgress) {
+        selectedWs = data.board.workstream;
+        const lockMap = {};
+        for (const t of data.board.tasks) {
+          lockMap[t.id] = t.lock || { locked: false };
+        }
+        renderBoardHeader(data.board.workstream);
+        renderBoard(data.board.workstream, data.board.tasks, lockMap);
+        const emptyState = document.getElementById('empty-state');
+        if (emptyState) emptyState.style.display = 'none';
+      }
+      // Refresh trigger dialog if open
+      const triggerModal = document.getElementById('trigger-modal');
+      if (triggerModal && !triggerModal.classList.contains('hidden')) {
+        showTriggers();
+      }
+    } catch {} finally { _polling = false; }
+  }, 3000);
+}
+
+// ── Init ────────────────────────────────────────────────────────
+(async function init() {
+  const agentsLink = document.getElementById('active-agents-link');
+  if (agentsLink) {
+    agentsLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      openActiveAgentsModal();
+    });
+  }
+  await loadWorkstreams();
+  await loadSchedulerStatus();
+  startPolling();
+})();
+</script>
+</body>
+</html>
