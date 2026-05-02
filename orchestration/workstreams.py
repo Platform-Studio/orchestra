@@ -124,14 +124,37 @@ def workstream_workspace_index(base_dir: str = ".") -> dict:
 
 def resolve_workstream_workspace(ws_id: str, base_dir: str = ".") -> str:
     """Resolve which workspace root stores this workstream's YAML/task files."""
+    # First honor mounted ancestors in the selected workstream's lineage.
+    try:
+        by_id = {ws.id: ws for ws in list_workstreams(base_dir=base_dir)}
+        current = by_id.get(ws_id)
+        visited = set()
+        while current and current.id not in visited:
+            visited.add(current.id)
+            if current.mounted_workspace_path:
+                workspace_root = _workspace_root_for(current, _abs_base_dir(base_dir))
+                return _normalize_mounted_workspace_path(
+                    current.mounted_workspace_path,
+                    workspace_root,
+                )
+            if not current.parent_id:
+                break
+            current = by_id.get(current.parent_id)
+    except Exception:
+        # Fall through to index/local resolution below.
+        pass
+
+    idx = workstream_workspace_index(base_dir)
+    root = idx.get(ws_id)
+    if root is not None:
+        return root
+
+    # Fallback for legacy/local-only workstreams not present in effective index.
     local_path = _ws_path(base_dir, ws_id)
     if os.path.exists(local_path):
         return _abs_base_dir(base_dir)
-    idx = workstream_workspace_index(base_dir)
-    root = idx.get(ws_id)
-    if root is None:
-        raise FileNotFoundError(f"Workstream {ws_id} not found")
-    return root
+
+    raise FileNotFoundError(f"Workstream {ws_id} not found")
 
 
 def _validate_env_key(key: str) -> None:

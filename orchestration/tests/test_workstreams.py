@@ -333,3 +333,21 @@ class TestMountedWorkspaceDescendants:
         assert parent.id in ids
         assert mounted_child.id in ids
         assert local_child.id not in ids
+
+    def test_resolve_workspace_prefers_mounted_ancestor_for_grandchild_even_with_local_stale_file(self, workspace, tmp_path):
+        mount_root = tmp_path / "planetdb_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="planetdb", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Go-to-Market", parent_id=parent.id, base_dir=workspace)
+        grandchild = create_workstream(name="Programmatic SEO", parent_id=child.id, base_dir=workspace)
+
+        # Simulate stale local duplicate YAML for the grandchild under the base workspace.
+        stale_local_path = os.path.join(workspace, "workstreams", f"{grandchild.id}.yaml")
+        assert os.path.exists(stale_local_path)
+
+        resolved = resolve_workstream_workspace(grandchild.id, base_dir=workspace)
+        assert resolved == str(mount_root.resolve())
