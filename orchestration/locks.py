@@ -103,6 +103,42 @@ def lock_status(task_id: str, base_dir: str = "."):
     return lock
 
 
+def list_workstream_locks(workstream_id: str, task_ids: list[str] = None, base_dir: str = ".") -> dict:
+    """List active non-expired locks for a workstream keyed by task ID."""
+    tasks_dir = _tasks_dir(base_dir, workstream_id)
+    if not os.path.isdir(tasks_dir):
+        return {}
+
+    requested_ids = set(task_ids or [])
+    locks = {}
+    for fname in os.listdir(tasks_dir):
+        if not fname.endswith(".yaml.lock"):
+            continue
+
+        task_id = fname[: -len(".yaml.lock")]
+        if requested_ids and task_id not in requested_ids:
+            continue
+
+        lock_path = os.path.join(tasks_dir, fname)
+        try:
+            with open(lock_path) as f:
+                data = yaml.safe_load(f)
+            if data is None:
+                continue
+
+            lock = Lock.from_dict(data)
+            if lock.is_expired():
+                continue
+
+            lock_data = lock.to_dict()
+            lock_data["locked"] = True
+            locks[task_id] = lock_data
+        except Exception:
+            continue
+
+    return locks
+
+
 def active_lock_count(workstream_id: str, agent_id: str = None, base_dir: str = ".") -> int:
     """Count active (non-expired) locks in a workstream, optionally filtered by agent_id."""
     tasks_dir = _tasks_dir(base_dir, workstream_id)

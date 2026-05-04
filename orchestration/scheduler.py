@@ -289,7 +289,7 @@ def _workstream_agent_limit(ws, agent_ref: str, base_dir: str = ".") -> int:
     return default_limit
 
 
-def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str) -> None:
+def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str, ignore_paused: bool = False) -> None:
     """Execute a trigger and release locks on a background daemon thread.
 
     Lock acquisition is handled by the caller on the main scheduler thread so
@@ -297,7 +297,7 @@ def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str)
     This function owns only execution and cleanup.
     """
     try:
-        result = execute_trigger(trigger, locked_ids, ws.id, base_dir)
+        result = execute_trigger(trigger, locked_ids, ws.id, base_dir, ignore_paused=ignore_paused)
         _audit_trigger(trigger, result, ws, base_dir, task_ids=locked_ids)
     except Exception as e:
         print(f"[scheduler] background trigger error: {e}", file=sys.stderr)
@@ -310,17 +310,17 @@ def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str)
                 pass  # Lock may have already expired or been released
 
 
-def _run_without_lock(trigger, ws, base_dir: str, task_ids: list = None) -> None:
+def _run_without_lock(trigger, ws, base_dir: str, task_ids: list = None, ignore_paused: bool = False) -> None:
     """Execute a trigger with no lock lifecycle on a background daemon thread."""
     ids = task_ids or []
     try:
-        result = execute_trigger(trigger, ids, ws.id, base_dir)
+        result = execute_trigger(trigger, ids, ws.id, base_dir, ignore_paused=ignore_paused)
         _audit_trigger(trigger, result, ws, base_dir, task_ids=ids)
     except Exception as e:
         print(f"[scheduler] background standalone trigger error: {e}", file=sys.stderr)
 
 
-def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: bool = False) -> dict:
+def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: bool = False, ignore_paused: bool = False) -> dict:
     """Lock all task_ids, invoke the trigger, then unlock all.
 
     This is the single code path for all trigger execution. Every agent
@@ -335,6 +335,8 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
         background: When True, lock acquisition is synchronous but execution
             and unlock are dispatched to a daemon thread. The caller must NOT
             call _audit_trigger for a "dispatched" result — it runs in the thread.
+        ignore_paused: When True, bypass the paused-workstream guard for an
+            explicit manual force-run path.
 
     Returns:
         Result dict from execute_trigger, or {"status": "dispatched"} if background=True.
@@ -345,7 +347,7 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
     # Re-check paused state at execution time so direct calls and races with
     # pause/unpause cannot dispatch work for paused workstreams.
     latest_ws = read_workstream(ws.id, base_dir=base_dir)
-    if latest_ws.paused:
+    if latest_ws.paused and not ignore_paused:
         return {
             "trigger_id": trigger.id,
             "status": "skipped",
@@ -404,7 +406,7 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
             thread_ids = locked_ids[:]
             t = threading.Thread(
                 target=_run_and_unlock,
-                args=(trigger, thread_ids, ws, base_dir, agent_id),
+                args=(trigger, thread_ids, ws, base_dir, agent_id, ignore_paused),
                 daemon=True,
             )
             try:
@@ -419,7 +421,7 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
             return {"trigger_id": trigger.id, "status": "dispatched"}
 
         # Synchronous path: invoke then fall through to finally for unlock
-        result = execute_trigger(trigger, locked_ids, ws.id, base_dir)
+        result = execute_trigger(trigger, locked_ids, ws.id, base_dir, ignore_paused=ignore_paused)
         return result
     finally:
         # Unlock tasks we still own (empty when background dispatched above)

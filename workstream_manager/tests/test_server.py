@@ -109,9 +109,7 @@ _PATCHES = {
     "move_task_before":  "workstream_manager.server.move_task_before",
     "move_task_after":   "workstream_manager.server.move_task_after",
     "move_task_to_index": "workstream_manager.server.move_task_to_index",
-    "acquire_lock":      "workstream_manager.server.acquire_lock",
-    "release_lock":      "workstream_manager.server.release_lock",
-    "lock_status":       "workstream_manager.server.lock_status",
+    "_run_orchestration_cli": "workstream_manager.server._run_orchestration_cli",
     "create_trigger":    "workstream_manager.server.create_trigger",
     "list_triggers":     "workstream_manager.server.list_triggers",
     "delete_trigger":    "workstream_manager.server.delete_trigger",
@@ -143,9 +141,7 @@ def api(tmp_path):
     mocks["list_workstream_hierarchy_env"].return_value = []
     mocks["list_effective_workstream_env"].return_value = {}
     mocks["resolve_workstream_workspace"].return_value = "/tmp/workspace"
-
-    # Default for lock_status (used by board/poll)
-    mocks["lock_status"].return_value = None
+    mocks["_run_orchestration_cli"].return_value = {}
 
     from workstream_manager.server import Handler, ThreadingHTTPServer
 
@@ -305,10 +301,11 @@ class TestArtifactPreview:
         assert data["preview_error"] == "Preview unavailable for application/octet-stream files."
 
     def test_runtime_error_returns_409(self, api):
-        api.mocks["acquire_lock"].side_effect = RuntimeError("already locked")
+        api.mocks["_run_orchestration_cli"].side_effect = RuntimeError("already locked")
         code, body = api.post("/api/lock/acquire/task-1", {"agent": "a"})
         assert code == 409
         assert body["code"] == "CONFLICT"
+        api.mocks["_run_orchestration_cli"].side_effect = None
 
     def test_generic_exception_returns_500(self, api):
         api.mocks["read_task"].side_effect = Exception("boom")
@@ -341,7 +338,6 @@ class TestBoard:
         t = _fake_task()
         api.mocks["read_workstream"].return_value = ws
         api.mocks["list_tasks"].return_value = [t]
-        api.mocks["lock_status"].return_value = None
 
         code, body = api.get("/api/board/ws-1")
         assert code == 200
@@ -350,30 +346,18 @@ class TestBoard:
         assert len(data["tasks"]) == 1
         assert data["tasks"][0]["lock"]["locked"] is False
 
-    def test_board_includes_active_lock(self, api):
+    def test_board_does_not_wait_on_lock_lookup(self, api):
         ws = _fake_workstream()
         t = _fake_task()
-        lock = _fake_lock(expired=False)
         api.mocks["read_workstream"].return_value = ws
         api.mocks["list_tasks"].return_value = [t]
-        api.mocks["lock_status"].return_value = lock
+        api.mocks["_run_orchestration_cli"].side_effect = AssertionError("board should not load locks")
 
         code, body = api.get("/api/board/ws-1")
         assert code == 200
         task_data = body["data"]["tasks"][0]
-        assert task_data["lock"]["locked"] is True
-        assert task_data["lock"]["agent_id"] == "agent-1"
-
-    def test_board_ignores_expired_lock(self, api):
-        ws = _fake_workstream()
-        t = _fake_task()
-        lock = _fake_lock(expired=True)
-        api.mocks["read_workstream"].return_value = ws
-        api.mocks["list_tasks"].return_value = [t]
-        api.mocks["lock_status"].return_value = lock
-
-        code, body = api.get("/api/board/ws-1")
-        assert body["data"]["tasks"][0]["lock"]["locked"] is False
+        assert task_data["lock"]["locked"] is False
+        api.mocks["_run_orchestration_cli"].side_effect = None
 
     def test_board_missing_id(self, api):
         # /api/board/ with no ID → the route gets concept=board, method="" (empty)
@@ -589,36 +573,45 @@ class TestTask:
 
 class TestLock:
     def test_status_unlocked(self, api):
-        api.mocks["lock_status"].return_value = None
+        api.mocks["_run_orchestration_cli"].return_value = {"locked": False}
         code, body = api.get("/api/lock/status/t-1")
         assert code == 200
         assert body["data"]["locked"] is False
+        api.mocks["_run_orchestration_cli"].assert_called_with(["lock", "status", "t-1"])
 
     def test_status_locked(self, api):
-        api.mocks["lock_status"].return_value = _fake_lock()
+        api.mocks["_run_orchestration_cli"].return_value = {"locked": True, "agent_id": "agent-1"}
         code, body = api.get("/api/lock/status/t-1")
         assert code == 200
         assert body["data"]["locked"] is True
+        api.mocks["_run_orchestration_cli"].assert_called_with(["lock", "status", "t-1"])
 
-    def test_status_expired_lock(self, api):
-        api.mocks["lock_status"].return_value = _fake_lock(expired=True)
-        code, body = api.get("/api/lock/status/t-1")
+    def test_list(self, api):
+        api.mocks["_run_orchestration_cli"].return_value = {"t-1": {"locked": True, "agent_id": "agent-1"}}
+        code, body = api.get("/api/lock/list/ws-1")
         assert code == 200
-        assert body["data"]["locked"] is False
+        assert body["data"]["t-1"]["locked"] is True
+        api.mocks["_run_orchestration_cli"].assert_called_with(["lock", "list", "ws-1"])
 
     def test_acquire(self, api):
-        api.mocks["acquire_lock"].return_value = _fake_lock()
+        api.mocks["_run_orchestration_cli"].return_value = _fake_lock().to_dict()
         code, body = api.post("/api/lock/acquire/t-1", {"agent": "bot-1"})
         assert code == 200
         assert body["data"]["agent_id"] == "agent-1"
+        api.mocks["_run_orchestration_cli"].assert_called_with(["lock", "acquire", "t-1", "--agent", "bot-1"])
 
     def test_acquire_with_ttl(self, api):
-        api.mocks["acquire_lock"].return_value = _fake_lock()
+        api.mocks["_run_orchestration_cli"].return_value = _fake_lock().to_dict()
         code, body = api.post("/api/lock/acquire/t-1", {"agent": "bot-1", "ttl": "300"})
         assert code == 200
-        call_kw = api.mocks["acquire_lock"].call_args
-        kw = call_kw.kwargs if call_kw.kwargs else call_kw[1]
-        assert kw["ttl_seconds"] == 300
+        api.mocks["_run_orchestration_cli"].assert_called_with(["lock", "acquire", "t-1", "--agent", "bot-1", "--ttl", "300"])
+
+    def test_release(self, api):
+        api.mocks["_run_orchestration_cli"].return_value = {"released": True}
+        code, body = api.post("/api/lock/release/t-1", {"agent": "bot-1"})
+        assert code == 200
+        assert body["data"]["released"] is True
+        api.mocks["_run_orchestration_cli"].assert_called_with(["lock", "release", "t-1", "--agent", "bot-1"])
 
 
 class TestRetry:
@@ -649,13 +642,6 @@ class TestRetry:
         assert call.args == ("old-run",)
         assert call.kwargs.get("base_dir")
         assert call.kwargs.get("allow_paused_workstream") is True
-
-    def test_release(self, api):
-        api.mocks["release_lock"].return_value = True
-        code, body = api.post("/api/lock/release/t-1", {"agent": "bot-1"})
-        assert code == 200
-        assert body["data"]["released"] is True
-
 
 # ── Trigger handler ─────────────────────────────────────────────
 
@@ -718,7 +704,6 @@ class TestPoll:
         api.mocks["list_workstreams"].return_value = [ws]
         api.mocks["list_tasks"].return_value = [t]
         api.mocks["read_workstream"].return_value = ws
-        api.mocks["lock_status"].return_value = None
         api.mocks["scheduler_status"].return_value = {"running": False}
 
         code, body = api.get("/api/poll/ws-1")
@@ -738,19 +723,19 @@ class TestPoll:
         assert code == 200
         assert "board" not in body["data"]
 
-    def test_poll_board_includes_lock(self, api):
+    def test_poll_board_does_not_wait_on_lock_lookup(self, api):
         ws = _fake_workstream()
         t = _fake_task()
-        lock = _fake_lock(expired=False)
         api.mocks["list_workstreams"].return_value = [ws]
         api.mocks["list_tasks"].return_value = [t]
         api.mocks["read_workstream"].return_value = ws
-        api.mocks["lock_status"].return_value = lock
         api.mocks["scheduler_status"].return_value = {"running": False}
+        api.mocks["_run_orchestration_cli"].side_effect = AssertionError("poll should not load locks")
 
         code, body = api.get("/api/poll/ws-1")
         assert code == 200
-        assert body["data"]["board"]["tasks"][0]["lock"]["locked"] is True
+        assert body["data"]["board"]["tasks"][0]["lock"]["locked"] is False
+        api.mocks["_run_orchestration_cli"].side_effect = None
 
     def test_poll_active_agent_runs_excludes_pidless_entries(self, api):
         ws = _fake_workstream()

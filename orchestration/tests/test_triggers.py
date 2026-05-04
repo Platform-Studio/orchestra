@@ -76,6 +76,98 @@ class TestDeleteTrigger:
             delete_trigger("nonexistent", base_dir=workspace)
 
 
+class TestRunTriggerNow:
+    def test_schedule_trigger_run_now_rejects_paused_workstream(self, workspace, ws):
+        ws.paused = True
+        save_workstream(ws, workspace)
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="*/5 * * * *",
+            action="run_command",
+            command="echo x",
+            base_dir=workspace,
+        )
+
+        with pytest.raises(RuntimeError, match="paused"):
+            run_trigger_now(trigger.id, base_dir=workspace)
+
+    def test_state_trigger_run_now_uses_first_matching_task_while_paused(self, workspace, ws, monkeypatch):
+        ws.paused = True
+        save_workstream(ws, workspace)
+        trigger = create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_command",
+            command="echo forced",
+            base_dir=workspace,
+        )
+        task = create_task(ws.id, title="T1", base_dir=workspace)
+
+        captured = {}
+
+        class _InlineThread:
+            def __init__(self, target=None, args=None, kwargs=None, daemon=None):
+                self._target = target
+                self._args = args or ()
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                self._target(*self._args, **self._kwargs)
+
+        def _fake_lock_invoke_unlock(_trigger, task_ids, _ws, _base_dir, background=False, ignore_paused=False):
+            captured["task_ids"] = list(task_ids)
+            captured["background"] = background
+            captured["ignore_paused"] = ignore_paused
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.triggers.threading.Thread", _InlineThread)
+        monkeypatch.setattr("orchestration.triggers._audit_trigger", lambda *_a, **_k: None, raising=False)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
+        assert captured["task_ids"] == [task.id]
+        assert captured["background"] is True
+        assert captured["ignore_paused"] is True
+
+    def test_state_trigger_run_now_skips_when_no_matching_task(self, workspace, ws, monkeypatch):
+        ws.paused = True
+        save_workstream(ws, workspace)
+        trigger = create_trigger(
+            ws.id,
+            on_state="Done",
+            action="run_command",
+            command="echo forced",
+            base_dir=workspace,
+        )
+        create_task(ws.id, title="T1", base_dir=workspace)
+
+        captured = {"calls": 0}
+
+        class _InlineThread:
+            def __init__(self, target=None, args=None, kwargs=None, daemon=None):
+                self._target = target
+                self._args = args or ()
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                self._target(*self._args, **self._kwargs)
+
+        def _fake_lock_invoke_unlock(*_args, **_kwargs):
+            captured["calls"] += 1
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.triggers.threading.Thread", _InlineThread)
+        monkeypatch.setattr("orchestration.triggers._audit_trigger", lambda *_a, **_k: None, raising=False)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
+        assert captured["calls"] == 0
+
+
 class TestExecuteTrigger:
     def test_run_command(self, workspace, ws):
         trigger = create_trigger(ws.id, on_state="Done", action="run_command", command="echo hello", base_dir=workspace)
@@ -122,6 +214,56 @@ class TestExecuteTrigger:
         result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace)
         assert result["status"] == "skipped"
         assert "paused" in result.get("message", "").lower()
+
+    def test_execute_trigger_can_ignore_paused_for_manual_force_run(self, workspace, ws):
+        from orchestration.workstreams import save_workstream
+
+        ws.paused = True
+        save_workstream(ws, workspace)
+
+        trigger = create_trigger(
+            ws.id,
+            on_state="Done",
+            action="run_command",
+            command="echo forced_run",
+            base_dir=workspace,
+        )
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace, ignore_paused=True)
+        assert result["status"] == "ok"
+        assert "forced_run" in result["stdout"]
+
+    def test_execute_run_agent_can_ignore_paused_for_manual_force_run(self, workspace, ws, monkeypatch):
+        from orchestration.workstreams import save_workstream
+
+        ws.paused = True
+        save_workstream(ws, workspace)
+
+        trigger = create_trigger(
+            ws.id,
+            on_state="Done",
+            action="run_agent",
+            agent="test_agent",
+            base_dir=workspace,
+        )
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        captured = {}
+
+        def _fake_run_agent(agent_name, **kwargs):
+            captured["agent_name"] = agent_name
+            captured.update(kwargs)
+            return {"run_id": "run-123", "status": "started"}
+
+        monkeypatch.setattr("orchestration.agents.run_agent", _fake_run_agent)
+
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace, ignore_paused=True)
+
+        assert result["status"] == "ok"
+        assert captured["agent_name"] == "test_agent"
+        assert captured["task_ids"] == [task.id]
+        assert captured["workstream_id"] == ws.id
+        assert captured["allow_paused_workstream"] is True
 
 
 class TestStateTriggerViaTick:
@@ -464,14 +606,15 @@ class TestRunTriggerNow:
         result = run_trigger_now(trigger.id, base_dir=workspace)
         assert result["status"] == "started"
 
-    def test_run_now_rejects_state_trigger(self, workspace, ws):
-        """Run Now should reject state-based triggers."""
+    def test_run_now_allows_state_trigger(self, workspace, ws):
+        """Run Now should allow state-based triggers."""
         trigger = create_trigger(
             ws.id, on_state="To Do", action="run_command",
             command="echo nope", base_dir=workspace,
         )
-        with pytest.raises(ValueError, match="schedule-based"):
-            run_trigger_now(trigger.id, base_dir=workspace)
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+        assert result["status"] == "started"
+        assert result["trigger_id"] == trigger.id
 
     def test_run_now_rejects_paused_workstream(self, workspace, ws):
         """Run Now should refuse to execute when workstream is paused."""

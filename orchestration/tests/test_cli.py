@@ -301,6 +301,24 @@ class TestCLILock:
         assert result.returncode == 0
         assert json.loads(result.stdout)["data"]["locked"] is False
 
+    def test_lock_list_returns_active_workstream_locks(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("task", "create", ws_id, "--title", "T1", base_dir=workspace)
+        task_one = json.loads(result.stdout)["data"]["id"]
+        result = run_cli("task", "create", ws_id, "--title", "T2", base_dir=workspace)
+        task_two = json.loads(result.stdout)["data"]["id"]
+
+        assert run_cli("lock", "acquire", task_one, "--agent", "agent-1", base_dir=workspace).returncode == 0
+        assert run_cli("lock", "acquire", task_two, "--agent", "agent-2", base_dir=workspace).returncode == 0
+
+        result = run_cli("lock", "list", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data[task_one]["locked"] is True
+        assert data[task_two]["agent_id"] == "agent-2"
+
 
 class TestCLIArtifact:
     def test_artifact_lifecycle(self, workspace):
@@ -679,6 +697,22 @@ class TestCLIScheduler:
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert "running" in data
+
+    def test_scheduler_tick_runs_when_scheduler_not_running(self, workspace):
+        result = run_cli("scheduler", "tick", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert "last_tick_at" in data
+
+    def test_scheduler_tick_fails_when_scheduler_running(self, workspace):
+        state_path = Path(workspace) / "scheduler_state.yaml"
+        state_path.write_text(yaml.safe_dump({"pid": os.getpid()}), encoding="utf-8")
+
+        result = run_cli("scheduler", "tick", base_dir=workspace)
+        assert result.returncode != 0
+        error = json.loads(result.stderr)
+        assert error["code"] == "RUNTIME_ERROR"
+        assert "disabled while scheduler is running" in error["message"]
 
 
 class TestCLIEnv:

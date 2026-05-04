@@ -184,6 +184,70 @@ def _is_pid_alive(pid) -> bool:
         return False
 
 
+def _finalize_expired_active_run(base_dir: str, run: dict) -> None:
+    """Kill an orphaned active run and mark its metadata as timed out."""
+    run_id = run.get("run_id")
+    if not run_id:
+        return
+
+    candidate_pids = set()
+    for pid in _find_run_pids(run_id):
+        try:
+            candidate_pids.add(int(pid))
+        except (TypeError, ValueError):
+            continue
+
+    direct_pid = run.get("pid")
+    try:
+        if direct_pid is not None:
+            candidate_pids.add(int(direct_pid))
+    except (TypeError, ValueError):
+        pass
+
+    for pid in sorted(candidate_pids):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    ended_at = datetime.now(timezone.utc).isoformat()
+    meta_path = _agent_run_meta_path(base_dir, run_id)
+    if os.path.exists(meta_path):
+        meta = _read_run_meta(meta_path)
+    else:
+        meta = {
+            "run_id": run_id,
+            "agent": run.get("agent"),
+            "agent_ref": run.get("agent_ref"),
+            "workstream_id": run.get("workstream_id"),
+            "workstream_path": _workstream_path(base_dir, run.get("workstream_id")),
+            "task_ids": list(run.get("task_ids") or []),
+            "tasks": [],
+            "prompt": "",
+            "system_prompt": "",
+            "command_line": "",
+            "log_path": run.get("log_path"),
+            "started_at": run.get("started_at") or ended_at,
+            "ended_at": None,
+            "status": "running",
+            "exit_code": None,
+            "retried_from_run_id": None,
+            "retried_to_run_ids": [],
+        }
+
+    if meta.get("status") not in ("completed", "failed", "timeout", "killed"):
+        meta["status"] = "timeout"
+        meta["exit_code"] = -9
+        meta["ended_at"] = ended_at
+        _write_run_meta(base_dir, run_id, meta)
+
+    from .locks import release_process_lock
+    try:
+        release_process_lock(run_id, base_dir=base_dir)
+    except Exception:
+        pass
+
+
 def _prune_dead_active_runs(base_dir: str, runs: list = None) -> list:
     """Drop stale active-agent entries whose PIDs are no longer alive or whose process lock has expired."""
     if runs is None:
@@ -212,6 +276,7 @@ def _prune_dead_active_runs(base_dir: str, runs: list = None) -> list:
             lock_path = _process_lock_path(run_id, base_dir)
             if os.path.exists(lock_path) and lock is None:
                 # Lock file exists but is expired — this run has exceeded its TTL.
+                _finalize_expired_active_run(base_dir, run)
                 changed = True
                 continue
 

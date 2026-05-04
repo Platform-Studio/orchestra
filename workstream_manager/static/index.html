@@ -588,17 +588,21 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   color: #8b949e; margin-bottom: 6px; letter-spacing: 0.5px;
 }
 .detail-description { font-size: 14px; line-height: 1.6; color: #c9d1d9; }
-.detail-description p { margin: 0 0 8px; }
-.detail-description p:last-child { margin-bottom: 0; }
-.detail-description strong { color: #e6edf3; }
-.detail-description ul, .detail-description ol { margin: 4px 0 8px 20px; }
-.detail-description code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
-.detail-description pre { background: rgba(255,255,255,0.06); padding: 10px; border-radius: 4px; overflow-x: auto; margin: 8px 0; }
-.detail-description pre code { background: none; padding: 0; }
-.detail-description a { color: #58a6ff; }
-.detail-description blockquote { border-left: 3px solid rgba(255,255,255,0.15); padding-left: 12px; color: #8b949e; margin: 8px 0; }
+.markdown-content { color: #c9d1d9; }
+.detail-description p, .markdown-content p { margin: 0 0 8px; }
+.detail-description p:last-child, .markdown-content p:last-child { margin-bottom: 0; }
+.detail-description strong, .markdown-content strong { color: #e6edf3; }
+.detail-description ul, .detail-description ol,
+.markdown-content ul, .markdown-content ol { margin: 4px 0 8px 20px; }
+.detail-description code, .markdown-content code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+.detail-description pre, .markdown-content pre { background: rgba(255,255,255,0.06); padding: 10px; border-radius: 4px; overflow-x: auto; margin: 8px 0; }
+.detail-description pre code, .markdown-content pre code { background: none; padding: 0; }
+.detail-description a, .markdown-content a { color: #58a6ff; }
+.detail-description blockquote, .markdown-content blockquote { border-left: 3px solid rgba(255,255,255,0.15); padding-left: 12px; color: #8b949e; margin: 8px 0; }
 .detail-description h1, .detail-description h2, .detail-description h3,
-.detail-description h4, .detail-description h5, .detail-description h6 { color: #e6edf3; margin: 12px 0 6px; }
+.detail-description h4, .detail-description h5, .detail-description h6,
+.markdown-content h1, .markdown-content h2, .markdown-content h3,
+.markdown-content h4, .markdown-content h5, .markdown-content h6 { color: #e6edf3; margin: 12px 0 6px; }
 .detail-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .detail-tag {
   font-size: 12px; border-radius: 4px;
@@ -723,6 +727,9 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   line-height: 1.5;
   word-break: break-word;
 }
+.attachment-preview-content.markdown-preview {
+  white-space: normal;
+}
 .attachment-preview-content.text-preview {
   white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -828,6 +835,21 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   box-shadow: 0 1px 2px rgba(0,0,0,0.2); color: #c9d1d9;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.comment .comment-text.markdown-content {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.comment .comment-author-line {
+  color: #e6edf3;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.comment .comment-body > :first-child {
+  margin-top: 0;
+}
+.comment .comment-body > :last-child {
+  margin-bottom: 0;
 }
 .comment-composer {
   margin-top: 10px;
@@ -1198,6 +1220,7 @@ let retryingAgentRunId = null;
 let agentRunStatusFilter = '';
 let workstreamContextDraft = '';
 let boardScrollByWorkstream = {}; // { [wsId]: { boardX: number, columns: { [state]: number } } }
+let boardLockRequestSeq = 0;
 let taskDragState = null;
 let isBoardDragInProgress = false;
 let taskCommentDraftByTaskId = {}; // { [taskId]: string }
@@ -1584,14 +1607,37 @@ async function openAgentRunWorkstream(wsId) {
   await selectWorkstream(wsId);
 }
 
+function buildLockMap(tasks, locks = {}) {
+  const lockMap = {};
+  for (const task of tasks) {
+    lockMap[task.id] = task.lock || { locked: false };
+  }
+  for (const [taskId, lock] of Object.entries(locks || {})) {
+    lockMap[taskId] = lock || { locked: false };
+  }
+  return lockMap;
+}
+
+async function hydrateBoardLocks(ws, tasks) {
+  if (!ws || !ws.id || !selectedWsId) return;
+
+  const requestSeq = ++boardLockRequestSeq;
+  try {
+    const locks = await api('lock/list/' + ws.id, { timeoutMs: 30000 });
+    if (requestSeq !== boardLockRequestSeq) return;
+    if (selectedWsId !== ws.id) return;
+    if (isBoardDragInProgress) return;
+    renderBoard(ws, tasks, buildLockMap(tasks, locks));
+  } catch {}
+}
+
 // ── Load board ──────────────────────────────────────────────────
 async function loadBoard() {
   if (!selectedWsId) return;
 
   let board;
   try {
-    // Single bulk call: returns workstream + tasks with locks embedded.
-    // Some workstreams (e.g. with many tasks) can take longer to load.
+    // Load the board first, then hydrate lock badges asynchronously.
     board = await api('board/' + selectedWsId, { timeoutMs: 30000 });
   } catch (e) {
     const boardEl = document.getElementById('board');
@@ -1605,16 +1651,11 @@ async function loadBoard() {
   const tasks = board.tasks;
   selectedWs = ws;
 
-  // Build lockMap from embedded lock data
-  const lockMap = {};
-  for (const t of tasks) {
-    lockMap[t.id] = t.lock || { locked: false };
-  }
-
   renderBoardHeader(ws);
-  renderBoard(ws, tasks, lockMap);
+  renderBoard(ws, tasks, buildLockMap(tasks));
   const emptyState = document.getElementById('empty-state');
   if (emptyState) emptyState.style.display = 'none';
+  hydrateBoardLocks(ws, tasks);
 }
 
 // ── Render board header ─────────────────────────────────────────
@@ -2215,7 +2256,7 @@ async function showTaskDetail(taskId) {
       main += `<button class="comment-cancel-btn" type="button" onclick="cancelEditTaskComment('${task.id}')">Cancel</button>`;
       main += `</div>`;
     } else {
-      main += `<div class="comment-text"><span class="comment-author">${esc(author)}:</span>${esc(message)}</div>`;
+      main += `<div class="comment-text markdown-content"><div class="comment-author-line">${esc(author)}:</div><div class="comment-body">${renderMarkdown(message)}</div></div>`;
     }
     main += `</div>`;
   }
@@ -2458,6 +2499,17 @@ async function showTaskDetail(taskId) {
     previewContentEl.textContent = value;
   }
 
+  function setAttachmentPreviewMarkdown(value) {
+    if (!previewContentEl) return;
+    previewContentEl.innerHTML = '';
+    previewContentEl.className = 'attachment-preview-content markdown-content markdown-preview';
+    previewContentEl.innerHTML = renderMarkdown(value);
+  }
+
+  function isMarkdownPath(path) {
+    return /\.(md|markdown|mdown|mkd|mkdn|mdx)$/i.test(String(path || ''));
+  }
+
   function setAttachmentPreviewImage(src, altText) {
     if (!previewContentEl) return;
     previewContentEl.innerHTML = '';
@@ -2525,7 +2577,12 @@ async function showTaskDetail(taskId) {
         } else if (data.preview_error) {
           setAttachmentPreviewText('Preview failed: ' + data.preview_error);
         } else {
-          setAttachmentPreviewText(String(data.content || ''));
+          const text = String(data.content || '');
+          if (isMarkdownPath(path)) {
+            setAttachmentPreviewMarkdown(text);
+          } else {
+            setAttachmentPreviewText(text);
+          }
         }
         if (previewOpenEl && data.resolved_path) {
           previewOpenEl.classList.remove('hidden');
@@ -2628,9 +2685,12 @@ function showTriggers() {
         actionLabel = `Command: ${esc(t.command || '?')}`;
       }
 
-      const runNowBtn = t.on_schedule
-        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Run Now</button>`
-        : '';
+      const showForceRunBtn = !!selectedWs.paused && !!t.on_state;
+      const runNowBtn = showForceRunBtn
+        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Force Run Now</button>`
+        : (t.on_schedule
+          ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Run Now</button>`
+          : '');
 
       html += `<div class="trigger-item${isRunning ? ' trigger-running' : ''}">
         <div class="trigger-type">${typeLabel}</div>
@@ -2824,12 +2884,13 @@ async function saveWorkstreamContext() {
 }
 
 async function runTriggerNow(triggerId, btn) {
+  const resetLabel = btn.textContent.includes('Force') ? 'Force Run Now' : 'Run Now';
   btn.disabled = true;
   btn.textContent = 'Starting…';
   try {
     await api('trigger/run-now/' + triggerId, { method: 'POST' });
     btn.textContent = 'Kicked off ✓';
-    setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; }, 2000);
+    setTimeout(() => { btn.textContent = resetLabel; btn.disabled = false; }, 2000);
   } catch (e) {
     btn.textContent = 'Failed';
     const errBox = btn.parentElement.querySelector('.run-now-error');
@@ -2838,7 +2899,7 @@ async function runTriggerNow(triggerId, btn) {
     detail.className = 'run-now-error';
     detail.textContent = e.message;
     btn.parentElement.appendChild(detail);
-    setTimeout(() => { btn.textContent = 'Run Now'; btn.disabled = false; }, 5000);
+    setTimeout(() => { btn.textContent = resetLabel; btn.disabled = false; }, 5000);
   }
 }
 
@@ -3363,10 +3424,11 @@ function esc(str) {
 
 function renderMarkdown(str) {
   if (str == null) return '';
+  const source = esc(String(str));
   if (typeof marked !== 'undefined') {
-    return marked.parse(String(str), { breaks: true });
+    return marked.parse(source, { breaks: true });
   }
-  return '<p>' + esc(str) + '</p>';
+  return '<p>' + source + '</p>';
 }
 
 async function copyToClipboard(text, btn) {
@@ -3431,14 +3493,11 @@ function startPolling() {
       // Update board if present
       if (data.board && selectedWsId && !isBoardDragInProgress) {
         selectedWs = data.board.workstream;
-        const lockMap = {};
-        for (const t of data.board.tasks) {
-          lockMap[t.id] = t.lock || { locked: false };
-        }
         renderBoardHeader(data.board.workstream);
-        renderBoard(data.board.workstream, data.board.tasks, lockMap);
+        renderBoard(data.board.workstream, data.board.tasks, buildLockMap(data.board.tasks));
         const emptyState = document.getElementById('empty-state');
         if (emptyState) emptyState.style.display = 'none';
+        hydrateBoardLocks(data.board.workstream, data.board.tasks);
       }
       // Refresh trigger dialog if open
       const triggerModal = document.getElementById('trigger-modal');

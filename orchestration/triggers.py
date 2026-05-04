@@ -20,7 +20,13 @@ def get_active_triggers() -> list:
         return list(_active_triggers)
 
 
-def execute_trigger(trigger: Trigger, task_ids: list, workstream_id: str, base_dir: str = ".") -> dict:
+def execute_trigger(
+    trigger: Trigger,
+    task_ids: list,
+    workstream_id: str,
+    base_dir: str = ".",
+    ignore_paused: bool = False,
+) -> dict:
     """Execute a trigger against 0-N tasks.
 
     Callers are responsible for locking/unlocking task_ids. This function
@@ -33,7 +39,7 @@ def execute_trigger(trigger: Trigger, task_ids: list, workstream_id: str, base_d
         base_dir: Workspace root.
     """
     ws = read_workstream(workstream_id, base_dir)
-    if ws.paused:
+    if ws.paused and not ignore_paused:
         return {
             "trigger_id": trigger.id,
             "status": "skipped",
@@ -43,19 +49,39 @@ def execute_trigger(trigger: Trigger, task_ids: list, workstream_id: str, base_d
     with _active_triggers_lock:
         _active_triggers.add(trigger.id)
     try:
-        return _execute_trigger_inner(trigger, task_ids, workstream_id, base_dir)
+        return _execute_trigger_inner(
+            trigger,
+            task_ids,
+            workstream_id,
+            base_dir,
+            ignore_paused=ignore_paused,
+        )
     finally:
         with _active_triggers_lock:
             _active_triggers.discard(trigger.id)
 
 
-def _execute_trigger_inner(trigger: Trigger, task_ids: list, workstream_id: str, base_dir: str = ".") -> dict:
+def _execute_trigger_inner(
+    trigger: Trigger,
+    task_ids: list,
+    workstream_id: str,
+    base_dir: str = ".",
+    ignore_paused: bool = False,
+) -> dict:
     if trigger.action == "run_agent":
         if trigger.agent is None:
             return {"trigger_id": trigger.id, "status": "error", "message": "No agent specified"}
         try:
             from .agents import run_agent
-            result = run_agent(trigger.agent, task_ids=task_ids, workstream_id=workstream_id, prompt=trigger.prompt, timeout=trigger.timeout, base_dir=base_dir)
+            result = run_agent(
+                trigger.agent,
+                task_ids=task_ids,
+                workstream_id=workstream_id,
+                prompt=trigger.prompt,
+                timeout=trigger.timeout,
+                base_dir=base_dir,
+                allow_paused_workstream=ignore_paused,
+            )
             return {"trigger_id": trigger.id, "status": "ok", "result": result}
         except Exception as e:
             return {"trigger_id": trigger.id, "status": "error", "message": str(e)}
@@ -142,11 +168,12 @@ def delete_trigger(trigger_id: str, base_dir: str = ".") -> bool:
 
 
 def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
-    """Kick off a schedule-based trigger immediately in a background thread.
+    """Kick off a trigger immediately in a background thread.
 
-    Validates the trigger exists and is schedule-based, then spawns a
-    daemon thread to execute it. Returns immediately with an acknowledgement.
-    Results are visible in the audit log.
+    Schedule-based triggers can be run manually at any time. State-based
+    triggers can be force-run while a workstream is paused, which executes the
+    first currently eligible task in the trigger's state as if pause were not
+    set. Results are visible in the audit log.
     """
     import threading
     from .workstreams import list_workstreams
@@ -155,9 +182,9 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
         for trigger in ws.triggers:
             if trigger.id != trigger_id:
                 continue
-            if trigger.on_schedule is None:
-                raise ValueError("Run Now is only supported for schedule-based triggers")
-            if ws.paused:
+            if trigger.on_schedule is None and trigger.on_state is None:
+                raise ValueError("Run Now is only supported for schedule-based or state-based triggers")
+            if ws.paused and trigger.on_state is None:
                 raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
             # Capture references for the background thread
@@ -166,8 +193,34 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
             def _run():
                 from .tasks import list_tasks
                 from .scheduler import _lock_invoke_unlock, _task_matches_filter, _audit_trigger
+                from .locks import lock_status
                 try:
-                    if _trigger.filter is None:
+                    manual_task_ids = []
+                    ignore_paused = False
+                    if _trigger.on_state is not None:
+                        ignore_paused = True
+                        tasks = list_tasks(_ws.id, base_dir=base_dir)
+                        manual_task_ids = [
+                            task.id for task in tasks
+                            if task.status == _trigger.on_state and lock_status(task.id, base_dir) is None
+                        ]
+                        if not manual_task_ids:
+                            result = {
+                                "trigger_id": _trigger.id,
+                                "status": "skipped",
+                                "message": f"No unlocked tasks currently in state '{_trigger.on_state}'",
+                            }
+                        else:
+                            manual_task_ids = [manual_task_ids[0]]
+                            result = _lock_invoke_unlock(
+                                _trigger,
+                                manual_task_ids,
+                                _ws,
+                                base_dir,
+                                background=True,
+                                ignore_paused=ignore_paused,
+                            )
+                    elif _trigger.filter is None:
                         result = _lock_invoke_unlock(_trigger, [], _ws, base_dir)
                     else:
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
@@ -176,8 +229,9 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                             if _task_matches_filter(t, _trigger.filter)
                         ]
                         result = _lock_invoke_unlock(_trigger, matching_ids, _ws, base_dir)
-                    _audit_trigger(_trigger, result, _ws, base_dir,
-                                   task_ids=(matching_ids if _trigger.filter else []))
+                    audit_ids = manual_task_ids if _trigger.on_state else (matching_ids if _trigger.filter else [])
+                    if result.get("status") not in ("dispatched",):
+                        _audit_trigger(_trigger, result, _ws, base_dir, task_ids=audit_ids)
                 except Exception as e:
                     from .workspace_audit import log_event
                     log_event("trigger_fired",

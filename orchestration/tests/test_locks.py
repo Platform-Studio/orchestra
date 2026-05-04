@@ -11,6 +11,7 @@ from orchestration.locks import (
     acquire_lock,
     release_lock,
     lock_status,
+    list_workstream_locks,
     acquire_process_lock,
     release_process_lock,
     process_lock_status,
@@ -138,6 +139,28 @@ class TestLockStatus:
         # Should be able to acquire since old lock is expired
         lock = acquire_lock(task.id, agent_id="agent-2", base_dir=workspace)
         assert lock.agent_id == "agent-2"
+
+    def test_list_workstream_locks_returns_only_active_locks(self, workspace, ws):
+        task_a = create_task(ws.id, title="Task A", base_dir=workspace)
+        task_b = create_task(ws.id, title="Task B", base_dir=workspace)
+        acquire_lock(task_a.id, agent_id="agent-1", base_dir=workspace)
+        acquire_lock(task_b.id, agent_id="agent-2", base_dir=workspace)
+
+        from orchestration.tasks import _find_task_file
+        _, task_b_file = _find_task_file(task_b.id, workspace)
+        lock_path = task_b_file + ".lock"
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        with open(lock_path, "w") as f:
+            yaml.dump({
+                "agent_id": "agent-2",
+                "acquired_at": past.isoformat(),
+                "expires_at": past.isoformat(),
+            }, f)
+
+        locks = list_workstream_locks(ws.id, base_dir=workspace)
+        assert set(locks.keys()) == {task_a.id}
+        assert locks[task_a.id]["locked"] is True
+        assert locks[task_a.id]["agent_id"] == "agent-1"
 
 
 class TestProcessLocks:

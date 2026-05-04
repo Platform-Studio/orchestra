@@ -45,7 +45,6 @@ from orchestration.tasks import (
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
 )
-from orchestration.locks import acquire_lock, release_lock, lock_status
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
@@ -62,6 +61,15 @@ def _err(msg, code="ERROR"):
 
 def _human_name() -> str:
     return (os.environ.get("HUMAN_NAME") or "").strip() or "Anonymous Human"
+
+
+def _serialize_board_tasks(tasks):
+    task_dicts = []
+    for task in tasks:
+        task_dict = task.to_dict()
+        task_dict["lock"] = {"locked": False}
+        task_dicts.append(task_dict)
+    return task_dicts
 
 
 def _run_orchestration_cli(args: list[str]) -> dict:
@@ -166,27 +174,13 @@ def _build_artifact_preview(resolved_path: str) -> dict:
 # ── Route handlers ───────────────────────────────────────────────
 
 def handle_board(parts, params):
-    """Bulk endpoint: /api/board/<ws_id> — returns workstream + tasks + locks in one call."""
+    """Bulk endpoint: /api/board/<ws_id> — returns workstream + tasks for fast initial paint."""
     if not parts:
         return _err("Missing workstream ID")
     ws_id = parts[0]
     ws = read_workstream(ws_id, base_dir=WORKSPACE_DIR)
     tasks = list_tasks(ws_id, base_dir=WORKSPACE_DIR)
-    task_dicts = []
-    for t in tasks:
-        td = t.to_dict()
-        if td.get("_error"):
-            td["lock"] = {"locked": False}
-            task_dicts.append(td)
-            continue
-        lock = lock_status(t.id, base_dir=WORKSPACE_DIR)
-        if lock and not lock.is_expired():
-            td["lock"] = lock.to_dict()
-            td["lock"]["locked"] = True
-        else:
-            td["lock"] = {"locked": False}
-        task_dicts.append(td)
-    return _ok({"workstream": ws.to_dict(), "tasks": task_dicts})
+    return _ok({"workstream": ws.to_dict(), "tasks": _serialize_board_tasks(tasks)})
 
 
 def handle_workstream(method, parts, params):
@@ -424,21 +418,16 @@ def handle_task(method, parts, params):
 def handle_lock(method, parts, params):
     m = method
     if m == "status" and parts:
-        lock = lock_status(parts[0], base_dir=WORKSPACE_DIR)
-        if lock is None or lock.is_expired():
-            return _ok({"locked": False})
-        d = lock.to_dict()
-        d["locked"] = True
-        return _ok(d)
+        return _ok(_run_orchestration_cli(["lock", "status", parts[0]]))
+    elif m == "list" and parts:
+        return _ok(_run_orchestration_cli(["lock", "list", parts[0]]))
     elif m == "acquire" and parts:
-        kwargs = {"task_id": parts[0], "agent_id": params["agent"], "base_dir": WORKSPACE_DIR}
+        cmd = ["lock", "acquire", parts[0], "--agent", params["agent"]]
         if "ttl" in params:
-            kwargs["ttl_seconds"] = int(params["ttl"])
-        lock = acquire_lock(**kwargs)
-        return _ok(lock.to_dict())
+            cmd.extend(["--ttl", str(params["ttl"])])
+        return _ok(_run_orchestration_cli(cmd))
     elif m == "release" and parts:
-        result = release_lock(parts[0], params["agent"], base_dir=WORKSPACE_DIR)
-        return _ok({"released": result})
+        return _ok(_run_orchestration_cli(["lock", "release", parts[0], "--agent", params["agent"]]))
     return _err(f"Unknown lock method: {m}")
 
 
@@ -499,7 +488,7 @@ def handle_agent(method, parts, params):
 
 
 def handle_poll(method, parts, params):
-    """Combined polling endpoint — returns workstreams, counts, scheduler, and optionally board in one call."""
+    """Combined polling endpoint — returns workstreams, counts, scheduler, and optionally board metadata."""
     wss = list_workstreams(base_dir=WORKSPACE_DIR)
     counts = {}
     for ws in wss:
@@ -524,21 +513,7 @@ def handle_poll(method, parts, params):
         try:
             ws = read_workstream(ws_id, base_dir=WORKSPACE_DIR)
             tasks = list_tasks(ws_id, base_dir=WORKSPACE_DIR)
-            task_dicts = []
-            for t in tasks:
-                td = t.to_dict()
-                if td.get("_error"):
-                    td["lock"] = {"locked": False}
-                    task_dicts.append(td)
-                    continue
-                lock = lock_status(t.id, base_dir=WORKSPACE_DIR)
-                if lock and not lock.is_expired():
-                    td["lock"] = lock.to_dict()
-                    td["lock"]["locked"] = True
-                else:
-                    td["lock"] = {"locked": False}
-                task_dicts.append(td)
-            result["board"] = {"workstream": ws.to_dict(), "tasks": task_dicts}
+            result["board"] = {"workstream": ws.to_dict(), "tasks": _serialize_board_tasks(tasks)}
         except FileNotFoundError:
             pass
     return _ok(result)

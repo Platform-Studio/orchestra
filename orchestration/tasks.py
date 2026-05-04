@@ -139,7 +139,12 @@ def _next_rank_for_state(workstream_id: str, status: str, base_dir: str = ".") -
 def _find_task_file(task_id: str, base_dir: str = "."):
     """Find a task file by ID across all workstreams. Returns (ws_id, file_path) or None."""
     for ws in list_workstreams(base_dir=base_dir):
-        ws_root = getattr(ws, "_workspace_root", os.path.abspath(base_dir))
+        # Resolve per-workstream root instead of relying on cached _workspace_root,
+        # which can be stale when a mounted ancestor shadows local descendants.
+        try:
+            ws_root = resolve_workstream_workspace(ws.id, base_dir=base_dir)
+        except FileNotFoundError:
+            ws_root = getattr(ws, "_workspace_root", os.path.abspath(base_dir))
         task_file = os.path.join(ws_root, "workstreams", ws.id, "tasks", f"{task_id}.yaml")
         if os.path.exists(task_file):
             return (ws.id, task_file)

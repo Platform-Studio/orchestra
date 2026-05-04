@@ -394,6 +394,11 @@ def cmd_lock_status(args):
         _output(data)
 
 
+def cmd_lock_list(args):
+    from .locks import list_workstream_locks
+    _output(list_workstream_locks(args.workstream_id, base_dir=args.base_dir))
+
+
 # ── Trigger commands ─────────────────────────────────────────────────
 
 def cmd_trigger_list(args):
@@ -508,7 +513,15 @@ def cmd_scheduler_status(args):
 
 
 def cmd_scheduler_tick(args):
-    from .scheduler import tick
+    from .scheduler import tick, status
+    scheduler_status = status(base_dir=args.base_dir)
+    if scheduler_status.get("running"):
+        pid = scheduler_status.get("pid")
+        pid_suffix = f" (pid={pid})" if pid else ""
+        raise RuntimeError(
+            "Scheduler tick is disabled while scheduler is running"
+            f"{pid_suffix}. Stop scheduler first or wait for the next interval."
+        )
     result = tick(base_dir=args.base_dir)
     _output(result)
 
@@ -804,6 +817,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = lock_sub.add_parser("status")
     p.add_argument("task_id")
     p.set_defaults(func=cmd_lock_status)
+
+    p = lock_sub.add_parser("list")
+    p.add_argument("workstream_id")
+    p.set_defaults(func=cmd_lock_list)
 
     # ── Trigger ──────────────────────────────────────────────────────
     trigger_parser = subparsers.add_parser("trigger")

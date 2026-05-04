@@ -209,6 +209,78 @@ def test_count_active_agent_runs_ignores_dead_pids_and_prunes_state(workspace):
     assert "dead-run" not in remaining
 
 
+def test_count_active_agent_runs_kills_expired_process_lock_runs(workspace, monkeypatch):
+    state_dir = os.path.join(workspace, ".orchestration")
+    os.makedirs(state_dir, exist_ok=True)
+    active_path = os.path.join(state_dir, "active_agents.yaml")
+    run_id = "expired-run"
+
+    with open(active_path, "w", encoding="utf-8") as f:
+        f.write(
+            "runs:\n"
+            f"- run_id: {run_id}\n"
+            "  agent: SEO Indexer\n"
+            "  agent_ref: seo_indexer\n"
+            "  workstream_id: ws-1\n"
+            "  task_ids: []\n"
+            "  pid: 424242\n"
+            "  started_at: '2026-01-01T00:00:00+00:00'\n"
+        )
+
+    _write_run_meta(workspace, run_id, {
+        "run_id": run_id,
+        "agent": "SEO Indexer",
+        "agent_ref": "seo_indexer",
+        "workstream_id": "ws-1",
+        "workstream_path": "WS",
+        "task_ids": [],
+        "tasks": [],
+        "prompt": "",
+        "system_prompt": "",
+        "command_line": "",
+        "log_path": None,
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "ended_at": None,
+        "status": "running",
+        "exit_code": None,
+        "retried_from_run_id": None,
+        "retried_to_run_ids": [],
+    })
+
+    process_locks_dir = os.path.join(state_dir, "process_locks")
+    os.makedirs(process_locks_dir, exist_ok=True)
+    with open(os.path.join(process_locks_dir, f"{run_id}.lock"), "w", encoding="utf-8") as f:
+        f.write(
+            "agent_id: SEO Indexer\n"
+            "acquired_at: '2026-01-01T00:00:00+00:00'\n"
+            "expires_at: '2026-01-01T00:10:00+00:00'\n"
+            "pid: 424242\n"
+        )
+
+    monkeypatch.setattr("orchestration.agents._is_pid_alive", lambda pid: True)
+    monkeypatch.setattr("orchestration.agents._find_run_pids", lambda _run_id: [424242])
+
+    killed = []
+
+    def _fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr("orchestration.agents.os.kill", _fake_kill)
+
+    count = count_active_agent_runs("ws-1", "seo_indexer", base_dir=workspace)
+    assert count == 0
+    assert killed == [(424242, 9)]
+
+    with open(active_path, "r", encoding="utf-8") as f:
+        remaining = f.read()
+    assert run_id not in remaining
+
+    meta = get_agent_run(run_id, base_dir=workspace)["run"]
+    assert meta["status"] == "timeout"
+    assert meta["exit_code"] == -9
+    assert not os.path.exists(os.path.join(process_locks_dir, f"{run_id}.lock"))
+
+
 def test_list_agent_runs_demotes_stale_running_status(workspace):
     run_id = "run-stale"
     meta = _base_run(run_id, "ws-1", ["t-1"])

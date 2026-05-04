@@ -15,6 +15,7 @@ from orchestration.scheduler import (
     _cron_matches_time,
     _cron_matches_between,
     _task_matches_filter,
+    _lock_invoke_unlock,
     tick,
     status,
 )
@@ -258,6 +259,26 @@ class TestScheduleTriggers:
 class TestWorkstreamPause:
     def test_pause_workstream(self, workspace, ws):
         from orchestration.workstreams import save_workstream
+
+    def test_lock_invoke_unlock_can_force_run_while_paused(self, workspace, ws):
+        from orchestration.workstreams import save_workstream
+
+        ws.paused = True
+        save_workstream(ws, workspace)
+
+        trigger = create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_command",
+            command="echo forced_scheduler_path",
+            base_dir=workspace,
+        )
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        result = _lock_invoke_unlock(trigger, [task.id], ws, workspace, ignore_paused=True)
+
+        assert result["status"] == "ok"
+        assert "forced_scheduler_path" in result["stdout"]
         ws.paused = True
         save_workstream(ws, workspace)
         reloaded = read_workstream(ws.id, base_dir=workspace)
