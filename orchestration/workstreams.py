@@ -386,10 +386,7 @@ def create_workstream(
 ) -> Workstream:
     target_base_dir = _abs_base_dir(base_dir)
     if parent_id:
-        parent = read_workstream(parent_id, base_dir=base_dir)
-        if parent.mounted_workspace_path:
-            parent_root = _workspace_root_for(parent, base_dir)
-            target_base_dir = _normalize_mounted_workspace_path(parent.mounted_workspace_path, parent_root)
+        target_base_dir = resolve_workstream_workspace(parent_id, base_dir=base_dir)
 
     ws_id = new_id()
     ws = Workstream(

@@ -5,8 +5,8 @@ Drive a real Google Chrome browser from the command line. Sessions persist betwe
 ## Setup
 
 ```bash
-pip install playwright
-playwright install chromium
+pip install --upgrade "playwright==1.59.0"
+python -m playwright install chromium
 ```
 
 If Google Chrome is installed on the machine, the tool will use it. Otherwise it falls back to Playwright's bundled Chromium.

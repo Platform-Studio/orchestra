@@ -347,7 +347,24 @@ class TestMountedWorkspaceDescendants:
 
         # Simulate stale local duplicate YAML for the grandchild under the base workspace.
         stale_local_path = os.path.join(workspace, "workstreams", f"{grandchild.id}.yaml")
+        with open(stale_local_path, "w") as f:
+            f.write("id: stale\nname: stale\n")
         assert os.path.exists(stale_local_path)
 
         resolved = resolve_workstream_workspace(grandchild.id, base_dir=workspace)
         assert resolved == str(mount_root.resolve())
+
+    def test_create_grandchild_under_mounted_ancestor_writes_only_to_mount(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
+        grandchild = create_workstream(name="Private Equity", parent_id=child.id, base_dir=workspace)
+
+        assert os.path.exists(mount_root / "workstreams" / f"{child.id}.yaml")
+        assert os.path.exists(mount_root / "workstreams" / f"{grandchild.id}.yaml")
+        assert not os.path.exists(os.path.join(workspace, "workstreams", f"{grandchild.id}.yaml"))

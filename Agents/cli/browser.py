@@ -26,8 +26,8 @@ The server auto-starts on first 'open' and persists until 'server-stop'.
 Each session is an isolated browser context with its own cookies/storage.
 
 Requirements:
-    pip install playwright
-    playwright install chromium
+    pip install --upgrade "playwright==1.59.0"
+    python -m playwright install chromium
 """
 
 import argparse
@@ -127,11 +127,6 @@ class BrowserManager:
         sid = uuid.uuid4().hex[:8]
         ctx_kwargs = dict(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
         )
         auth_path = params.get("auth")
         if auth_path and Path(auth_path).exists():
