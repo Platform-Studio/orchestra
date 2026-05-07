@@ -10,6 +10,7 @@ from orchestration.agents import (
     _get_model,
     _resolve_agent_model,
     _resolve_agent_effort,
+    _resolve_agent_runtime,
 )
 
 
@@ -70,6 +71,10 @@ class TestGetModel:
         monkeypatch.delenv("DEFAULT_LLM", raising=False)
         assert _get_model() == "sonnet"
 
+    def test_cline_default_uses_runtime_specific_fallback(self, monkeypatch):
+        monkeypatch.delenv("CLINE_DEFAULT_LLM", raising=False)
+        assert _get_model("cline") == "deepseek/deepseek-v4-flash"
+
     def test_strips_anthropic_prefix(self, monkeypatch):
         monkeypatch.setenv("DEFAULT_LLM", "anthropic/claude-opus-4-6")
         assert _get_model() == "claude-opus-4-6"
@@ -77,6 +82,10 @@ class TestGetModel:
     def test_passes_through_plain_model(self, monkeypatch):
         monkeypatch.setenv("DEFAULT_LLM", "claude-sonnet-4-20250514")
         assert _get_model() == "claude-sonnet-4-20250514"
+
+    def test_cline_default_can_be_overridden(self, monkeypatch):
+        monkeypatch.setenv("CLINE_DEFAULT_LLM", "google/gemini-2.5-flash")
+        assert _get_model("cline") == "google/gemini-2.5-flash"
 
 
 class TestModelAndEffortResolution:
@@ -90,6 +99,21 @@ class TestModelAndEffortResolution:
         monkeypatch.setenv("MEDIUM_LLM", "anthropic/claude-sonnet-4-6")
         agent_def = {"model_level": "medium"}
         assert _resolve_agent_model(agent_def) == "claude-sonnet-4-6"
+
+    def test_resolve_agent_model_from_cline_high_level_default(self, monkeypatch):
+        monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
+        agent_def = {"model_level": "high"}
+        assert _resolve_agent_model(agent_def, runtime="cline") == "deepseek/deepseek-v4-pro"
+
+    def test_resolve_agent_model_from_cline_level_default(self, monkeypatch):
+        monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
+        agent_def = {"model_level": "medium"}
+        assert _resolve_agent_model(agent_def, runtime="cline") == "deepseek/deepseek-v4-flash"
+
+    def test_resolve_agent_model_from_cline_level_override(self, monkeypatch):
+        monkeypatch.setenv("CLINE_HIGH_LLM", "qwen/qwen3-coder-next")
+        agent_def = {"model_level": "high"}
+        assert _resolve_agent_model(agent_def, runtime="cline") == "qwen/qwen3-coder-next"
 
     def test_resolve_agent_model_invalid_level_raises(self):
         with pytest.raises(ValueError, match="Invalid x-model-level"):
@@ -105,6 +129,17 @@ class TestModelAndEffortResolution:
     def test_resolve_agent_effort_invalid_raises(self):
         with pytest.raises(ValueError, match="Invalid x-effort"):
             _resolve_agent_effort({"effort": "turbo"})
+
+    def test_resolve_agent_runtime_defaults_claude_code(self, monkeypatch):
+        monkeypatch.delenv("ORCHESTRATION_AGENT_RUNTIME", raising=False)
+        assert _resolve_agent_runtime({}) == "claude-code"
+
+    def test_resolve_agent_runtime_uses_header(self):
+        assert _resolve_agent_runtime({"runtime": "cline"}) == "cline"
+
+    def test_resolve_agent_runtime_invalid_raises(self):
+        with pytest.raises(ValueError, match="Invalid x-runtime"):
+            _resolve_agent_runtime({"runtime": "cursor"})
 
 
 class TestAgentToolDeclaration:
@@ -164,6 +199,7 @@ class TestAgentToolDeclaration:
                 "x-model: anthropic/claude-opus-4-6\n"
                 "x-model-level: high\n"
                 "x-effort: medium\n"
+                "x-runtime: cline\n"
                 "---\n"
                 "Do model-aware stuff.\n"
             )
@@ -171,6 +207,7 @@ class TestAgentToolDeclaration:
         assert agent_def["model"] == "anthropic/claude-opus-4-6"
         assert agent_def["model_level"] == "high"
         assert agent_def["effort"] == "medium"
+        assert agent_def["runtime"] == "cline"
 
     def test_x_learning_defaults_true(self, workspace):
         agent_path = os.path.join(workspace, "Agents", "learning_default_agent.md")

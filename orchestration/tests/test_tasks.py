@@ -1,7 +1,7 @@
 """Tests for task operations."""
 
 import pytest
-from orchestration.workstreams import create_workstream
+from orchestration.workstreams import create_workstream, save_workstream
 from orchestration.tasks import (
     create_task,
     read_task,
@@ -22,7 +22,7 @@ from orchestration.tasks import (
     attach_to_task,
     detach_from_task,
 )
-from orchestration.artifacts import create_artifact
+from orchestration.artifacts import create_artifact, copy_artifact_tree
 from orchestration.agents import _read_task_attachments_for_prompt
 
 
@@ -351,6 +351,30 @@ class TestTaskAttachments:
         task = create_task(ws.id, title="T", base_dir=workspace)
         with pytest.raises(FileNotFoundError):
             attach_to_task(task.id, "Theses/missing.md", base_dir=workspace)
+
+    def test_attach_to_child_task_after_parent_artifact_copytree(self, workspace, tmp_path):
+        mount_root = tmp_path / "stashmap_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="StashMap", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+        child = create_workstream(name="Product Development", parent_id=parent.id, base_dir=workspace)
+
+        artifact_path = "Stage 2 Research/example/architecture.md"
+        create_artifact(artifact_path, "# Architecture", base_dir=workspace)
+        copy_artifact_tree(
+            "Stage 2 Research/example",
+            base_dir=workspace,
+            workstream_id=parent.id,
+            source_base_dir=workspace,
+        )
+
+        task = create_task(child.id, title="Setup skeleton", base_dir=workspace)
+        updated = attach_to_task(task.id, artifact_path, base_dir=workspace)
+
+        assert updated.attachments == [artifact_path]
+        assert (mount_root / "artifacts" / artifact_path).read_text() == "# Architecture"
 
     def test_detach_from_task(self, workspace, ws):
         task = create_task(ws.id, title="T", attachments=["Theses/a.md"], base_dir=workspace)

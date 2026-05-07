@@ -234,6 +234,30 @@ def _task_matches_filter(task, filter_def: dict) -> bool:
     return True
 
 
+def _ordered_state_triggers(ws) -> list:
+    """Return state-based triggers ordered by workflow progression.
+
+    Later workflow states are evaluated before earlier ones so shared-agent
+    concurrency favors advancing active work over continuously refining backlog.
+    """
+
+    state_positions = {
+        state: index for index, state in enumerate(getattr(ws, "task_states", {}).keys())
+    }
+    ordered = []
+    for original_index, trigger in enumerate(getattr(ws, "triggers", [])):
+        if trigger.on_state is None:
+            continue
+        position = state_positions.get(trigger.on_state)
+        if position is None:
+            sort_key = (1, original_index)
+        else:
+            sort_key = (0, -position, original_index)
+        ordered.append((sort_key, trigger))
+    ordered.sort(key=lambda item: item[0])
+    return [trigger for _, trigger in ordered]
+
+
 def _audit_trigger(trigger, result, ws, base_dir, task_ids=None):
     """Log a workspace audit entry for a scheduled trigger fire."""
     from .workspace_audit import log_event
@@ -556,9 +580,7 @@ def tick(base_dir: str = ".") -> dict:
 
         # 3. State-based triggers
         from .locks import lock_status
-        for trigger in ws.triggers:
-            if trigger.on_state is None:
-                continue
+        for trigger in _ordered_state_triggers(ws):
 
             # Find tasks in the trigger's target state that aren't already locked
             matching_ids = [

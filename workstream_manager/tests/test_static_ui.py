@@ -28,3 +28,11 @@ def test_render_markdown_escapes_raw_html_before_parsing() -> None:
 
     assert 'const source = esc(String(str));' in html
     assert 'return marked.parse(source, { breaks: true });' in html
+
+
+def test_api_normalizes_fetch_abort_errors() -> None:
+    html = _index_html()
+
+    assert "controller.abort(new DOMException(`Request timed out after ${timeoutMs}ms`, 'TimeoutError'))" in html
+    assert "message.includes('signal is aborted')" in html
+    assert "Request timed out after ${Math.round(timeoutMs / 1000)}s: /api/${path}" in html

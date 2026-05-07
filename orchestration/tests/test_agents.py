@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -13,6 +14,16 @@ from orchestration.artifacts import create_artifact, list_artifacts, read_artifa
 from orchestration.tasks import create_task, read_task, _save_task
 from orchestration.workstreams import create_workstream, save_workstream
 from orchestration.models import RetryConfig
+
+
+@pytest.fixture(autouse=True)
+def _clear_runtime_model_env(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATION_AGENT_RUNTIME", raising=False)
+    monkeypatch.delenv("ORCHESTRATION_CLINE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CLINE_DEFAULT_LLM", raising=False)
+    monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
+    monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
+    monkeypatch.delenv("CLINE_LOW_LLM", raising=False)
 
 
 def _write_run_meta(workspace: str, run_id: str, payload: dict) -> None:
@@ -414,6 +425,26 @@ def test_run_agent_passes_agent_body_as_system_prompt(mock_popen, mock_which, wo
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_prompt_uses_current_python_executable(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Prompt WS", base_dir=workspace)
+    task = create_task(ws.id, title="Read me", base_dir=workspace)
+
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    expected = f"{sys.executable} -m orchestration.cli"
+
+    prompt = cmd[cmd.index("-p") + 1]
+    assert f"Run: {expected} task read {task.id}" in prompt
+    assert "Run: python -m orchestration.cli" not in prompt
+
+    system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert f"Use `{expected} <command>`" in system_prompt
+    assert "Use `python -m orchestration.cli <command>`" not in system_prompt
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_does_not_inline_default_learning_prompt(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Learning WS", base_dir=workspace)
 
@@ -754,6 +785,178 @@ def test_run_agent_cli_parameters_include_effort_when_configured(mock_popen, moc
     latest = runs[0]
     command_line = latest.get("command_line", "")
     assert " --effort high" in command_line
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Agent\n"
+            "description: Runs with Cline\n"
+            "x-runtime: cline\n"
+            "x-model: anthropic/claude-opus-4-6\n"
+            "x-effort: high\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[0] == "/usr/bin/cline"
+    assert "-y" in cmd
+    assert "-a" in cmd
+    assert "-c" in cmd
+    assert cmd[cmd.index("-c") + 1] == workspace
+    assert "-m" in cmd
+    assert cmd[cmd.index("-m") + 1] == "claude-opus-4-6"
+    assert "--timeout" in cmd
+    assert "--thinking" in cmd
+    assert "--append-system-prompt" not in cmd
+    assert "--dangerously-skip-permissions" not in cmd
+    effective_prompt = cmd[-1]
+    assert "=== SYSTEM INSTRUCTIONS ===" in effective_prompt
+    assert "=== TASK ===" in effective_prompt
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["runtime"] == "cline"
+    assert latest["command_line"].startswith("/usr/bin/cline ")
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_cline_runtime_default_model(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.delenv("CLINE_DEFAULT_LLM", raising=False)
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_default_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Default Agent\n"
+            "description: Uses Cline defaults\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Default Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("-m") + 1] == "deepseek/deepseek-v4-flash"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_cline_high_level_default_model(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_high_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline High Agent\n"
+            "description: Uses Cline high level\n"
+            "x-runtime: cline\n"
+            "x-model-level: high\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline High Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("-m") + 1] == "deepseek/deepseek-v4-pro"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_cline_level_default_model(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.delenv("CLINE_LOW_LLM", raising=False)
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_low_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Low Agent\n"
+            "description: Uses Cline low level\n"
+            "x-runtime: cline\n"
+            "x-model-level: low\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Low Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("-m") + 1] == "deepseek/deepseek-v4-flash"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_passes_valid_cline_config_dir(mock_popen, mock_which, workspace, monkeypatch):
+    config_dir = os.path.join(workspace, ".cline-test")
+    os.makedirs(os.path.join(config_dir, "data"), exist_ok=True)
+    monkeypatch.setenv("ORCHESTRATION_CLINE_CONFIG_DIR", config_dir)
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_config_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Config Agent\n"
+            "description: Uses configured Cline auth\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Config Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--config" in cmd
+    assert cmd[cmd.index("--config") + 1] == config_dir
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_ignores_invalid_cline_config_dir(mock_popen, mock_which, workspace, monkeypatch):
+    invalid_dir = os.path.join(workspace, "bin")
+    os.makedirs(os.path.join(invalid_dir, "data"), exist_ok=True)
+    for name in ["node", "npm", "npx", "corepack"]:
+        with open(os.path.join(invalid_dir, name), "w", encoding="utf-8") as f:
+            f.write("")
+    monkeypatch.setenv("ORCHESTRATION_CLINE_CONFIG_DIR", invalid_dir)
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_invalid_config_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Invalid Config Agent\n"
+            "description: Ignores invalid configured Cline auth dir\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Invalid Config Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--config" not in cmd
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

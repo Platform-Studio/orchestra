@@ -649,14 +649,21 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _send_json(self, code: int, body: str):
         encoded = body.encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(encoded)
-        return  # don't close — let keep-alive reuse the connection
-        self.wfile.write(body.encode())
+        self._json_response = True
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Browsers can cancel timed-out polling requests while the server is
+            # writing the response. That is a client disconnect, not a server error.
+            return
+        finally:
+            if hasattr(self, "_json_response"):
+                delattr(self, "_json_response")
 
     def _handle_api(self, http_method: str):
         parsed = urlparse(self.path)

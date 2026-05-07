@@ -26,6 +26,17 @@ except ImportError:
 MAX_AUDIT_OUTPUT = 10_000
 DEFAULT_LEARNINGS_COMPACTION_THRESHOLD_BYTES = 20_000
 LEARNINGS_COMPACTION_THRESHOLD_ENV_VAR = "ORCHESTRATION_LEARNINGS_COMPACTION_THRESHOLD_BYTES"
+DEFAULT_AGENT_RUNTIME = "claude-code"
+AGENT_RUNTIME_ENV_VAR = "ORCHESTRATION_AGENT_RUNTIME"
+CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
+CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
+
+CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+CLINE_MODEL_LEVEL_DEFAULTS = {
+    "high": "deepseek/deepseek-v4-pro",
+    "medium": "deepseek/deepseek-v4-flash",
+    "low": "deepseek/deepseek-v4-flash",
+}
 
 _ACTIVE_AGENTS_LOCK = threading.Lock()
 
@@ -51,17 +62,23 @@ def _agent_learning_artifact_name(agent_def: dict) -> str:
     return f"{stem}_learnings.md"
 
 
+def _orchestration_cli_command() -> str:
+    """Return the Python command agents should use for the orchestration CLI."""
+    return f"{shlex.quote(sys.executable)} -m orchestration.cli"
+
+
 def _agent_learning_prompt_section(agent_def: dict, workstream_id: str) -> str:
     """Default learning behavior injected into agent task prompts."""
     learning_path = _agent_learning_artifact_name(agent_def)
+    cli = _orchestration_cli_command()
     return (
         "=== AGENT LEARNING (DEFAULT) ===\n"
         f"Before you start working, review the learnings artifact at '{learning_path}' in the orchestration system, if it exists.\n"
-        f"- Try: python -m orchestration.cli artifact read '{learning_path}' --workstream {workstream_id}\n"
+        f"- Try: {cli} artifact read '{learning_path}' --workstream {workstream_id}\n"
         "- If it does not exist, continue without failing.\n\n"
         f"When you are done working, append actionable learnings that will help you work faster and more efficiently to '{learning_path}' in the orchestration system (create it if it does not exist).\n"
-        f"- Read current file first: python -m orchestration.cli artifact read '{learning_path}' --workstream {workstream_id}\n"
-        f"- Save updated content: python -m orchestration.cli artifact create --path '{learning_path}' --content '<updated_markdown>' --workstream {workstream_id}\n"
+        f"- Read current file first: {cli} artifact read '{learning_path}' --workstream {workstream_id}\n"
+        f"- Save updated content: {cli} artifact create --path '{learning_path}' --content '<updated_markdown>' --workstream {workstream_id}\n"
         "- Keep entries concise and practical. Do not include secrets, tokens, passwords, or personal data."
     )
 
@@ -1007,28 +1024,41 @@ def _normalize_model_name(raw: str) -> str:
     return model
 
 
-def _get_model() -> str:
-    """Return the default model name for Claude Code CLI.
+def _get_model(runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
+    """Return the default model name for the selected runtime."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+    if runtime_norm == "cline":
+        return _normalize_model_name(os.getenv(CLINE_DEFAULT_MODEL_ENV_VAR, CLINE_DEFAULT_MODEL))
 
-    Uses DEFAULT_LLM and falls back to 'sonnet'.
-    """
     return _normalize_model_name(os.getenv("DEFAULT_LLM", "sonnet"))
 
 
-def _model_from_level(level: str) -> str:
-    """Map x-model-level to env-configured model aliases."""
+def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
+    """Map x-model-level to runtime-aware model aliases."""
     level_norm = str(level or "").strip().lower()
+    runtime_norm = _normalize_agent_runtime(runtime)
     env_key_by_level = {
         "high": "HIGH_LLM",
         "medium": "MEDIUM_LLM",
         "low": "LOW_LLM",
     }
+    if runtime_norm == "cline":
+        env_key_by_level = {
+            "high": "CLINE_HIGH_LLM",
+            "medium": "CLINE_MEDIUM_LLM",
+            "low": "CLINE_LOW_LLM",
+        }
+
     env_key = env_key_by_level.get(level_norm)
     if not env_key:
         raise ValueError(f"Invalid x-model-level '{level}'. Expected one of: high, medium, low")
 
     env_value = os.getenv(env_key)
     if not env_value:
+        if runtime_norm == "cline":
+            default_model = _normalize_model_name(CLINE_MODEL_LEVEL_DEFAULTS[level_norm])
+            if default_model:
+                return default_model
         raise ValueError(f"x-model-level '{level_norm}' requires env var {env_key} to be set")
 
     model = _normalize_model_name(env_value)
@@ -1037,17 +1067,17 @@ def _model_from_level(level: str) -> str:
     return model
 
 
-def _resolve_agent_model(agent_def: dict) -> str:
-    """Resolve model with precedence: x-model > x-model-level > DEFAULT_LLM."""
+def _resolve_agent_model(agent_def: dict, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
+    """Resolve model with precedence: x-model > x-model-level > runtime default."""
     explicit_model = _normalize_model_name(agent_def.get("model"))
     if explicit_model:
         return explicit_model
 
     level = agent_def.get("model_level")
     if str(level or "").strip():
-        return _model_from_level(level)
+        return _model_from_level(level, runtime=runtime)
 
-    return _get_model()
+    return _get_model(runtime=runtime)
 
 
 def _resolve_agent_effort(agent_def: dict):
@@ -1063,6 +1093,145 @@ def _resolve_agent_effort(agent_def: dict):
             f"Invalid x-effort '{raw}'. Expected one of: low, medium, high, xhigh, max"
         )
     return effort
+
+
+def _normalize_agent_runtime(raw: str) -> str:
+    """Normalize supported agent runtime identifiers."""
+    runtime = str(raw or "").strip().lower().replace("_", "-")
+    if not runtime:
+        return DEFAULT_AGENT_RUNTIME
+
+    aliases = {
+        "claude": "claude-code",
+        "claude-code": "claude-code",
+        "cline": "cline",
+    }
+    normalized = aliases.get(runtime)
+    if normalized:
+        return normalized
+
+    raise ValueError(
+        f"Invalid x-runtime '{raw}'. Expected one of: claude-code, claude, cline"
+    )
+
+
+def _resolve_agent_runtime(agent_def: dict) -> str:
+    """Resolve runtime with precedence: x-runtime > ORCHESTRATION_AGENT_RUNTIME > default."""
+    explicit_runtime = str(agent_def.get("runtime") or "").strip()
+    if explicit_runtime:
+        return _normalize_agent_runtime(explicit_runtime)
+
+    env_runtime = str(os.getenv(AGENT_RUNTIME_ENV_VAR, "") or "").strip()
+    if env_runtime:
+        return _normalize_agent_runtime(env_runtime)
+
+    return DEFAULT_AGENT_RUNTIME
+
+
+def _resolve_runtime_executable(runtime: str) -> str:
+    """Resolve the executable path for the selected agent runtime."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+    command = "cline" if runtime_norm == "cline" else "claude"
+    runtime_path = shutil.which(command)
+    if runtime_path:
+        return runtime_path
+
+    if runtime_norm == "cline":
+        raise RuntimeError(
+            "Cline CLI not found. Install it with `npm install -g cline` and authenticate via `cline auth`."
+        )
+
+    raise RuntimeError(
+        "Claude Code CLI not found. Install it from https://docs.anthropic.com/en/docs/claude-code"
+    )
+
+
+def _build_cline_prompt(task_prompt: str, system_prompt: str) -> str:
+    """Compose a single prompt for Cline, which lacks a separate system prompt flag."""
+    return (
+        "=== SYSTEM INSTRUCTIONS ===\n"
+        f"{system_prompt}\n\n"
+        "=== TASK ===\n"
+        f"{task_prompt}"
+    )
+
+
+def _resolve_cline_config_dir() -> str | None:
+    """Return a valid Cline config directory override, if one is configured.
+
+    Ignore non-Cline directories so existing auth in Cline's default config
+    location still works when the override env var is misconfigured.
+    """
+    raw = str(os.getenv(CLINE_CONFIG_DIR_ENV_VAR, "") or "").strip()
+    if not raw or not os.path.isdir(raw):
+        return None
+
+    # A common misconfiguration is pointing at the Node/npm bin directory where
+    # the `cline` executable lives. Cline may create a partial `data/` tree there,
+    # but it is still not the intended config root and will bypass the user's
+    # real authenticated state.
+    binary_markers = ("node", "npm", "npx", "corepack")
+    if os.path.basename(raw) == "bin" and sum(
+        1 for name in binary_markers if os.path.exists(os.path.join(raw, name))
+    ) >= 2:
+        return None
+
+    dir_markers = ("data", "settings", "state", "workspaces")
+    file_markers = ("globalState.json", "secrets.json")
+    if any(os.path.isdir(os.path.join(raw, name)) for name in dir_markers):
+        return raw
+    if any(os.path.isfile(os.path.join(raw, name)) for name in file_markers):
+        return raw
+    return None
+
+
+def _build_runtime_command(
+    runtime: str,
+    runtime_path: str,
+    task_prompt: str,
+    system_prompt: str,
+    model: str,
+    effort,
+    timeout_seconds: int,
+    task_cwd: str,
+):
+    """Build the subprocess command and effective prompt for the selected runtime."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+
+    if runtime_norm == "cline":
+        effective_prompt = _build_cline_prompt(task_prompt, system_prompt)
+        cmd = [
+            runtime_path,
+            "-y",
+            "-a",
+            "-c",
+            task_cwd,
+            "-m",
+            model,
+            "--timeout",
+            str(timeout_seconds),
+            "--verbose",
+        ]
+        cline_config_dir = _resolve_cline_config_dir()
+        if cline_config_dir:
+            cmd.extend(["--config", cline_config_dir])
+        if effort and effort not in {"low", "medium"}:
+            cmd.append("--thinking")
+        cmd.append(effective_prompt)
+        return cmd, effective_prompt
+
+    cmd = [
+        runtime_path,
+        "-p", task_prompt,
+        "--append-system-prompt", system_prompt,
+        "--model", model,
+        "--output-format", "text",
+        "--verbose",
+        "--dangerously-skip-permissions",
+    ]
+    if effort:
+        cmd.extend(["--effort", effort])
+    return cmd, task_prompt
 
 
 def _agents_dir(base_dir: str) -> str:
@@ -1155,6 +1324,7 @@ def _parse_agent_md(path: str) -> dict:
         "model": header.get("x-model"),
         "model_level": header.get("x-model-level"),
         "effort": header.get("x-effort"),
+        "runtime": header.get("x-runtime"),
         "file": path,
         "body": body,
     }
@@ -1209,6 +1379,7 @@ def discover_cli_tools(base_dir: str = ".") -> dict:
 def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
     """Build the system prompt from the agent body and available tools."""
     parts = [agent_def["body"]]
+    cli = _orchestration_cli_command()
 
     # List available CLI tools so the agent knows what it can run via bash
     requested = agent_def.get("tools", [])
@@ -1224,7 +1395,7 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
     # Always document the orchestration CLI
     parts.append(
         "\n\n## Orchestration CLI\n"
-        "Use `python -m orchestration.cli <command>` to manage tasks, workstreams, artifacts, etc.\n"
+        f"Use `{cli} <command>` to manage tasks, workstreams, artifacts, etc.\n"
         "Key commands:\n"
         "- `workstream find --query '<name>'` — find a workstream by name\n"
         "- `workstream read <workstream_id>` — read workstream details\n"
@@ -1307,7 +1478,7 @@ def _classify_run_outcome(returncode: int, timeout_expired: bool) -> str:
 
 
 def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None) -> dict:
-    """Run an agent via Claude Code CLI against 0-N tasks.
+    """Run an agent via the configured local runtime against 0-N tasks.
 
     Callers are responsible for locking/unlocking tasks. This function
     does not acquire or release locks.
@@ -1328,13 +1499,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     if task_ids is None:
         task_ids = []
 
-    # Ensure claude CLI is available
-    claude_path = shutil.which("claude")
-    if not claude_path:
-        raise RuntimeError("Claude Code CLI not found. Install it from https://docs.anthropic.com/en/docs/claude-code")
-
     agent_file = _resolve_agent_file(agent_name, base_dir)
     agent_def = _parse_agent_md(agent_file)
+    runtime = _resolve_agent_runtime(agent_def)
+    runtime_path = _resolve_runtime_executable(runtime)
 
     from .tasks import read_task, _save_task
     from .workstreams import read_workstream, resolve_workstream_workspace
@@ -1352,7 +1520,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         if ws.paused and not allow_paused_workstream:
             raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
-    # Preflight: block obviously invalid image attachments before invoking Claude.
+    # Preflight: block obviously invalid image attachments before invoking the runtime.
     invalid_images = []
     for t in tasks:
         issues = validate_task_image_attachments(t, base_dir=base_dir)
@@ -1396,6 +1564,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     try:
         # Build system prompt from agent definition + tool docs
         system_prompt = _build_system_prompt(agent_def, base_dir)
+        cli = _orchestration_cli_command()
 
         # Compute path context for prompt injection
         orchestration_root = os.path.abspath(base_dir)
@@ -1442,9 +1611,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"Task IDs file: {task_file_path}\n\n"
                     + _path_context +
                     f"Execution contract:\n"
-                    f"1. Run: python -m orchestration.cli task read {task.id}\n"
+                    f"1. Run: {cli} task read {task.id}\n"
                     f"2. Read the full task payload (description, comments, audit, attachments).\n"
-                    f"3. For each attachment/path referenced in the task payload, run: python -m orchestration.cli artifact read \"<artifact_path>\" --workstream {ws.id}\n"
+                    f"3. For each attachment/path referenced in the task payload, run: {cli} artifact read \"<artifact_path>\" --workstream {ws.id}\n"
                     f"4. Only begin implementation/triage after completing steps 1 to 3.\n"
                     f"5. Before finishing, post a task comment summarizing what you changed and why.\n"
                     f"6. If your role owns state movement, transition the task to the next valid state based on outcome.\n\n"
@@ -1473,10 +1642,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"Task IDs file: {task_file_path}\n\n"
                     + _path_context +
                     f"Execution contract:\n"
-                    f"1. Run: python -m orchestration.cli task list {ws.id} or read each task ID from the Task IDs file.\n"
-                    f"2. For each task ID, run: python -m orchestration.cli task read <task_id>\n"
+                    f"1. Run: {cli} task list {ws.id} or read each task ID from the Task IDs file.\n"
+                    f"2. For each task ID, run: {cli} task read <task_id>\n"
                     f"3. Read the full task payload for each task (description, comments, audit, attachments).\n"
-                    f"4. For each attachment/path referenced by any task payload, run: python -m orchestration.cli artifact read \"<artifact_path>\" --workstream {ws.id}\n"
+                    f"4. For each attachment/path referenced by any task payload, run: {cli} artifact read \"<artifact_path>\" --workstream {ws.id}\n"
                     f"5. Only begin implementation/triage after completing steps 1 to 4.\n"
                     f"6. Before finishing, post task comments summarizing what you changed and why.\n"
                     f"7. If your role owns state movement, transition each task to the next valid state based on outcome.\n\n"
@@ -1518,8 +1687,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             _save_task(t, base_dir)
 
         # Resolve model and effort for CLI and for run metadata
-        model = _resolve_agent_model(agent_def)
+        model = _resolve_agent_model(agent_def, runtime=runtime)
         effort = _resolve_agent_effort(agent_def)
+        effective_timeout = timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
 
         # Initialize run metadata
         _ensure_state_dirs(base_dir)
@@ -1538,12 +1708,16 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         if workstream_id:
             env["ORCHESTRATION_AGENT_WORKSTREAM_ID"] = str(workstream_id)
         abs_base = os.path.abspath(base_dir)
+        if runtime == "cline" and workspace_root != abs_base:
+            existing_pythonpath = str(env.get("PYTHONPATH", "") or "")
+            env["PYTHONPATH"] = abs_base if not existing_pythonpath else os.pathsep.join([abs_base, existing_pythonpath])
 
         task_titles = [{"id": t.id, "title": t.title} for t in tasks]
         run_meta = {
             "run_id": run_id,
             "agent": agent_def["name"],
             "agent_ref": agent_name,
+            "runtime": runtime,
             "model": model,
             "effort": effort,
             "workstream_id": workstream_id,
@@ -1562,21 +1736,21 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         }
         _write_run_meta(base_dir, run_id, run_meta)
 
-        # Build claude CLI command
-        cmd = [
-            claude_path,
-            "-p", task_prompt,
-            "--append-system-prompt", system_prompt,
-            "--model", model,
-            "--output-format", "text",
-            "--verbose",
-            "--dangerously-skip-permissions",
-        ]
-        if effort:
-            cmd.extend(["--effort", effort])
+        task_cwd = workspace_root if runtime == "cline" else abs_base
+        cmd, effective_prompt = _build_runtime_command(
+            runtime=runtime,
+            runtime_path=runtime_path,
+            task_prompt=task_prompt,
+            system_prompt=system_prompt,
+            model=model,
+            effort=effort,
+            timeout_seconds=effective_timeout,
+            task_cwd=task_cwd,
+        )
         command_line = shlex.join(cmd)
 
         run_meta["command_line"] = command_line
+        run_meta["effective_prompt"] = effective_prompt
         _write_run_meta(base_dir, run_id, run_meta)
 
         # Use a file-backed log so the Workspace Manager can live-tail active agent output.
@@ -1599,6 +1773,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "run_id": run_id,
                 "agent": agent_def["name"],
                 "agent_ref": agent_name,
+                "runtime": runtime,
                 "model": model,
                 "effort": effort,
                 "workstream_id": workstream_id,
@@ -1612,7 +1787,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             # Acquire a process-level lock so standalone (non-task) agents can be
             # auto-detected and cleaned up if they hang past their TTL.
             from .locks import acquire_process_lock
-            _process_lock_ttl = (timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT) + 300
+            _process_lock_ttl = effective_timeout + 300
             try:
                 acquire_process_lock(
                     run_id,
@@ -1630,8 +1805,6 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 update_lock_pid(tid, proc.pid, base_dir=base_dir)
 
             try:
-                # Resolve timeout: caller override > agent x-timeout > default
-                effective_timeout = timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
                 proc.communicate(timeout=effective_timeout)
             except subprocess.TimeoutExpired:
                 timeout_expired = True
