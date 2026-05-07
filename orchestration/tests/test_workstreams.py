@@ -15,6 +15,7 @@ from orchestration.workstreams import (
     unset_workstream_env_key,
     resolve_workstream_env_key,
     resolve_env_key,
+    list_workstream_hierarchy_env,
     list_effective_workstream_env,
 )
 from orchestration.tasks import create_task
@@ -242,6 +243,23 @@ class TestWorkstreamEnv:
         # Descendant mask still blocks mounted/root/system fallback.
         unset_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace)
         assert resolve_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace) is None
+
+    def test_mounted_root_env_is_included_for_selected_mounted_workstream(self, workspace, tmp_path):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        (mount_root / ".env").write_text("MOUNT_ONLY=from-mount\nSHARED=from-mount\n")
+
+        hierarchy = list_workstream_hierarchy_env(parent.id, base_dir=workspace)
+        assert any(layer["kind"] == "mounted-root" for layer in hierarchy)
+
+        effective = list_effective_workstream_env(parent.id, base_dir=workspace)
+        assert effective["MOUNT_ONLY"] == "from-mount"
+        assert resolve_workstream_env_key(parent.id, "SHARED", base_dir=workspace) == "from-mount"
 
 
 class TestMountedWorkspaceDescendants:

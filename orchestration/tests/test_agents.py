@@ -401,6 +401,22 @@ def test_run_agent_injects_workstream_context(mock_popen, mock_which, workspace)
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_workstream_only_prompt_includes_task_locking_contract(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    assert "Available states for tasks on this workstream:" in prompt
+    assert "You may inspect tasks in this workstream and decide which ones to work on." in prompt
+    assert "python -m orchestration.cli lock acquire <task_id> --agent \"<agent_name>\"" in prompt
+    assert "python -m orchestration.cli lock release <task_id> --agent \"<agent_name>\"" in prompt
+    assert "Do not modify a task unless you successfully acquired its lock first." in prompt
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_passes_agent_body_as_system_prompt(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Standalone WS", base_dir=workspace)
 
@@ -582,6 +598,20 @@ def test_run_agent_releases_matching_lock(mock_popen, mock_which, workspace):
     run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
 
     assert lock_status(task.id, base_dir=workspace) is None
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_task_prompt_does_not_include_workstream_discovery_locking_contract(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Task WS", base_dir=workspace)
+    task = create_task(ws.id, title="Task", base_dir=workspace)
+
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    assert "You may inspect tasks in this workstream and decide which ones to work on." not in prompt
+    assert "Do not modify a task unless you successfully acquired its lock first." not in prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

@@ -16,7 +16,7 @@ MAILGUN_API_KEY=key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # Optional defaults (used when --domain / --from are not passed)
 MAILGUN_DOMAIN=mg.hirescout.us
 MAILGUN_FROM_EMAIL=no-reply@mg.hirescout.us
-MAILGUN_FROM_NAME=My App
+MAILGUN_FROM_NAME=Agent
 ```
 
 ---

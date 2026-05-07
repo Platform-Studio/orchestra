@@ -1,12 +1,13 @@
 """Tests for task operations."""
 
 import pytest
-from orchestration.workstreams import create_workstream
+from orchestration.workstreams import create_workstream, list_workstreams, save_workstream
 from orchestration.tasks import (
     create_task,
     read_task,
     update_task,
     list_tasks,
+    list_tasks_for_workstream,
     move_task_up,
     move_task_down,
     move_task_before,
@@ -167,6 +168,27 @@ class TestListTasks:
         tasks = list_tasks(ws.id, tags=["urgent"], base_dir=workspace)
         assert len(tasks) == 1
         assert tasks[0].title == "T1"
+
+    def test_list_tasks_for_workstream_uses_cached_workspace_root_for_mounted_child(self, workspace, tmp_path, monkeypatch):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
+        task = create_task(child.id, title="Mounted task", base_dir=workspace)
+
+        loaded_child = next(ws for ws in list_workstreams(base_dir=workspace) if ws.id == child.id)
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("should use cached workspace root")
+
+        monkeypatch.setattr("orchestration.tasks.resolve_workstream_workspace", _boom)
+
+        tasks = list_tasks_for_workstream(loaded_child, base_dir=workspace)
+        assert [t.id for t in tasks] == [task.id]
 
 
 class TestTaskOrdering:

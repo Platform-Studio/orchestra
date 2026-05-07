@@ -12,6 +12,7 @@ from orchestration.locks import (
     release_lock,
     lock_status,
     list_workstream_locks,
+    list_workstream_locks_for_workstream,
     acquire_process_lock,
     release_process_lock,
     process_lock_status,
@@ -19,6 +20,7 @@ from orchestration.locks import (
     _process_lock_path,
     _process_locks_dir,
 )
+from orchestration.workstreams import list_workstreams, save_workstream
 
 
 @pytest.fixture
@@ -161,6 +163,29 @@ class TestLockStatus:
         assert set(locks.keys()) == {task_a.id}
         assert locks[task_a.id]["locked"] is True
         assert locks[task_a.id]["agent_id"] == "agent-1"
+
+    def test_list_workstream_locks_for_workstream_uses_cached_workspace_root_for_mounted_child(self, workspace, tmp_path, monkeypatch):
+        mount_root = tmp_path / "career_pivot_repo"
+        mount_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.mounted_workspace_path = str(mount_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
+        task = create_task(child.id, title="Task A", base_dir=workspace)
+        acquire_lock(task.id, agent_id="agent-1", base_dir=workspace)
+
+        loaded_child = next(ws for ws in list_workstreams(base_dir=workspace) if ws.id == child.id)
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("should use cached workspace root")
+
+        monkeypatch.setattr("orchestration.locks._tasks_dir", _boom)
+
+        locks = list_workstream_locks_for_workstream(loaded_child, base_dir=workspace)
+        assert set(locks.keys()) == {task.id}
+        assert locks[task.id]["agent_id"] == "agent-1"
 
 
 class TestProcessLocks:

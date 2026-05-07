@@ -198,7 +198,8 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
 
     Layers include:
     - workstream-local `.env` files
-    - mounted workspace root `.env` files for mounted ancestors (descendants-only)
+        - mounted workspace root `.env` files for mounted nodes in the lineage,
+            including the selected mounted workstream itself
     """
     by_id = {ws.id: ws for ws in list_workstreams(base_dir=base_dir)}
     if ws_id not in by_id:
@@ -221,8 +222,7 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
                 "env": _read_env_file(local_env_path),
             })
 
-        # Descendants-only: mounted root env affects descendants, not the node itself.
-        if ws.mounted_workspace_path and ws_level_id != ws_id:
+        if ws.mounted_workspace_path:
             current_ws_root = _workspace_root_for(ws, base_dir)
             mounted_root = _normalize_mounted_workspace_path(ws.mounted_workspace_path, current_ws_root)
             mounted_env_path = os.path.join(mounted_root, ".env")

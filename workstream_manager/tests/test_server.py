@@ -17,6 +17,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from orchestration.tasks import CorruptTaskError
+
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -229,6 +231,15 @@ class TestRouting:
 # ── Error mapping tests ─────────────────────────────────────────
 
 class TestErrorMapping:
+    def test_corrupt_task_returns_422(self, api):
+        api.mocks["read_task"].side_effect = CorruptTaskError(
+            "Task file task-bad.yaml contains invalid YAML: bad indentation"
+        )
+        code, body = api.get("/api/task/read/task-bad")
+        assert code == 422
+        assert body["code"] == "CORRUPT_TASK"
+        assert "invalid YAML" in body["message"]
+
     def test_file_not_found_returns_404(self, api):
         api.mocks["read_workstream"].side_effect = FileNotFoundError("not found")
         code, body = api.get("/api/workstream/read/ws-missing")
@@ -312,6 +323,7 @@ class TestArtifactPreview:
         code, body = api.get("/api/task/read/task-x")
         assert code == 500
         assert body["code"] == "ERROR"
+        assert body["message"] == "boom"
 
     def test_invalid_json_body_returns_400(self, api):
         data = b"not-json"

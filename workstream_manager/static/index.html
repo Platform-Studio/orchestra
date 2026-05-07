@@ -1183,6 +1183,12 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 
 <script>
 // ── API helper ──────────────────────────────────────────────────
+function makeApiError(message, extras = {}) {
+  const err = new Error(message || 'API error');
+  Object.assign(err, extras);
+  return err;
+}
+
 async function api(path, opts = {}) {
   const method = opts.method || 'GET';
   const fetchOpts = { method };
@@ -1197,9 +1203,40 @@ async function api(path, opts = {}) {
   fetchOpts.signal = controller.signal;
   try {
     const resp = await fetch('/api/' + path, fetchOpts);
-    const data = await resp.json();
-    if (data.status !== 'ok') throw new Error(data.message || 'API error');
+    let data;
+    try {
+      data = await resp.json();
+    } catch {
+      throw makeApiError(`Server returned an invalid response (${resp.status}).`, {
+        code: 'INVALID_RESPONSE',
+        httpStatus: resp.status,
+        path,
+      });
+    }
+    if (data.status !== 'ok') {
+      throw makeApiError(data.message || 'API error', {
+        code: data.code || 'ERROR',
+        httpStatus: resp.status,
+        path,
+      });
+    }
     return data.data;
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw makeApiError(`Request timed out after ${timeoutMs}ms.`, {
+        code: 'TIMEOUT',
+        httpStatus: 0,
+        path,
+      });
+    }
+    if (err instanceof TypeError) {
+      throw makeApiError('Unable to reach Workstream Manager. Reload the page and try again.', {
+        code: 'NETWORK',
+        httpStatus: 0,
+        path,
+      });
+    }
+    throw err;
   } finally { clearTimeout(timer); }
 }
 
@@ -2018,8 +2055,16 @@ async function showTaskDetail(taskId) {
       api('task/read/' + taskId),
       api('lock/status/' + taskId).catch(() => ({ locked: false })),
     ]);
-  } catch {
-    alert('Cannot open this task — its YAML file is corrupt.\n\nTask ID: ' + taskId + '\n\nFix or delete the file at:\nworkstreams/*/tasks/' + taskId + '.yaml');
+  } catch (err) {
+    if (err && err.code === 'CORRUPT_TASK') {
+      const reason = err.message ? '\n\nReason: ' + err.message : '';
+      alert('Cannot open this task because its task file is invalid.\n\nTask ID: ' + taskId + reason + '\n\nFix the file at:\nworkstreams/*/tasks/' + taskId + '.yaml');
+      return;
+    }
+
+    const reason = err && err.message ? err.message : 'Unknown error';
+    const code = err && err.code ? '\nCode: ' + err.code : '';
+    alert('Cannot open this task.\n\nTask ID: ' + taskId + '\n\nReason: ' + reason + code);
     return;
   }
 

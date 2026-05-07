@@ -5,7 +5,7 @@ import yaml
 from datetime import datetime, timezone, timedelta
 
 from .models import Lock, now_iso
-from .tasks import _find_task_file, _tasks_dir
+from .tasks import _find_task_file, _tasks_dir, _tasks_dir_for_workstream
 from .workstreams import list_workstreams
 
 DEFAULT_TTL_SECONDS = 1800  # 30 minutes
@@ -103,9 +103,7 @@ def lock_status(task_id: str, base_dir: str = "."):
     return lock
 
 
-def list_workstream_locks(workstream_id: str, task_ids: list[str] = None, base_dir: str = ".") -> dict:
-    """List active non-expired locks for a workstream keyed by task ID."""
-    tasks_dir = _tasks_dir(base_dir, workstream_id)
+def _list_locks_from_tasks_dir(tasks_dir: str, task_ids: list[str] = None) -> dict:
     if not os.path.isdir(tasks_dir):
         return {}
 
@@ -137,6 +135,18 @@ def list_workstream_locks(workstream_id: str, task_ids: list[str] = None, base_d
             continue
 
     return locks
+
+
+def list_workstream_locks(workstream_id: str, task_ids: list[str] = None, base_dir: str = ".") -> dict:
+    """List active non-expired locks for a workstream keyed by task ID."""
+    return _list_locks_from_tasks_dir(_tasks_dir(base_dir, workstream_id), task_ids=task_ids)
+
+
+def list_workstream_locks_for_workstream(workstream, task_ids: list[str] = None, base_dir: str = ".") -> dict:
+    return _list_locks_from_tasks_dir(
+        _tasks_dir_for_workstream(workstream, base_dir=base_dir),
+        task_ids=task_ids,
+    )
 
 
 def active_lock_count(workstream_id: str, agent_id: str = None, base_dir: str = ".") -> int:

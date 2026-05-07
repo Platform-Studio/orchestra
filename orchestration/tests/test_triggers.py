@@ -346,6 +346,40 @@ class TestStateTriggerViaTick:
         assert len(result["state_triggers_fired"]) == 1
         assert result["state_triggers_fired"][0]["task_ids"] == [t3.id]
 
+    def test_tick_scans_workstream_locks_once_for_multiple_state_triggers(self, workspace, ws, monkeypatch):
+        create_trigger(
+            ws.id, on_state="To Do", action="run_command",
+            command="echo first", base_dir=workspace,
+        )
+        create_trigger(
+            ws.id, on_state="To Do", action="run_command",
+            command="echo second", base_dir=workspace,
+        )
+
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+
+        calls = []
+        lock_scan_count = {"count": 0}
+
+        def _fake_lock_list(*_args, **_kwargs):
+            lock_scan_count["count"] += 1
+            return {}
+
+        def _fake_lock_invoke_unlock(_trigger, task_ids, *_args, **_kwargs):
+            calls.append(list(task_ids))
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.locks.list_workstream_locks_for_workstream", _fake_lock_list)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+        result = tick(workspace)
+
+        assert lock_scan_count["count"] == 1
+        assert calls == [[t1.id], [t2.id]]
+        assert len(result["state_triggers_fired"]) == 2
+
 
 class TestAgentConcurrency:
     def test_state_trigger_skipped_when_agent_limit_reached(self, workspace, ws, monkeypatch):

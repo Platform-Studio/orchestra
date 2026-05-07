@@ -28,3 +28,20 @@ def test_render_markdown_escapes_raw_html_before_parsing() -> None:
 
     assert 'const source = esc(String(str));' in html
     assert 'return marked.parse(source, { breaks: true });' in html
+
+
+def test_task_open_error_handling_distinguishes_corrupt_files() -> None:
+    html = _index_html()
+
+    assert "err && err.code === 'CORRUPT_TASK'" in html
+    assert 'Cannot open this task because its task file is invalid.' in html
+    assert 'Cannot open this task.\\n\\nTask ID: ' in html
+
+
+def test_api_helper_preserves_error_codes_for_ui_messages() -> None:
+    html = _index_html()
+
+    assert 'throw makeApiError(data.message || \'API error\'' in html
+    assert "code: data.code || 'ERROR'" in html
+    assert "code: 'TIMEOUT'" in html
+    assert "code: 'NETWORK'" in html

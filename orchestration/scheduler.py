@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from .models import now_iso
 from .workstreams import list_workstreams
-from .tasks import list_tasks, read_task, _save_task
+from .tasks import list_tasks, list_tasks_for_workstream, read_task, _save_task
 from .triggers import execute_trigger
 
 
@@ -232,6 +232,27 @@ def _task_matches_filter(task, filter_def: dict) -> bool:
                 break
 
     return True
+
+
+def _group_tasks_by_status(tasks: list) -> dict[str, list]:
+    """Group tasks by status while preserving their existing order."""
+    grouped = {}
+    for task in tasks:
+        grouped.setdefault(task.status, []).append(task)
+    return grouped
+
+
+def _matching_task_ids(tasks: list, filter_def: dict, tasks_by_status: dict[str, list] | None = None) -> list[str]:
+    """Return matching task IDs, using status prefiltering when available."""
+    if not filter_def:
+        return [task.id for task in tasks]
+
+    candidates = tasks
+    state_filter = filter_def.get("state") or filter_def.get("status")
+    if state_filter is not None and tasks_by_status is not None:
+        candidates = tasks_by_status.get(state_filter, [])
+
+    return [task.id for task in candidates if _task_matches_filter(task, filter_def)]
 
 
 def _audit_trigger(trigger, result, ws, base_dir, task_ids=None):
@@ -474,7 +495,8 @@ def tick(base_dir: str = ".") -> dict:
         if ws.paused:
             continue
 
-        tasks = list_tasks(ws.id, base_dir=base_dir)
+        tasks = list_tasks_for_workstream(ws, base_dir=base_dir)
+        tasks_by_status = _group_tasks_by_status(tasks)
 
         # 1. Task-level schedules
         for task in tasks:
@@ -533,10 +555,7 @@ def tick(base_dir: str = ".") -> dict:
                 })
             else:
                 # Find all tasks matching the filter, lock them all, invoke once
-                matching_ids = [
-                    t.id for t in tasks
-                    if _task_matches_filter(t, trigger.filter)
-                ]
+                matching_ids = _matching_task_ids(tasks, trigger.filter, tasks_by_status)
                 if not matching_ids:
                     continue
                 result = _lock_invoke_unlock(
@@ -555,15 +574,25 @@ def tick(base_dir: str = ".") -> dict:
                 })
 
         # 3. State-based triggers
-        from .locks import lock_status
+        from .locks import list_workstream_locks_for_workstream
+        active_locks = set()
+        if any(trigger.on_state is not None for trigger in ws.triggers):
+            active_locks = set(
+                list_workstream_locks_for_workstream(
+                    ws,
+                    task_ids=[task.id for task in tasks],
+                    base_dir=base_dir,
+                ).keys()
+            )
+
         for trigger in ws.triggers:
             if trigger.on_state is None:
                 continue
 
             # Find tasks in the trigger's target state that aren't already locked
             matching_ids = [
-                t.id for t in tasks
-                if t.status == trigger.on_state and lock_status(t.id, base_dir) is None
+                task.id for task in tasks_by_status.get(trigger.on_state, [])
+                if task.id not in active_locks
             ]
             if not matching_ids:
                 continue
@@ -596,8 +625,11 @@ def tick(base_dir: str = ".") -> dict:
                 # Only audit non-dispatched outcomes (e.g. skipped due to lock contention)
                 _audit_trigger(trigger, result, ws, base_dir, task_ids=[task_id])
             elif trigger.action == "run_agent" and trigger.agent:
+                active_locks.add(task_id)
                 slot_key = (ws.id, str(trigger.agent or "").strip().lower())
                 pending_agent_slots[slot_key] = pending_agent_slots.get(slot_key, 0) + 1
+            elif result.get("status") == "dispatched":
+                active_locks.add(task_id)
             results["state_triggers_fired"].append({
                 "trigger_id": trigger.id,
                 "task_ids": [task_id],

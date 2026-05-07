@@ -40,7 +40,7 @@ from orchestration.workstreams import (
     list_effective_workstream_env, resolve_workstream_workspace, set_workstream_context,
 )
 from orchestration.tasks import (
-    create_task, read_task, update_task, list_tasks,
+    CorruptTaskError, create_task, read_task, update_task, list_tasks,
     comment_task, delete_task_comment, edit_task_comment, archive_task, get_audit, clear_schedule,
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
@@ -710,6 +710,8 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 status_code, resp = handler(method, positional, params)
             self._send_json(status_code, resp)
+        except CorruptTaskError as e:
+            self._send_json(422, json.dumps({"status": "error", "message": str(e), "code": "CORRUPT_TASK"}))
         except FileNotFoundError as e:
             self._send_json(404, json.dumps({"status": "error", "message": str(e), "code": "NOT_FOUND"}))
         except ValueError as e:

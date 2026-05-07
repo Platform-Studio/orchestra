@@ -1494,8 +1494,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             states = list(ws.task_states.keys())
             task_prompt = (
                 f"You are running standalone in workstream '{ws.name}' (ID: {ws.id}).\n"
-                f"Available states: {states}\n\n"
+                f"Available states for tasks on this workstream: {states}\n\n"
                 + _path_context +
+                "Execution contract:\n"
+                "1. You may inspect tasks in this workstream and decide which ones to work on.\n"
+                "2. Before you begin work on any specific task, acquire a lock through the orchestration system: python -m orchestration.cli lock acquire <task_id> --agent \"<agent_name>\"\n"
+                "3. If a task is already locked or lock acquisition fails, skip that task.\n"
+                "4. While you hold a task lock, complete the needed work, then release it when finished: python -m orchestration.cli lock release <task_id> --agent \"<agent_name>\"\n"
+                "5. Do not modify a task unless you successfully acquired its lock first.\n\n"
                 f"Follow your instructions now."
             )
             context_section = _workstream_context_prompt_section(ws)

@@ -15,6 +15,10 @@ RANK_GAP = Decimal("1024")
 COMMENT_DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})\]\s*")
 
 
+class CorruptTaskError(Exception):
+    """Raised when a task file exists but cannot be parsed into a valid Task."""
+
+
 def _normalize_comment_message(message: str) -> str:
     """Normalize comment body by stripping legacy date prefix markers."""
     text = str(message or "").strip()
@@ -61,6 +65,13 @@ def _normalize_attachment_list(paths: list) -> list:
 def _tasks_dir(base_dir: str, ws_id: str) -> str:
     ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
     return os.path.join(ws_root, "workstreams", ws_id, "tasks")
+
+
+def _tasks_dir_for_workstream(ws, base_dir: str = ".") -> str:
+    ws_root = getattr(ws, "_workspace_root", None)
+    if not ws_root:
+        ws_root = resolve_workstream_workspace(ws.id, base_dir=base_dir)
+    return os.path.join(ws_root, "workstreams", ws.id, "tasks")
 
 
 def _task_path(base_dir: str, ws_id: str, task_id: str) -> str:
@@ -204,9 +215,90 @@ def read_task(task_id: str, base_dir: str = ".") -> Task:
     if result is None:
         raise FileNotFoundError(f"Task {task_id} not found")
     _, file_path = result
-    with open(file_path) as f:
-        data = yaml.safe_load(f)
-    return Task.from_dict(data)
+    try:
+        with open(file_path) as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        raise CorruptTaskError(f"Task file {task_id}.yaml contains invalid YAML: {e}") from e
+
+    if not isinstance(data, dict):
+        raise CorruptTaskError(
+            f"Task file {task_id}.yaml must contain a YAML mapping, got {type(data).__name__}"
+        )
+
+    try:
+        return Task.from_dict(data)
+    except Exception as e:
+        raise CorruptTaskError(f"Task file {task_id}.yaml is structurally invalid: {e}") from e
+
+
+def _list_tasks_from_dir(
+    tasks_dir: str,
+    workstream_id: str,
+    status: str = None,
+    tags: list = None,
+) -> list:
+    if not os.path.exists(tasks_dir):
+        return []
+
+    result = []
+    for fname in sorted(os.listdir(tasks_dir)):
+        if not fname.endswith(".yaml"):
+            continue
+        path = os.path.join(tasks_dir, fname)
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except Exception as e:
+            # Corrupt YAML — return a placeholder so the UI can show it
+            task_id = fname.replace(".yaml", "")
+            broken = Task(
+                id=task_id,
+                workstream_id=workstream_id,
+                title=f"[CORRUPT] {fname}",
+                status="_error",
+                tags=["_error"],
+            )
+            broken._parse_error = str(e)
+            result.append(broken)
+            continue
+        if data:
+            try:
+                task = Task.from_dict(data)
+            except Exception as e:
+                task_id = data.get("id", fname.replace(".yaml", ""))
+                broken = Task(
+                    id=task_id,
+                    workstream_id=workstream_id,
+                    title=f"[CORRUPT] {data.get('title', fname)}",
+                    status="_error",
+                    tags=["_error"],
+                )
+                broken._parse_error = str(e)
+                result.append(broken)
+                continue
+            if status and task.status != status:
+                continue
+            if tags and not all(t in task.tags for t in tags):
+                continue
+            result.append(task)
+
+    result.sort(key=_task_sort_key)
+    return result
+
+
+def list_tasks_for_workstream(
+    workstream,
+    status: str = None,
+    tags: list = None,
+    base_dir: str = ".",
+) -> list:
+    return _list_tasks_from_dir(
+        _tasks_dir_for_workstream(workstream, base_dir=base_dir),
+        workstream.id,
+        status=status,
+        tags=tags,
+    )
 
 
 def update_task(
@@ -267,54 +359,12 @@ def list_tasks(
     tags: list = None,
     base_dir: str = ".",
 ) -> list:
-    tasks_dir = _tasks_dir(base_dir, workstream_id)
-    if not os.path.exists(tasks_dir):
-        return []
-    result = []
-    for fname in sorted(os.listdir(tasks_dir)):
-        if not fname.endswith(".yaml"):
-            continue
-        path = os.path.join(tasks_dir, fname)
-        try:
-            with open(path) as f:
-                data = yaml.safe_load(f)
-        except Exception as e:
-            # Corrupt YAML — return a placeholder so the UI can show it
-            task_id = fname.replace(".yaml", "")
-            broken = Task(
-                id=task_id,
-                workstream_id=workstream_id,
-                title=f"[CORRUPT] {fname}",
-                status="_error",
-                tags=["_error"],
-            )
-            broken._parse_error = str(e)
-            result.append(broken)
-            continue
-        if data:
-            try:
-                task = Task.from_dict(data)
-            except Exception as e:
-                task_id = data.get("id", fname.replace(".yaml", ""))
-                broken = Task(
-                    id=task_id,
-                    workstream_id=workstream_id,
-                    title=f"[CORRUPT] {data.get('title', fname)}",
-                    status="_error",
-                    tags=["_error"],
-                )
-                broken._parse_error = str(e)
-                result.append(broken)
-                continue
-            if status and task.status != status:
-                continue
-            if tags and not all(t in task.tags for t in tags):
-                continue
-            result.append(task)
-
-    # Ordered by rank when present, with legacy fallback to audit timestamp.
-    result.sort(key=_task_sort_key)
-    return result
+    return _list_tasks_from_dir(
+        _tasks_dir(base_dir, workstream_id),
+        workstream_id,
+        status=status,
+        tags=tags,
+    )
 
 
 def move_task_up(task_id: str, base_dir: str = ".") -> Task:

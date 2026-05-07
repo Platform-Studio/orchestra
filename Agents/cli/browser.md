@@ -19,6 +19,7 @@ The tool runs a lightweight background HTTP server that holds Playwright browser
 - Server info stored at `/tmp/browser_server.json`
 - Server logs at `/tmp/browser_server.log`
 - Each session is an isolated browser context (separate cookies, storage)
+- Reusable auth state lives on disk under `playwright/.auth/` and can be mapped to site keys like `linkedin`
 
 ## Commands
 
@@ -36,6 +37,39 @@ python3 Agents/cli/browser.py open
 
 # Open in headless mode (no visible window):
 python3 Agents/cli/browser.py open --headless https://www.example.com
+
+# Open with saved auth for a known site key:
+python3 Agents/cli/browser.py open --site linkedin https://www.linkedin.com/feed/
+```
+
+### Reuse saved auth
+
+Use the auth registry when multiple agents need isolated sessions against the same site. Sessions stay separate; only the stored cookies/local storage are reused.
+
+```bash
+# List saved auth states:
+python3 Agents/cli/browser.py auth-list
+
+# Check whether auth exists for a site:
+python3 Agents/cli/browser.py auth-get linkedin
+
+# After a human-assisted login, save the current session for reuse:
+python3 Agents/cli/browser.py auth-save a1b2c3d4 --site linkedin --account-label primary
+
+# Delete stale auth:
+python3 Agents/cli/browser.py auth-delete linkedin
+```
+
+Typical flow:
+
+```bash
+# 1. Try to reuse auth first
+python3 Agents/cli/browser.py open --site linkedin https://www.linkedin.com/feed/
+
+# 2. If auth is missing or stale, log in manually/human-assisted in that session
+
+# 3. Save the refreshed auth back into the registry
+python3 Agents/cli/browser.py auth-save a1b2c3d4 --site linkedin --account-label primary
 ```
 
 ### Navigate

@@ -20,6 +20,10 @@ Usage:
     browser.py eval SESSION EXPRESSION              Run JavaScript
     browser.py close SESSION                        Close a session
     browser.py sessions                             List active sessions
+    browser.py auth-list                            List saved auth states
+    browser.py auth-get SITE                        Get saved auth state for a site
+    browser.py auth-save SESSION --site SITE        Save session auth state under a site key
+    browser.py auth-delete SITE                     Delete saved auth state for a site
     browser.py server-stop                          Stop background server
 
 The server auto-starts on first 'open' and persists until 'server-stop'.
@@ -39,16 +43,151 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+import re
 
 _TMPDIR = Path(tempfile.gettempdir())
 SERVER_INFO = _TMPDIR / "browser_server.json"
 SERVER_LOG = _TMPDIR / "browser_server.log"
 DEFAULT_TIMEOUT = 30000  # ms
+AUTH_DIR = Path("playwright/.auth")
+AUTH_INDEX = AUTH_DIR / "index.json"
+
+
+def _normalize_site_key(site: str) -> str:
+    text = str(site or "").strip().lower()
+    if not text:
+        raise ValueError("site is required")
+
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    host = (parsed.netloc or parsed.path).strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+
+    candidate = host or text
+    parts = [part for part in candidate.split(".") if part]
+    if len(parts) == 2 and len(parts[1]) <= 4:
+        candidate = parts[0]
+
+    normalized = re.sub(r"[^a-z0-9._-]+", "-", candidate).strip("-._")
+    if not normalized:
+        raise ValueError(f"invalid site key: {site}")
+    return normalized
+
+
+def _ensure_auth_dir() -> None:
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_auth_registry() -> dict:
+    if not AUTH_INDEX.exists():
+        return {"version": 1, "sites": {}}
+    try:
+        data = json.loads(AUTH_INDEX.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "sites": {}}
+
+    if not isinstance(data, dict):
+        return {"version": 1, "sites": {}}
+
+    sites = data.get("sites")
+    if not isinstance(sites, dict):
+        sites = {}
+    return {"version": 1, "sites": sites}
+
+
+def _save_auth_registry(registry: dict) -> None:
+    _ensure_auth_dir()
+    AUTH_INDEX.write_text(json.dumps(registry, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _default_auth_path(site_key: str) -> Path:
+    return AUTH_DIR / f"{site_key}.json"
+
+
+def _auth_registry_entry(site: str):
+    site_key = _normalize_site_key(site)
+    registry = _load_auth_registry()
+    entry = registry["sites"].get(site_key)
+    if not isinstance(entry, dict):
+        return site_key, None
+
+    path = entry.get("path")
+    if not path or not Path(path).exists():
+        return site_key, None
+    return site_key, entry
+
+
+def _auth_get(site: str) -> dict:
+    site_key, entry = _auth_registry_entry(site)
+    if entry is None:
+        return {"site": site_key, "found": False}
+    return {
+        "site": site_key,
+        "found": True,
+        "path": entry["path"],
+        "updated_at": entry.get("updated_at"),
+        "account_label": entry.get("account_label"),
+    }
+
+
+def _auth_list() -> dict:
+    registry = _load_auth_registry()
+    entries = []
+    live_sites = {}
+    for site_key, entry in sorted(registry["sites"].items()):
+        path = str(entry.get("path") or "")
+        if not path or not Path(path).exists():
+            continue
+        live_sites[site_key] = entry
+        entries.append({
+            "site": site_key,
+            "path": path,
+            "updated_at": entry.get("updated_at"),
+            "account_label": entry.get("account_label"),
+        })
+
+    if live_sites != registry["sites"]:
+        registry["sites"] = live_sites
+        _save_auth_registry(registry)
+
+    return {"entries": entries}
+
+
+def _auth_delete(site: str) -> dict:
+    site_key = _normalize_site_key(site)
+    registry = _load_auth_registry()
+    entry = registry["sites"].pop(site_key, None)
+    deleted_file = False
+    if isinstance(entry, dict):
+        path = entry.get("path")
+        if path and Path(path).exists():
+            Path(path).unlink()
+            deleted_file = True
+    _save_auth_registry(registry)
+    return {"site": site_key, "deleted": entry is not None, "deleted_file": deleted_file}
+
+
+def _auth_save(site: str, path: str, account_label: str = None) -> dict:
+    site_key = _normalize_site_key(site)
+    registry = _load_auth_registry()
+    registry["sites"][site_key] = {
+        "path": path,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "account_label": account_label,
+    }
+    _save_auth_registry(registry)
+    return {
+        "site": site_key,
+        "path": path,
+        "updated_at": registry["sites"][site_key]["updated_at"],
+        "account_label": account_label,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -382,6 +521,7 @@ def main():
     p.add_argument("url", nargs="?", help="URL to navigate to")
     p.add_argument("--headless", action="store_true", help="Headless mode (no visible window)")
     p.add_argument("--auth", help="Path to saved auth state JSON file")
+    p.add_argument("--site", help="Saved auth site key to preload, e.g. linkedin")
 
     p = sub.add_parser("goto", help="Navigate to URL")
     p.add_argument("session", help="Session ID")
@@ -437,6 +577,19 @@ def main():
     p.add_argument("session", help="Session ID")
     p.add_argument("--path", default="playwright/.auth/x_auth.json", help="Output file path")
 
+    sub.add_parser("auth-list", help="List saved auth states")
+
+    p = sub.add_parser("auth-get", help="Get saved auth state for a site")
+    p.add_argument("site", help="Site key, e.g. linkedin")
+
+    p = sub.add_parser("auth-save", help="Save auth state for a reusable site key")
+    p.add_argument("session", help="Session ID")
+    p.add_argument("--site", required=True, help="Site key, e.g. linkedin")
+    p.add_argument("--account-label", help="Optional human label for the account")
+
+    p = sub.add_parser("auth-delete", help="Delete saved auth state for a site")
+    p.add_argument("site", help="Site key, e.g. linkedin")
+
     p = sub.add_parser("close", help="Close a session")
     p.add_argument("session", help="Session ID")
 
@@ -451,6 +604,43 @@ def main():
     # ── Internal: start server process ──
     if args.command == "_server":
         run_server(headless=args.headless)
+        return
+
+    if args.command == "auth-list":
+        result = _auth_list()
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return
+        entries = result.get("entries", [])
+        if not entries:
+            print("No saved auth states.")
+            return
+        for entry in entries:
+            label = f" [{entry['account_label']}]" if entry.get("account_label") else ""
+            print(f"{entry['site']}{label}: {entry['path']} ({entry.get('updated_at') or 'unknown'})")
+        return
+
+    if args.command == "auth-get":
+        result = _auth_get(args.site)
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return
+        if not result.get("found"):
+            print(f"No saved auth for {result['site']}.")
+            return
+        label = f" [{result['account_label']}]" if result.get("account_label") else ""
+        print(f"{result['site']}{label}: {result['path']} ({result.get('updated_at') or 'unknown'})")
+        return
+
+    if args.command == "auth-delete":
+        result = _auth_delete(args.site)
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return
+        if result.get("deleted"):
+            print(f"Deleted auth for {result['site']}.")
+        else:
+            print(f"No saved auth for {result['site']}.")
         return
 
     # ── server-stop ──
@@ -480,6 +670,11 @@ def main():
             params["url"] = args.url
         if args.auth:
             params["auth"] = args.auth
+        elif args.site:
+            auth_info = _auth_get(args.site)
+            if auth_info.get("found"):
+                params["auth"] = auth_info["path"]
+                params["site"] = auth_info["site"]
 
     elif cmd == "goto":
         params["session"] = args.session
@@ -543,11 +738,25 @@ def main():
         params["session"] = args.session
         params["path"] = args.path
 
+    elif cmd == "auth-save":
+        cmd = "save_auth"
+        site_key = _normalize_site_key(args.site)
+        params["session"] = args.session
+        params["path"] = str(_default_auth_path(site_key))
+
     elif cmd == "close":
         params["session"] = args.session
 
     # Send to server
     result = send(port, cmd, params)
+
+    if args.command == "auth-save" and "error" not in result:
+        result.update(_auth_save(args.site, result["path"], account_label=args.account_label))
+
+    if args.command == "open" and "error" not in result and params.get("auth"):
+        result["auth_path"] = params["auth"]
+        if params.get("site"):
+            result["site"] = params["site"]
 
     # ── Output ──
     if args.json:
@@ -562,6 +771,9 @@ def main():
         print(f"Session: {result['session']}")
         print(f"URL:     {result.get('url', '')}")
         print(f"Title:   {result.get('title', '')}")
+        if result.get("auth_path"):
+            loaded_for = f" ({result['site']})" if result.get("site") else ""
+            print(f"Auth:    {result['auth_path']}{loaded_for}")
 
     elif cmd == "goto":
         print(f"URL:   {result['url']}")
@@ -605,7 +817,11 @@ def main():
             print(f"Result: {r}")
 
     elif cmd == "save_auth":
-        print(f"Auth saved: {result['path']}")
+        if args.command == "auth-save":
+            label = f" [{result['account_label']}]" if result.get("account_label") else ""
+            print(f"Auth saved for {result['site']}{label}: {result['path']}")
+        else:
+            print(f"Auth saved: {result['path']}")
 
     elif cmd == "close":
         print(f"Closed: {result['closed']}")
