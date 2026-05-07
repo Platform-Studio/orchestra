@@ -87,6 +87,36 @@ def _fake_trigger(**kwargs):
     return obj
 
 
+def test_send_json_ignores_client_disconnect_during_headers():
+    from workstream_manager.server import Handler
+
+    handler = object.__new__(Handler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock(side_effect=BrokenPipeError())
+    handler.wfile = SimpleNamespace(write=MagicMock())
+
+    Handler._send_json(handler, 200, '{"status":"ok"}')
+
+    handler.wfile.write.assert_not_called()
+    assert not hasattr(handler, "_json_response")
+
+
+def test_send_json_ignores_client_disconnect_during_body_write():
+    from workstream_manager.server import Handler
+
+    handler = object.__new__(Handler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = SimpleNamespace(write=MagicMock(side_effect=ConnectionResetError()))
+
+    Handler._send_json(handler, 200, '{"status":"ok"}')
+
+    handler.wfile.write.assert_called_once()
+    assert not hasattr(handler, "_json_response")
+
+
 # ── Patched module names ────────────────────────────────────────
 
 _PATCHES = {

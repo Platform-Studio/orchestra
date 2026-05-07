@@ -414,3 +414,38 @@ class TestTick:
 
         result = tick(workspace)
         assert len(result["trigger_schedules_fired"]) == 0
+
+    def test_tick_prioritizes_later_state_trigger_for_shared_agent(self, workspace, ws, monkeypatch):
+        backlog = create_task(ws.id, title="Backlog Task", base_dir=workspace)
+        in_progress = create_task(ws.id, title="Active Task", base_dir=workspace)
+        update_task(in_progress.id, status="In Progress", base_dir=workspace)
+
+        create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_agent",
+            agent="shared_agent",
+            base_dir=workspace,
+        )
+        create_trigger(
+            ws.id,
+            on_state="In Progress",
+            action="run_agent",
+            agent="shared_agent",
+            base_dir=workspace,
+        )
+
+        dispatched = []
+
+        def _fake_lock_invoke_unlock(trigger, task_ids, *_args, **_kwargs):
+            dispatched.append((trigger.on_state, list(task_ids)))
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+        monkeypatch.setattr("orchestration.agents.count_active_agent_runs", lambda *_args, **_kwargs: 0)
+
+        result = tick(workspace)
+
+        assert dispatched == [("In Progress", [in_progress.id])]
+        assert result["state_triggers_fired"][0]["task_ids"] == [in_progress.id]
+        assert result["state_triggers_fired"][1]["result"]["reason"] == "agent_concurrency reached"

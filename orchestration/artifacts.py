@@ -22,14 +22,13 @@ def _resolve_artifact_root(path: str, base_dir: str = ".", workstream_id: str = 
     contains a mounted workstream node name, the path remainder after that node is
     rooted at the mounted workspace's `/artifacts` directory.
     """
-    from .workstreams import read_workstream, _workspace_root_for, list_workstreams, _normalize_mounted_workspace_path
+    from .workstreams import read_workstream, _workspace_root_for, list_workstreams, _normalize_mounted_workspace_path, resolve_workstream_workspace
 
     rel_path = path.lstrip("/")
     base_abs = os.path.abspath(base_dir)
 
     if workstream_id:
-        ws = read_workstream(workstream_id, base_dir=base_dir)
-        ws_root = _workspace_root_for(ws, base_dir)
+        ws_root = resolve_workstream_workspace(workstream_id, base_dir=base_dir)
         return _artifacts_dir(ws_root), rel_path
 
     # Best-effort path-based mounted node mapping.

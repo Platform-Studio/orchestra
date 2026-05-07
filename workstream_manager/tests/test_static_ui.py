@@ -45,3 +45,11 @@ def test_api_helper_preserves_error_codes_for_ui_messages() -> None:
     assert "code: data.code || 'ERROR'" in html
     assert "code: 'TIMEOUT'" in html
     assert "code: 'NETWORK'" in html
+
+
+def test_api_normalizes_fetch_abort_errors() -> None:
+    html = _index_html()
+
+    assert "controller.abort(new DOMException(`Request timed out after ${timeoutMs}ms`, 'TimeoutError'))" in html
+    assert "message.includes('signal is aborted')" in html
+    assert "Request timed out after ${Math.round(timeoutMs / 1000)}s: /api/${path}" in html

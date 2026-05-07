@@ -1199,7 +1199,7 @@ async function api(path, opts = {}) {
   // Allow longer timeouts for heavier endpoints like board loads.
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 10000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new DOMException(`Request timed out after ${timeoutMs}ms`, 'TimeoutError')), timeoutMs);
   fetchOpts.signal = controller.signal;
   try {
     const resp = await fetch('/api/' + path, fetchOpts);
@@ -1222,8 +1222,10 @@ async function api(path, opts = {}) {
     }
     return data.data;
   } catch (err) {
-    if (err && err.name === 'AbortError') {
-      throw makeApiError(`Request timed out after ${timeoutMs}ms.`, {
+    const name = err && err.name ? err.name : '';
+    const message = err && err.message ? err.message : String(err || '');
+    if (name === 'AbortError' || name === 'TimeoutError' || message.includes('signal is aborted')) {
+      throw makeApiError(`Request timed out after ${Math.round(timeoutMs / 1000)}s: /api/${path}`, {
         code: 'TIMEOUT',
         httpStatus: 0,
         path,
@@ -3249,14 +3251,21 @@ function renderActiveAgentsModal() {
   }
 
   const selected = activeAgentRuns.find(r => r.run_id === selectedAgentRunId) || null;
+  const selectedDetails = selectedAgentArtifacts || null;
+  const selectedCommandLine = selectedDetails && selectedDetails.run ? String(selectedDetails.run.command_line || '') : '';
+  const selectedRuntime = selected && selected.runtime
+    ? String(selected.runtime)
+    : (selectedCommandLine.includes('cline ') ? 'cline' : 'claude-code');
+  const selectedRuntimeLabel = selectedRuntime === 'cline'
+    ? 'Cline'
+    : (selectedRuntime === 'claude-code' ? 'Claude Code' : 'Agent');
   const selectedModel = selected && selected.model ? esc(selected.model.replace(/^anthropic\//, '')) : 'unknown';
   const selectedEffort = selected && selected.effort ? esc(selected.effort) : 'default';
-  const selectedModelEffort = `Model: ${selectedModel} | Effort: ${selectedEffort}`;
+  const selectedModelEffort = `Runtime: ${selectedRuntimeLabel} | Model: ${selectedModel} | Effort: ${selectedEffort}`;
   const selectedStatus = selected ? normalizedRunStatus(selected) : '';
   const showKill = !!selected && isKillableStatus(selectedStatus);
   const showRetryButton = !!selected && isRetryableStatus(selectedStatus);
   const canRetrySelectedRun = showRetryButton && retryingAgentRunId !== selectedAgentRunId;
-  const selectedDetails = selectedAgentArtifacts || null;
   const selectedRunDetails = selectedDetails && selectedDetails.run ? selectedDetails.run : null;
   const interruptionReason = selectedDetails && selectedDetails.interruption_reason
     ? String(selectedDetails.interruption_reason)
@@ -3294,7 +3303,6 @@ function renderActiveAgentsModal() {
         : '<div style="font-size:12px;color:#8b949e;">Loading retry diagnostics...</div>')
     : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>';
   const selectedPrompt = selectedDetails && selectedDetails.run ? String(selectedDetails.run.prompt || '') : '';
-  const selectedCommandLine = selectedDetails && selectedDetails.run ? String(selectedDetails.run.command_line || '') : '';
   const selectedOutput = selectedDetails ? String(selectedDetails.output || '') : '';
   const outputFallback = !selected
     ? 'Select an agent run from the list.'
@@ -3357,7 +3365,7 @@ function renderActiveAgentsModal() {
           <div class="agent-cli-calls">${retryHtml}</div>
         </div>
         <div class="agent-section">
-          <h4>Claude Command</h4>
+          <h4>${selected ? `${selectedRuntimeLabel} Command` : 'Agent Command'}</h4>
           <pre class="agent-tail-pre">${selected ? esc(selectedCommandLine || 'Command line not recorded for this run.') : 'Select an agent run from the list.'}</pre>
         </div>
         <div class="agent-section">
