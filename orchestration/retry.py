@@ -33,7 +33,7 @@ def _is_process_alive(pid: int) -> bool:
 
 
 def _is_our_process(pid: int) -> bool:
-    """Check if a PID belongs to a claude/python process we spawned.
+    """Check if a PID belongs to an agent runtime process we spawned.
 
     Guards against PID reuse — if the OS reassigned the PID to an
     unrelated process, we must not kill it.
@@ -47,7 +47,7 @@ def _is_our_process(pid: int) -> bool:
             capture_output=True, text=True, timeout=5,
         )
         cmd = result.stdout.strip().lower()
-        return "claude" in cmd or "anthropic" in cmd
+        return "claude" in cmd or "anthropic" in cmd or "cline" in cmd
     except Exception:
         return False
 

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _resolve_agent_file, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
+from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _resolve_agent_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
@@ -24,6 +24,7 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
     monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
     monkeypatch.delenv("CLINE_LOW_LLM", raising=False)
+    monkeypatch.delenv("ORCHESTRATION_CLINE_VERBOSE", raising=False)
 
 
 def _write_run_meta(workspace: str, run_id: str, payload: dict) -> None:
@@ -366,8 +367,10 @@ class _FakeProc:
     def __init__(self):
         self.pid = 12345
         self.returncode = 0
+        self.communicate_timeouts = []
 
     def communicate(self, timeout=None):
+        self.communicate_timeouts.append(timeout)
         return ("", "")
 
 
@@ -375,8 +378,10 @@ class _FakeTerminatedProc(_FakeProc):
     def __init__(self):
         self.pid = 12345
         self.returncode = 143
+        self.communicate_timeouts = []
 
     def communicate(self, timeout=None):
+        self.communicate_timeouts.append(timeout)
         return ("", "")
 
 
@@ -846,7 +851,9 @@ def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
     assert "-m" in cmd
     assert cmd[cmd.index("-m") + 1] == "claude-opus-4-6"
     assert "--timeout" in cmd
+    assert cmd[cmd.index("--timeout") + 1] == "1800"
     assert "--thinking" in cmd
+    assert "--verbose" not in cmd
     assert "--append-system-prompt" not in cmd
     assert "--dangerously-skip-permissions" not in cmd
     effective_prompt = cmd[-1]
@@ -857,6 +864,51 @@ def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
     latest = runs[0]
     assert latest["runtime"] == "cline"
     assert latest["command_line"].startswith("/usr/bin/cline ")
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+def test_run_agent_gives_cline_timeout_cleanup_grace(mock_which, workspace):
+    fake_proc = _FakeProc()
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_timeout_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Timeout Agent\n"
+            "description: Runs with Cline\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    with patch("orchestration.agents.subprocess.Popen", return_value=fake_proc):
+        run_agent("Cline Timeout Agent", workstream_id=ws.id, timeout=100, base_dir=workspace)
+
+    assert fake_proc.communicate_timeouts == [130]
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_can_enable_cline_verbose_output(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATION_CLINE_VERBOSE", "true")
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_verbose_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Verbose Agent\n"
+            "description: Runs with Cline\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Verbose Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--verbose" in cmd
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
@@ -957,7 +1009,37 @@ def test_run_agent_passes_valid_cline_config_dir(mock_popen, mock_which, workspa
 
     cmd = mock_popen.call_args.args[0]
     assert "--config" in cmd
-    assert cmd[cmd.index("--config") + 1] == config_dir
+    assert cmd[cmd.index("--config") + 1] == os.path.abspath(config_dir)
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_normalizes_cline_data_config_dir(mock_popen, mock_which, workspace, monkeypatch):
+    config_root = os.path.join(workspace, ".cline-test")
+    data_dir = os.path.join(config_root, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    with open(os.path.join(data_dir, "globalState.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
+    monkeypatch.setenv("ORCHESTRATION_CLINE_CONFIG_DIR", data_dir)
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_data_config_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Data Config Agent\n"
+            "description: Uses configured Cline auth data dir\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Data Config Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--config" in cmd
+    assert cmd[cmd.index("--config") + 1] == os.path.abspath(config_root)
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
@@ -1001,3 +1083,10 @@ def test_run_agent_marks_sigterm_exit_as_killed(mock_popen, mock_which, workspac
     latest = runs[0]
     assert latest["status"] == "killed"
     assert latest["exit_code"] == 143
+
+
+def test_runtime_reported_timeout_detects_cline_timeout():
+    assert _runtime_reported_timeout("cline", "Error: Timeout\n", 1) is True
+    assert _runtime_reported_timeout("cline", '{"type": "error", "message": "Timeout"}', 1) is True
+    assert _runtime_reported_timeout("claude-code", "Error: Timeout\n", 1) is False
+    assert _runtime_reported_timeout("cline", "done", 0) is False

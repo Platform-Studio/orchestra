@@ -17,7 +17,7 @@ from orchestration.retry import (
     handle_expired_lock, cleanup_expired_locks, manual_retry,
     cleanup_orphaned_locks,
     _compute_backoff, _get_retry_config, _find_last_agent,
-    _is_process_alive,
+    _is_process_alive, _is_our_process,
 )
 
 
@@ -99,6 +99,20 @@ class TestLockPID:
         assert lock.pid is None
         assert lock.subprocess_pid is None
         assert lock.agent_id == "old-agent"
+
+
+class TestProcessDetection:
+    @patch("subprocess.run")
+    def test_is_our_process_accepts_cline_cli_process(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="node /usr/lib/node_modules/cline/dist/cli.mjs")
+
+        assert _is_our_process(12345) is True
+
+    @patch("subprocess.run")
+    def test_is_our_process_rejects_unrelated_node_process(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="node server.js")
+
+        assert _is_our_process(12345) is False
 
 
 # ── Find expired locks ───────────────────────────────────────────
