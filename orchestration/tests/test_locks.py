@@ -164,12 +164,12 @@ class TestLockStatus:
         assert locks[task_a.id]["locked"] is True
         assert locks[task_a.id]["agent_id"] == "agent-1"
 
-    def test_list_workstream_locks_for_workstream_uses_cached_workspace_root_for_mounted_child(self, workspace, tmp_path, monkeypatch):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
+    def test_list_workstream_locks_for_workstream_uses_cached_workspace_root_for_working_directory_child(self, workspace, tmp_path, monkeypatch):
+        working_root = tmp_path / "career_pivot_repo"
+        working_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         save_workstream(parent, base_dir=workspace)
 
         child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)

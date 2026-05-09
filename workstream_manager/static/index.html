@@ -82,6 +82,179 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   line-height: 1;
   flex-shrink: 0;
 }
+.sidebar-item .mount-badge.mount-broken {
+  border-color: rgba(248,81,73,0.45);
+  background: rgba(248,81,73,0.14);
+  color: #f85149;
+}
+
+/* ── Tag editor ──────────────────────────────────────────────── */
+.tag-editor {
+  position: relative;
+}
+.tag-editor-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 32px;
+}
+.tag-editor-tag,
+.tag-editor-plus-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tag-editor-tag {
+  border: none;
+}
+.tag-editor-tag-btn {
+  cursor: pointer;
+}
+.tag-editor-tag-btn:hover {
+  filter: brightness(1.06);
+}
+.tag-editor-plus-btn {
+  min-width: 28px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: #c9d1d9;
+  cursor: pointer;
+}
+.tag-editor-plus-btn:hover {
+  background: rgba(255,255,255,0.14);
+}
+.tag-editor-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 25;
+  width: min(320px, calc(100vw - 64px));
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: #11161d;
+  box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+}
+.tag-editor-dropdown.hidden {
+  display: none;
+}
+.tag-editor-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.tag-editor-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.tag-editor-option:hover {
+  background: rgba(255,255,255,0.05);
+}
+.tag-editor-option input {
+  margin: 0;
+}
+.tag-editor-option-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.tag-editor-option-label {
+  color: #e6edf3;
+  font-size: 13px;
+}
+.tag-editor-empty,
+.tag-editor-loading {
+  color: #8b949e;
+  font-size: 13px;
+  padding: 4px 2px;
+}
+.tag-editor-dropdown-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.tag-editor-create-toggle-btn,
+.tag-editor-create-submit-btn,
+.tag-editor-create-cancel-btn,
+.tag-editor-save-btn {
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tag-editor-create-toggle-btn,
+.tag-editor-create-cancel-btn {
+  background: transparent;
+  color: #c9d1d9;
+  border: 1px solid rgba(255,255,255,0.18);
+}
+.tag-editor-create-toggle-btn:hover,
+.tag-editor-create-cancel-btn:hover {
+  background: rgba(255,255,255,0.06);
+}
+.tag-editor-create-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.tag-editor-create-panel.hidden {
+  display: none;
+}
+.tag-editor-create-row {
+  display: flex;
+  gap: 8px;
+}
+.tag-editor-input,
+.tag-editor-color-select {
+  width: 100%;
+  background: #161b22;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  color: #e6edf3;
+  font: inherit;
+  padding: 8px 10px;
+}
+.tag-editor-input:focus,
+.tag-editor-color-select:focus {
+  outline: none;
+  border-color: rgba(88,166,255,0.7);
+  box-shadow: 0 0 0 3px rgba(88,166,255,0.15);
+}
+.tag-editor-create-submit-btn,
+.tag-editor-save-btn {
+  background: #238636;
+  color: #ffffff;
+  border: 1px solid rgba(35,134,54,0.8);
+}
+.tag-editor-create-submit-btn:hover,
+.tag-editor-save-btn:hover {
+  background: #2ea043;
+}
+.tag-editor-create-toggle-btn:disabled,
+.tag-editor-create-submit-btn:disabled,
+.tag-editor-create-cancel-btn:disabled,
+.tag-editor-input:disabled,
+.tag-editor-color-select:disabled,
+.tag-editor-plus-btn:disabled,
+.tag-editor-tag-btn:disabled,
+.tag-editor-save-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
 
 /* ── Scheduler bar ────────────────────────────────────────────── */
 .scheduler-bar {
@@ -340,6 +513,37 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   padding: 10px 12px; font-size: 14px; font-weight: 700; color: #8b949e;
   display: flex; align-items: center; justify-content: space-between;
 }
+.column-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.column-title-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+}
+.column-add-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: none;
+  background: none;
+  color: #8b949e;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.column-add-btn:hover {
+  background: rgba(255,255,255,0.1);
+}
 .column-header .count {
   background: rgba(255,255,255,0.1); color: #8b949e; border-radius: 10px;
   font-size: 12px; padding: 0 7px; font-weight: 600;
@@ -449,6 +653,186 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   color: #3fb950;
   border-color: rgba(63,185,80,0.65);
   background: rgba(63,185,80,0.1);
+}
+.create-task-subtitle {
+  color: #8b949e;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.create-task-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.create-task-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.create-task-field label {
+  color: #c9d1d9;
+  font-size: 13px;
+  font-weight: 600;
+}
+.create-task-input,
+.create-task-textarea {
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  background: #161b22;
+  color: #e6edf3;
+  font: inherit;
+  padding: 10px 12px;
+}
+.create-task-input:focus,
+.create-task-textarea:focus {
+  outline: none;
+  border-color: rgba(88,166,255,0.7);
+  box-shadow: 0 0 0 3px rgba(88,166,255,0.15);
+}
+.create-task-textarea {
+  min-height: 160px;
+  resize: vertical;
+}
+.tag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tag-editor-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 30px;
+}
+.tag-editor-empty {
+  color: #8b949e;
+  font-size: 13px;
+}
+.tag-editor-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  border-radius: 4px;
+  padding: 4px 10px;
+  color: #fff;
+  font-weight: 600;
+}
+.tag-editor-remove-btn {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.85;
+}
+.tag-editor-remove-btn:hover {
+  opacity: 1;
+}
+.tag-editor-controls {
+  display: flex;
+  gap: 8px;
+}
+.tag-editor-input {
+  flex: 1;
+  background: #161b22;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  color: #e6edf3;
+  font: inherit;
+  padding: 8px 10px;
+}
+.tag-editor-input:focus {
+  outline: none;
+  border-color: rgba(88,166,255,0.7);
+  box-shadow: 0 0 0 3px rgba(88,166,255,0.15);
+}
+.tag-editor-add-btn,
+.tag-editor-save-btn {
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tag-editor-add-btn {
+  background: transparent;
+  color: #c9d1d9;
+  border: 1px solid rgba(255,255,255,0.18);
+}
+.tag-editor-add-btn:hover {
+  background: rgba(255,255,255,0.06);
+}
+.tag-editor-save-btn {
+  background: #238636;
+  color: #ffffff;
+  border: 1px solid rgba(35,134,54,0.8);
+}
+.tag-editor-save-btn:hover {
+  background: #2ea043;
+}
+.tag-editor-add-btn:disabled,
+.tag-editor-save-btn:disabled,
+.tag-editor-input:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+.tag-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.tag-editor-status {
+  color: #8b949e;
+  font-size: 12px;
+  min-height: 18px;
+}
+.tag-editor-hint {
+  color: #8b949e;
+  font-size: 12px;
+}
+.create-task-error {
+  color: #f85149;
+  font-size: 12px;
+  min-height: 18px;
+}
+.create-task-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.create-task-cancel,
+.create-task-submit {
+  border-radius: 6px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.create-task-cancel {
+  background: transparent;
+  color: #c9d1d9;
+  border: 1px solid rgba(255,255,255,0.18);
+}
+.create-task-cancel:hover {
+  background: rgba(255,255,255,0.06);
+}
+.create-task-submit {
+  background: #238636;
+  color: #ffffff;
+  border: 1px solid rgba(35,134,54,0.8);
+}
+.create-task-submit:hover {
+  background: #2ea043;
+}
+.create-task-submit:disabled,
+.create-task-cancel:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 .modal .status-badge {
   display: inline-block; font-size: 12px; font-weight: 600;
@@ -1151,6 +1535,11 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   <div class="modal" id="task-modal-content"></div>
 </div>
 
+<!-- Create task modal -->
+<div class="modal-overlay hidden" id="create-task-modal">
+  <div class="modal" id="create-task-modal-content"></div>
+</div>
+
 <!-- Triggers modal -->
 <div class="modal-overlay hidden" id="trigger-modal">
   <div class="modal" id="trigger-modal-content"></div>
@@ -1273,22 +1662,488 @@ let agentRunsScrollState = {
   outputStickToBottom: true,
 };
 
+function buildWorkstreamRoute(wsId) {
+  return wsId ? `/workstreams/${encodeURIComponent(wsId)}` : '/';
+}
+
+function buildTaskRoute(taskId) {
+  return taskId ? `/task/${encodeURIComponent(taskId)}` : '/';
+}
+
+function parseNavigatorRoute(pathname = window.location.pathname) {
+  const normalized = String(pathname || '/').replace(/\/+$/, '') || '/';
+  if (normalized === '/') return { type: 'root', id: null };
+
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length === 2 && parts[0] === 'workstreams') {
+    return { type: 'workstream', id: decodeURIComponent(parts[1]) };
+  }
+  if (parts.length === 2 && parts[0] === 'task') {
+    return { type: 'task', id: decodeURIComponent(parts[1]) };
+  }
+  return { type: 'root', id: null };
+}
+
+function syncNavigatorRoute(path, { replace = false } = {}) {
+  if (!window.history) return;
+  const method = replace ? 'replaceState' : 'pushState';
+  if (typeof window.history[method] !== 'function') return;
+
+  const nextPath = path || '/';
+  if (!replace && window.location.pathname === nextPath) return;
+  window.history[method]({}, '', nextPath);
+}
+
+function renderEmptyBoard() {
+  const header = document.getElementById('board-header');
+  if (header) {
+    header.style.display = 'none';
+    header.innerHTML = '';
+  }
+
+  const board = document.getElementById('board');
+  if (board) {
+    board.innerHTML = `
+      <div class="empty-state" id="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="10" rx="1"/></svg>
+        <div>Select a workstream to view its board</div>
+      </div>`;
+  }
+}
+
+function clearSelectedWorkstream({ updateHistory = true, replaceHistory = false } = {}) {
+  selectedWsId = null;
+  selectedWs = null;
+  boardLockRequestSeq += 1;
+  closeModal('task-modal', { updateHistory: false });
+  renderSidebar();
+  renderEmptyBoard();
+  if (updateHistory) {
+    syncNavigatorRoute('/', { replace: replaceHistory });
+  }
+}
+
+async function openRouteFromNavigator({ replaceHistory = false } = {}) {
+  const route = parseNavigatorRoute();
+
+  if (route.type === 'task' && route.id) {
+    await showTaskDetail(route.id, { updateHistory: false, replaceHistory });
+    return;
+  }
+  if (route.type === 'workstream' && route.id) {
+    await selectWorkstream(route.id, { updateHistory: false, replaceHistory });
+    return;
+  }
+  clearSelectedWorkstream({ updateHistory: false, replaceHistory });
+}
+
 // ── Tag color palette (Trello-style) ────────────────────────────
 const TAG_PALETTE = [
   '#61bd4f', '#f2d600', '#ff9f1a', '#eb5a46', '#c377e0',
   '#0079bf', '#00c2e0', '#51e898', '#ff78cb', '#344563',
   '#b3bac5', '#055a8c', '#89609e', '#cd8313', '#4bbf6b',
 ];
+const TAG_COLOR_OPTIONS = [
+  { value: '#61bd4f', label: 'Green' },
+  { value: '#f2d600', label: 'Yellow' },
+  { value: '#ff9f1a', label: 'Orange' },
+  { value: '#eb5a46', label: 'Red' },
+  { value: '#c377e0', label: 'Purple' },
+  { value: '#0079bf', label: 'Blue' },
+  { value: '#00c2e0', label: 'Sky' },
+  { value: '#51e898', label: 'Mint' },
+  { value: '#ff78cb', label: 'Pink' },
+  { value: '#344563', label: 'Navy' },
+  { value: '#b3bac5', label: 'Gray' },
+  { value: '#055a8c', label: 'Deep Blue' },
+  { value: '#89609e', label: 'Plum' },
+  { value: '#cd8313', label: 'Amber' },
+  { value: '#4bbf6b', label: 'Leaf' },
+];
 const tagColorCache = {};  // per-workstream: { wsId: { tagName: color } }
+const workstreamTagCatalogCache = {};
+const workstreamTagCatalogRequests = {};
+
+function defaultTagColor(tagName) {
+  const normalized = normalizeTaskTags([tagName])[0] || '';
+  if (!normalized) return TAG_PALETTE[0];
+  let total = 0;
+  for (const ch of normalized) total += ch.charCodeAt(0);
+  return TAG_PALETTE[total % TAG_PALETTE.length];
+}
+
+function getTagColorText(color) {
+  const normalized = String(color || '').trim();
+  const match = normalized.match(/^#?([0-9a-f]{6})$/i);
+  if (!match) return '#ffffff';
+
+  const hex = match[1];
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  const luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue);
+  return luminance > 170 ? '#0d1117' : '#ffffff';
+}
+
+function normalizeTagCatalog(rawTags) {
+  const normalized = [];
+  const seen = new Set();
+  for (const raw of rawTags || []) {
+    const name = normalizeTaskTags([typeof raw === 'object' ? raw?.name : raw])[0];
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const color = TAG_PALETTE.includes(String(raw?.color || '').trim().toLowerCase())
+      ? String(raw.color).trim().toLowerCase()
+      : defaultTagColor(name);
+    normalized.push({ name, color });
+  }
+  return normalized;
+}
+
+function setWorkstreamTagCatalog(wsId, rawTags) {
+  const normalized = normalizeTagCatalog(rawTags);
+  workstreamTagCatalogCache[wsId] = normalized;
+  tagColorCache[wsId] = Object.fromEntries(normalized.map((tag) => [tag.name, tag.color]));
+  return normalized;
+}
+
+function getWorkstreamTagCatalog(wsId) {
+  return Array.isArray(workstreamTagCatalogCache[wsId])
+    ? workstreamTagCatalogCache[wsId].map((tag) => ({ ...tag }))
+    : [];
+}
+
+async function fetchWorkstreamTagCatalog(wsId, { force = false } = {}) {
+  if (!wsId) return [];
+  if (!force && Array.isArray(workstreamTagCatalogCache[wsId])) {
+    return getWorkstreamTagCatalog(wsId);
+  }
+  if (!force && workstreamTagCatalogRequests[wsId]) {
+    return workstreamTagCatalogRequests[wsId];
+  }
+  const request = api('workstream/gettags/' + wsId)
+    .then((data) => setWorkstreamTagCatalog(wsId, data || []))
+    .finally(() => {
+      delete workstreamTagCatalogRequests[wsId];
+    });
+  workstreamTagCatalogRequests[wsId] = request;
+  return request;
+}
 
 function getTagColor(wsId, tagName) {
+  const normalized = normalizeTaskTags([tagName])[0];
+  if (!normalized) return TAG_PALETTE[0];
   if (!tagColorCache[wsId]) tagColorCache[wsId] = {};
   const wsCache = tagColorCache[wsId];
-  if (!wsCache[tagName]) {
-    const idx = Object.keys(wsCache).length % TAG_PALETTE.length;
-    wsCache[tagName] = TAG_PALETTE[idx];
+  if (!wsCache[normalized]) {
+    wsCache[normalized] = defaultTagColor(normalized);
   }
-  return wsCache[tagName];
+  return wsCache[normalized];
+}
+
+function normalizeTaskTags(rawTags) {
+  const source = Array.isArray(rawTags)
+    ? rawTags
+    : String(rawTags || '').split(/[\n,]/);
+  const tags = [];
+  const seen = new Set();
+  for (const raw of source) {
+    const tag = String(raw || '').trim().replace(/\s+/g, ' ');
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function sameTaskTags(left, right) {
+  const a = normalizeTaskTags(left);
+  const b = normalizeTaskTags(right);
+  if (a.length !== b.length) return false;
+  return a.every((tag, index) => tag === b[index]);
+}
+
+function renderTagEditorBadges(tags, wsId, disabled) {
+  return tags.map((tag) => {
+    const color = getTagColor(wsId, tag);
+    if (disabled) {
+      return `<span class="tag-editor-tag" style="background:${color}">${esc(tag)}</span>`;
+    }
+    return `<button class="tag-editor-tag tag-editor-tag-btn" type="button" data-tag-picker-toggle="true" data-tag-name="${encodeURIComponent(tag)}" style="background:${color}">${esc(tag)}</button>`;
+  }).join('');
+}
+
+function renderTagEditor({ editorId, tags = [], wsId = selectedWsId, disabled = false } = {}) {
+  return `<div class="tag-editor${disabled ? ' is-disabled' : ''}" data-tag-editor-id="${esc(editorId)}" data-tag-workstream-id="${esc(wsId || '')}" data-initial-tags="${esc(JSON.stringify(normalizeTaskTags(tags)))}"></div>`;
+}
+
+function initTagEditor(editorEl, opts = {}) {
+  if (!editorEl) {
+    return {
+      getTags: () => [],
+      setTags: () => {},
+      focus: () => {},
+    };
+  }
+
+  const disabled = !!opts.disabled;
+  const wsId = opts.wsId || selectedWsId;
+  const state = {
+    tags: normalizeTaskTags(opts.initialTags || []),
+    availableTags: normalizeTagCatalog(opts.availableTags || []),
+    pickerOpen: false,
+    creating: false,
+    loading: false,
+    savingTag: false,
+    status: '',
+    draftName: '',
+    draftColor: TAG_COLOR_OPTIONS[0].value,
+  };
+
+  const emitChange = () => {
+    if (typeof opts.onChange === 'function') {
+      opts.onChange(state.tags.slice());
+    }
+  };
+
+  const syncCatalog = (rawTags, { updateGlobalCache = false } = {}) => {
+    const merged = normalizeTagCatalog([
+      ...(rawTags || []),
+      ...state.tags.map((name) => ({ name, color: getTagColor(wsId, name) })),
+    ]);
+    state.availableTags = merged;
+    if (updateGlobalCache) {
+      setWorkstreamTagCatalog(wsId, rawTags || []);
+    }
+  };
+
+  syncCatalog(getWorkstreamTagCatalog(wsId));
+
+  const renderTagOptions = () => {
+    if (state.loading) {
+      return '<div class="tag-editor-loading">Loading tags...</div>';
+    }
+    if (!state.availableTags.length) {
+      return '<div class="tag-editor-empty">No tags on this workstream yet.</div>';
+    }
+    return state.availableTags
+      .slice()
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }))
+      .map((tag) => {
+      const checked = state.tags.includes(tag.name) ? ' checked' : '';
+      return `<label class="tag-editor-option">`
+        + `<input type="checkbox" data-tag-option-checkbox="${encodeURIComponent(tag.name)}"${checked} />`
+        + `<span class="tag-editor-option-swatch" style="background:${tag.color}"></span>`
+        + `<span class="tag-editor-option-label">${esc(tag.name)}</span>`
+        + `</label>`;
+      }).join('');
+  };
+
+  const render = () => {
+    const summary = renderTagEditorBadges(state.tags, wsId, disabled);
+    const plusButton = disabled
+      ? ''
+      : '<button class="tag-editor-plus-btn" type="button" data-tag-picker-toggle="true" aria-label="Open tag picker">+</button>';
+    const draftTextColor = getTagColorText(state.draftColor);
+    const colorOptions = TAG_COLOR_OPTIONS.map((option) => {
+      const selected = option.value === state.draftColor ? ' selected' : '';
+      const optionTextColor = getTagColorText(option.value);
+      return `<option value="${option.value}"${selected} style="background:${option.value};color:${optionTextColor}">${esc(option.label)}</option>`;
+    }).join('');
+
+    editorEl.innerHTML = `<div class="tag-editor-summary">${summary}${plusButton}</div>`
+      + `<div class="tag-editor-dropdown${state.pickerOpen && !disabled ? '' : ' hidden'}">`
+      + `<div class="tag-editor-options">${renderTagOptions()}</div>`
+      + `<div class="tag-editor-dropdown-actions">`
+      + `<button class="tag-editor-create-toggle-btn" type="button" data-tag-create-toggle="true"${state.loading ? ' disabled' : ''}>Create</button>`
+      + `</div>`
+      + `<div class="tag-editor-create-panel${state.creating ? '' : ' hidden'}">`
+      + `<div class="tag-editor-create-row">`
+      + `<input class="tag-editor-input" type="text" placeholder="Tag name" value="${esc(state.draftName)}" data-tag-create-input="true"${state.savingTag ? ' disabled' : ''} />`
+      + `</div>`
+      + `<div class="tag-editor-create-row">`
+      + `<select class="tag-editor-color-select" data-tag-create-color="true" style="background:${state.draftColor};color:${draftTextColor}"${state.savingTag ? ' disabled' : ''}>${colorOptions}</select>`
+      + `</div>`
+      + `<div class="tag-editor-actions">`
+      + `<div class="tag-editor-status">${esc(state.status)}</div>`
+      + `<div class="tag-editor-create-row">`
+      + `<button class="tag-editor-create-cancel-btn" type="button" data-tag-create-cancel="true"${state.savingTag ? ' disabled' : ''}>Cancel</button>`
+      + `<button class="tag-editor-create-submit-btn" type="button" data-tag-create-submit="true"${state.savingTag ? ' disabled' : ''}>Create Tag</button>`
+      + `</div>`
+      + `</div>`
+      + `</div>`
+      + `</div>`;
+  };
+
+  const setTags = (nextTags) => {
+    state.tags = normalizeTaskTags(nextTags);
+    syncCatalog(state.availableTags);
+    render();
+    emitChange();
+  };
+
+  const ensureCatalogLoaded = async (force = false) => {
+    if (!wsId || disabled) return;
+    state.loading = true;
+    state.status = '';
+    render();
+    try {
+      const tags = await fetchWorkstreamTagCatalog(wsId, { force });
+      syncCatalog(tags, { updateGlobalCache: true });
+    } catch (e) {
+      state.status = e.message || String(e);
+    } finally {
+      state.loading = false;
+      render();
+    }
+  };
+
+  const openPicker = async () => {
+    if (disabled) return;
+    state.pickerOpen = true;
+    render();
+    await ensureCatalogLoaded();
+  };
+
+  const closePicker = () => {
+    if (!state.pickerOpen) return;
+    state.pickerOpen = false;
+    state.creating = false;
+    state.status = '';
+    render();
+  };
+
+  render();
+
+  editorEl.addEventListener('click', async (event) => {
+    if (disabled) return;
+    event.stopPropagation();
+
+    const pickerToggle = event.target.closest('[data-tag-picker-toggle]');
+    if (pickerToggle) {
+      event.preventDefault();
+      if (state.pickerOpen) {
+        closePicker();
+      } else {
+        await openPicker();
+      }
+      return;
+    }
+
+    const createToggle = event.target.closest('[data-tag-create-toggle]');
+    if (createToggle) {
+      event.preventDefault();
+      state.creating = true;
+      state.status = '';
+      render();
+      editorEl.querySelector('[data-tag-create-input="true"]')?.focus();
+      return;
+    }
+
+    const createCancel = event.target.closest('[data-tag-create-cancel]');
+    if (createCancel) {
+      event.preventDefault();
+      state.creating = false;
+      state.status = '';
+      render();
+      return;
+    }
+
+    const createSubmit = event.target.closest('[data-tag-create-submit]');
+    if (createSubmit) {
+      event.preventDefault();
+      const name = normalizeTaskTags([state.draftName])[0];
+      if (!name) {
+        state.status = 'Tag name is required.';
+        render();
+        editorEl.querySelector('[data-tag-create-input="true"]')?.focus();
+        return;
+      }
+      state.savingTag = true;
+      state.status = '';
+      render();
+      try {
+        const createdTag = await api('workstream/upsert-tag/' + wsId, {
+          method: 'POST',
+          body: {
+            name,
+            color: state.draftColor,
+          },
+        });
+        syncCatalog([...(getWorkstreamTagCatalog(wsId) || []), createdTag], { updateGlobalCache: true });
+        state.tags = normalizeTaskTags([...state.tags, createdTag.name]);
+        state.creating = false;
+        state.draftName = '';
+        state.status = '';
+        emitChange();
+      } catch (e) {
+        state.status = e.message || String(e);
+      } finally {
+        state.savingTag = false;
+        render();
+      }
+    }
+  });
+
+  editorEl.addEventListener('change', (event) => {
+    if (disabled) return;
+    const checkbox = event.target.closest('[data-tag-option-checkbox]');
+    if (checkbox) {
+      const tag = decodeURIComponent(checkbox.dataset.tagOptionCheckbox || '');
+      if (!tag) return;
+      if (checkbox.checked) {
+        state.tags = normalizeTaskTags([...state.tags, tag]);
+      } else {
+        state.tags = state.tags.filter((value) => value !== tag);
+      }
+      render();
+      emitChange();
+      return;
+    }
+
+    const colorSelect = event.target.closest('[data-tag-create-color]');
+    if (colorSelect) {
+      state.draftColor = colorSelect.value;
+      colorSelect.style.background = state.draftColor;
+      colorSelect.style.color = getTagColorText(state.draftColor);
+    }
+  });
+
+  editorEl.addEventListener('input', (event) => {
+    const createInput = event.target.closest('[data-tag-create-input]');
+    if (createInput) {
+      state.draftName = createInput.value;
+      if (state.status) {
+        state.status = '';
+        render();
+      }
+    }
+  });
+
+  editorEl.addEventListener('keydown', (event) => {
+    const createInput = event.target.closest('[data-tag-create-input]');
+    if (createInput && event.key === 'Enter') {
+      event.preventDefault();
+      editorEl.querySelector('[data-tag-create-submit="true"]')?.click();
+    }
+  });
+
+  const onDocumentClick = (event) => {
+    if (!document.body.contains(editorEl)) {
+      document.removeEventListener('click', onDocumentClick);
+      return;
+    }
+    if (!editorEl.contains(event.target)) {
+      closePicker();
+    }
+  };
+  document.addEventListener('click', onDocumentClick);
+
+  return {
+    getTags: () => state.tags.slice(),
+    setTags,
+    focus: () => editorEl.querySelector('[data-tag-picker-toggle="true"]')?.focus(),
+  };
 }
 
 // ── Icons (inline SVG) ──────────────────────────────────────────
@@ -1377,14 +2232,14 @@ function setTaskCommentDraft(taskId, value) {
 
 function startEditTaskComment(taskId, commentIndex) {
   taskCommentEditing = { taskId: String(taskId), index: Number(commentIndex) };
-  showTaskDetail(taskId);
+  showTaskDetail(taskId, { updateHistory: false });
 }
 
 function cancelEditTaskComment(taskId) {
   if (taskCommentEditing && taskCommentEditing.taskId === String(taskId)) {
     taskCommentEditing = null;
   }
-  showTaskDetail(taskId);
+  showTaskDetail(taskId, { updateHistory: false });
 }
 
 async function addTaskComment(taskId, btn) {
@@ -1400,7 +2255,7 @@ async function addTaskComment(taskId, btn) {
       body: { message },
     });
     taskCommentDraftByTaskId[taskId] = '';
-    await showTaskDetail(taskId);
+    await showTaskDetail(taskId, { updateHistory: false });
     await loadBoard({ preserveSelection: true });
   } catch (e) {
     if (btn) btn.disabled = false;
@@ -1424,7 +2279,7 @@ async function saveEditedTaskComment(taskId, commentIndex, btn) {
       body: { index: commentIndex, message },
     });
     taskCommentEditing = null;
-    await showTaskDetail(taskId);
+    await showTaskDetail(taskId, { updateHistory: false });
     await loadBoard({ preserveSelection: true });
   } catch (e) {
     if (btn) btn.disabled = false;
@@ -1445,7 +2300,7 @@ async function deleteTaskComment(taskId, commentIndex, btn) {
     if (taskCommentEditing && taskCommentEditing.taskId === String(taskId)) {
       taskCommentEditing = null;
     }
-    await showTaskDetail(taskId);
+    await showTaskDetail(taskId, { updateHistory: false });
     await loadBoard({ preserveSelection: true });
   } catch (e) {
     if (btn) btn.disabled = false;
@@ -1557,9 +2412,13 @@ function renderSidebar() {
     const activeDot = activeTriggerCount > 0
       ? `<span class="trigger-active-dot" title="${activeTriggerCount} active trigger${activeTriggerCount === 1 ? '' : 's'}"></span>`
       : '';
-    const hasMount = !!ws.mounted_workspace_path;
+    const workingDirectory = ws.working_directory || '';
+    const hasMount = !!workingDirectory;
+    const mountAvailable = ws.mount_available !== false;
     const mountBadge = hasMount
-      ? `<span class="mount-badge" title="Mounted workspace: ${esc(ws.mounted_workspace_path)}">M</span>`
+      ? mountAvailable
+        ? `<span class="mount-badge" title="Working directory: ${esc(workingDirectory)}">M</span>`
+        : `<span class="mount-badge mount-broken" title="Working directory missing: ${esc(workingDirectory)}">!</span>`
       : '';
     const count = taskCounts[ws.id] || 0;
     const countBadge = count > 0 ? `<span class="sidebar-count">${count}</span>` : '';
@@ -1634,10 +2493,17 @@ function _applySchedulerStatus(data) {
 }
 
 // ── Select workstream ───────────────────────────────────────────
-async function selectWorkstream(wsId) {
+async function selectWorkstream(wsId, opts = {}) {
+  const { updateHistory = true, replaceHistory = false, keepTaskModal = false } = opts;
   selectedWsId = wsId;
+  if (!keepTaskModal) {
+    closeModal('task-modal', { updateHistory: false });
+  }
   renderSidebar();
   await loadBoard();
+  if (updateHistory) {
+    syncNavigatorRoute(buildWorkstreamRoute(wsId), { replace: replaceHistory });
+  }
 }
 
 async function openAgentRunWorkstream(wsId) {
@@ -1679,6 +2545,17 @@ async function loadBoard() {
     // Load the board first, then hydrate lock badges asynchronously.
     board = await api('board/' + selectedWsId, { timeoutMs: 30000 });
   } catch (e) {
+    if (e && e.code === 'NOT_FOUND') {
+      try {
+        await api('workstream/read/' + selectedWsId, { timeoutMs: 10000 });
+        board = await api('board/' + selectedWsId, { timeoutMs: 30000 });
+      } catch (retryErr) {
+        e = retryErr;
+      }
+    }
+  }
+
+  if (!board) {
     const boardEl = document.getElementById('board');
     if (boardEl) {
       boardEl.innerHTML = `<div style="padding:16px;color:#f85149;">Failed to load workstream board: ${esc(e.message || e)}</div>`;
@@ -1742,7 +2619,10 @@ function renderBoard(ws, tasks, lockMap) {
     const stateTasks = tasks.filter(t => t.status === state);
     html += `<div class="column" data-state="${esc(state)}">
       <div class="column-header">
-        ${esc(state)}
+        <div class="column-title-row">
+          <span class="column-title-label">${esc(state)}</span>
+          <button class="column-add-btn" type="button" data-create-state="${encodeURIComponent(state)}" title="Add task to ${esc(state)}">+</button>
+        </div>
         <span class="count">${stateTasks.length}</span>
       </div>
       <div class="column-cards">`;
@@ -1784,8 +2664,112 @@ function renderBoard(ws, tasks, lockMap) {
   board.querySelectorAll('.card').forEach(el => {
     el.addEventListener('click', () => showTaskDetail(el.dataset.taskId));
   });
+  board.querySelectorAll('[data-create-state]').forEach((el) => {
+    el.addEventListener('click', (event) => {
+      event.stopPropagation();
+      showCreateTaskModal(decodeURIComponent(el.dataset.createState || ''));
+    });
+  });
 
   setupTaskReorderDnD(board);
+}
+
+function showCreateTaskModal(state) {
+  if (!selectedWsId || !selectedWs) return;
+
+  const states = Object.keys(selectedWs.task_states || {});
+  const targetState = states.includes(state) ? state : (states[0] || 'pending');
+  const modal = document.getElementById('create-task-modal');
+  const content = document.getElementById('create-task-modal-content');
+  if (!modal || !content) return;
+
+  content.dataset.targetState = targetState;
+  content.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-header-left"><h3>Create Task</h3></div>
+      <div class="modal-header-actions">
+        <button class="modal-close" onclick="closeModal('create-task-modal')">&times;</button>
+      </div>
+    </div>
+    <div class="create-task-subtitle">${esc(selectedWs.name)} · ${esc(targetState)}</div>
+    <div class="create-task-form">
+      <div class="create-task-field">
+        <label for="create-task-title">Title</label>
+        <input id="create-task-title" class="create-task-input" type="text" placeholder="Task title" maxlength="200" />
+      </div>
+      <div class="create-task-field">
+        <label for="create-task-description">Description</label>
+        <textarea id="create-task-description" class="create-task-textarea" placeholder="Add task details..."></textarea>
+      </div>
+      <div class="create-task-field">
+        <label>Tags</label>
+        ${renderTagEditor({ editorId: 'create-task-tags', tags: [], wsId: selectedWsId })}
+      </div>
+      <div id="create-task-error" class="create-task-error"></div>
+      <div class="create-task-actions">
+        <button id="create-task-cancel" class="create-task-cancel" type="button">Cancel</button>
+        <button id="create-task-submit" class="create-task-submit" type="button">Create Task</button>
+      </div>
+    </div>`;
+
+  const titleInput = content.querySelector('#create-task-title');
+  const descriptionInput = content.querySelector('#create-task-description');
+  const errorEl = content.querySelector('#create-task-error');
+  const cancelBtn = content.querySelector('#create-task-cancel');
+  const submitBtn = content.querySelector('#create-task-submit');
+  const createTaskTagEditor = initTagEditor(content.querySelector('[data-tag-editor-id="create-task-tags"]'), {
+    initialTags: [],
+    wsId: selectedWsId,
+  });
+
+  const submit = async () => {
+    const title = String(titleInput?.value || '').trim();
+    const description = String(descriptionInput?.value || '').trim();
+    if (!title) {
+      if (errorEl) errorEl.textContent = 'Title is required.';
+      titleInput?.focus();
+      return;
+    }
+
+    if (errorEl) errorEl.textContent = '';
+    if (submitBtn) submitBtn.disabled = true;
+    if (cancelBtn) cancelBtn.disabled = true;
+    try {
+      await api('task/create/' + selectedWsId, {
+        method: 'POST',
+        body: {
+          title,
+          description,
+          status: targetState,
+          tags: createTaskTagEditor.getTags(),
+        },
+      });
+      closeModal('create-task-modal');
+      await loadBoard();
+    } catch (e) {
+      if (errorEl) errorEl.textContent = e.message || String(e);
+      if (submitBtn) submitBtn.disabled = false;
+      if (cancelBtn) cancelBtn.disabled = false;
+    }
+  };
+
+  cancelBtn?.addEventListener('click', () => closeModal('create-task-modal'));
+  submitBtn?.addEventListener('click', submit);
+  titleInput?.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      await submit();
+    }
+  });
+  descriptionInput?.addEventListener('keydown', async (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      await submit();
+    }
+  });
+
+  modal.classList.remove('hidden');
+  titleInput?.focus();
 }
 
 // ── Render a single card ────────────────────────────────────────
@@ -2050,7 +3034,8 @@ function buildWorkstreamOptions(workstreams, selectedId) {
   return roots.map(r => renderGroup(r, 0)).join('');
 }
 
-async function showTaskDetail(taskId) {
+async function showTaskDetail(taskId, opts = {}) {
+  const { updateHistory = true, replaceHistory = false } = opts;
   let task, lockData;
   try {
     [task, lockData] = await Promise.all([
@@ -2068,6 +3053,13 @@ async function showTaskDetail(taskId) {
     const code = err && err.code ? '\nCode: ' + err.code : '';
     alert('Cannot open this task.\n\nTask ID: ' + taskId + '\n\nReason: ' + reason + code);
     return;
+  }
+
+  if (!selectedWs || selectedWs.id !== task.workstream_id) {
+    await selectWorkstream(task.workstream_id, {
+      updateHistory: false,
+      keepTaskModal: true,
+    });
   }
 
   const modal = document.getElementById('task-modal');
@@ -2152,14 +3144,20 @@ async function showTaskDetail(taskId) {
   main += `<div class="task-uid">Task UID: ${esc(task.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(task.id)}', this)">Copy</button></div>`;
 
   // Tags (colored)
-  if (task.tags && task.tags.length) {
-    main += `<div class="detail-section"><h4>Tags</h4><div class="detail-tags">`;
-    for (const tag of task.tags) {
-      const color = getTagColor(selectedWsId, tag);
-      main += `<span class="detail-tag" style="background:${color}">${esc(tag)}</span>`;
-    }
-    main += `</div></div>`;
+  const taskTags = Array.isArray(task.tags) ? task.tags : [];
+  const tagsLocked = !!(lockData && lockData.locked);
+  main += `<div class="detail-section"><h4>Tags</h4>`;
+  main += renderTagEditor({
+    editorId: 'task-tags-editor',
+    tags: taskTags,
+    wsId: selectedWsId,
+    disabled: tagsLocked,
+  });
+  main += `<div id="task-tags-status" class="tag-editor-status"></div>`;
+  if (tagsLocked) {
+    main += `<div class="tag-editor-hint">Tags cannot be changed while this task is locked.</div>`;
   }
+  main += `</div>`;
 
   // Description
   if (task.description) {
@@ -2173,7 +3171,6 @@ async function showTaskDetail(taskId) {
   const attachments = Array.isArray(task.attachments) ? task.attachments : [];
   const attachmentsLocked = !!(lockData && lockData.locked);
   main += `<div class="detail-section"><h4>Attachments</h4>`;
-  main += `<div class="attachment-hint">Attachments are artifact paths and will be inlined into agent prompts.</div>`;
   if (attachments.length) {
     main += `<ul class="attachment-list">`;
     for (const path of attachments) {
@@ -2395,6 +3392,58 @@ async function showTaskDetail(taskId) {
     content.addEventListener('click', () => stateMenuEl.classList.add('hidden'));
   }
 
+  // ── Tags editor wiring ───────────────────────────────────────
+  const initialTaskTags = normalizeTaskTags(taskTags);
+  const taskTagsStatus = content.querySelector('#task-tags-status');
+  let persistedTaskTags = initialTaskTags.slice();
+  let pendingTaskTags = null;
+  let taskTagsPersistInFlight = false;
+
+  async function persistTaskTags(nextTags) {
+    if (tagsLocked) return;
+    pendingTaskTags = normalizeTaskTags(nextTags);
+    if (taskTagsPersistInFlight) return;
+
+    taskTagsPersistInFlight = true;
+    try {
+      while (pendingTaskTags) {
+        const tagsToSave = pendingTaskTags.slice();
+        pendingTaskTags = null;
+
+        if (sameTaskTags(persistedTaskTags, tagsToSave)) {
+          continue;
+        }
+
+        if (taskTagsStatus) taskTagsStatus.textContent = 'Saving...';
+        await api('task/update/' + task.id, {
+          method: 'POST',
+          body: {
+            tags: tagsToSave,
+          },
+        });
+        persistedTaskTags = tagsToSave.slice();
+        await loadBoard({ preserveSelection: true });
+      }
+
+      if (taskTagsStatus) taskTagsStatus.textContent = '';
+    } catch (e) {
+      pendingTaskTags = null;
+      if (taskTagsStatus) taskTagsStatus.textContent = 'Save failed: ' + (e.message || e);
+    } finally {
+      taskTagsPersistInFlight = false;
+    }
+  }
+
+  const taskTagEditor = initTagEditor(content.querySelector('[data-tag-editor-id="task-tags-editor"]'), {
+    initialTags: initialTaskTags,
+    disabled: tagsLocked,
+    wsId: selectedWsId,
+    onChange: (nextTags) => {
+      if (taskTagsStatus) taskTagsStatus.textContent = '';
+      persistTaskTags(nextTags);
+    },
+  });
+
   // ── Move / Duplicate panel wiring ──────────────────────────────
   const wsSelect = content.querySelector('#move-target-ws');
   const stateSelect = content.querySelector('#move-target-state');
@@ -2496,7 +3545,7 @@ async function showTaskDetail(taskId) {
           method: 'POST',
           body: { path },
         });
-        await showTaskDetail(task.id);
+        await showTaskDetail(task.id, { updateHistory: false });
       } catch (e) {
         addAttachmentBtn.disabled = false;
         alert('Add attachment failed: ' + (e.message || e));
@@ -2523,7 +3572,7 @@ async function showTaskDetail(taskId) {
           method: 'POST',
           body: { path },
         });
-        await showTaskDetail(task.id);
+        await showTaskDetail(task.id, { updateHistory: false });
       } catch (e) {
         btn.disabled = false;
         alert('Remove attachment failed: ' + (e.message || e));
@@ -2646,6 +3695,9 @@ async function showTaskDetail(taskId) {
   });
 
   modal.classList.remove('hidden');
+  if (updateHistory) {
+    syncNavigatorRoute(buildTaskRoute(task.id), { replace: replaceHistory });
+  }
 }
 
 // ── Archive task ────────────────────────────────────────────────
@@ -2718,6 +3770,9 @@ function showTriggers() {
       let typeLabel;
       if (t.on_state) {
         typeLabel = `On state → ${esc(t.on_state)}`;
+        typeLabel += t.task_selection === 'all_unlocked'
+          ? ` (all unlocked tasks)`
+          : ` (first unlocked task)`;
       } else if (t.on_schedule) {
         typeLabel = `Schedule: ${esc(cronToHuman(t.on_schedule))}`;
         if (t.filter) typeLabel += ` (filter: ${esc(JSON.stringify(t.filter))})`;
@@ -2829,8 +3884,12 @@ async function showWorkstreamInfo() {
       </div>
     </div>
     <div class="ws-info-uid">Workstream UID: ${esc(info.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(info.id)}', this)">Copy</button></div>
-    <div class="ws-info-path">Mounted workspace path: ${info.mounted_workspace_path ? esc(info.mounted_workspace_path) : '<em>none</em>'}</div>
-    <div class="ws-info-path">Resolved workspace root: ${info.resolved_workspace_path ? esc(info.resolved_workspace_path) : '<em>unknown</em>'}</div>
+    <div class="ws-info-path">Working directory: ${info.working_directory ? esc(info.working_directory) : '<em>none set at this level</em>'}</div>
+    <div class="ws-info-path">Artifact root: ${info.artifact_root ? esc(info.artifact_root) : '<em>none set at this level</em>'}</div>
+    <div class="ws-info-path">Child workstream root: ${info.child_workstream_root ? esc(info.child_workstream_root) : '<em>none set at this level</em>'}</div>
+    <div class="ws-info-path">Resolved working directory: ${info.resolved_workspace_path ? esc(info.resolved_workspace_path) : '<em>unknown</em>'}</div>
+    <div class="ws-info-path">Resolved artifact directory: ${info.resolved_artifact_directory ? esc(info.resolved_artifact_directory) : '<em>unknown</em>'}</div>
+    <div class="ws-info-path">Resolved child workstream root: ${info.resolved_child_workstream_root ? esc(info.resolved_child_workstream_root) : '<em>unknown</em>'}</div>
     <div class="detail-section">
       <h4>Environment Variables</h4>
   `;
@@ -2876,9 +3935,59 @@ async function showWorkstreamInfo() {
     </div>
   `;
 
+  const concurrencyPolicy = JSON.stringify(info.agent_concurrency || {}, null, 2);
+  html += `
+    <div class="ws-sm-section">
+      <h4>Concurrency Policy</h4>
+      <div class="ws-sm-note">Optional JSON policy for per-agent limits. Use <code>state_overrides</code> when the same agent should have separate slots in different states.</div>
+      <textarea id="workstream-concurrency-textarea" class="ws-context-textarea" placeholder='{"default":1,"state_overrides":{"Staging Deploy":{"overrides":{"DevOps Engineer":1}},"Production Deploy":{"overrides":{"DevOps Engineer":1}}}}'>${esc(concurrencyPolicy)}</textarea>
+      <div class="ws-context-actions">
+        <button class="ws-context-save" onclick="saveWorkstreamConcurrency()">Save Concurrency Policy</button>
+      </div>
+      <div id="workstream-concurrency-status" class="ws-context-status"></div>
+    </div>
+  `;
+
   html += `</div>`;
   content.innerHTML = html;
   modal.classList.remove('hidden');
+}
+
+async function saveWorkstreamConcurrency() {
+  if (!selectedWsId) return;
+  const textarea = document.getElementById('workstream-concurrency-textarea');
+  const status = document.getElementById('workstream-concurrency-status');
+  if (!textarea) return;
+
+  let parsed;
+  try {
+    parsed = textarea.value.trim() ? JSON.parse(textarea.value) : {};
+  } catch (_err) {
+    if (status) status.textContent = 'Invalid JSON.';
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    if (status) status.textContent = 'Concurrency policy must be a JSON object.';
+    return;
+  }
+
+  if (status) status.textContent = 'Saving...';
+  try {
+    const updated = await api('workstream/concurrency/' + selectedWsId, {
+      method: 'POST',
+      body: {
+        agent_concurrency: parsed,
+      },
+    });
+    if (selectedWs && selectedWs.id === selectedWsId) {
+      selectedWs.agent_concurrency = updated.agent_concurrency || {};
+    }
+    textarea.value = JSON.stringify(updated.agent_concurrency || {}, null, 2);
+    if (status) status.textContent = 'Saved.';
+  } catch (err) {
+    if (status) status.textContent = err && err.message ? err.message : 'Save failed.';
+  }
 }
 
 async function showWorkstreamContext() {
@@ -2959,8 +4068,12 @@ async function togglePause() {
 }
 
 // ── Modal close ─────────────────────────────────────────────────
-function closeModal(id) {
-  document.getElementById(id).classList.add('hidden');
+function closeModal(id, opts = {}) {
+  const modal = document.getElementById(id);
+  if (modal) modal.classList.add('hidden');
+  if (id === 'task-modal' && opts.updateHistory !== false && selectedWsId) {
+    syncNavigatorRoute(buildWorkstreamRoute(selectedWsId), { replace: !!opts.replaceHistory });
+  }
 }
 
 // ── Audit log ───────────────────────────────────────────────────
@@ -3571,6 +4684,12 @@ function startPolling() {
     });
   }
   await loadWorkstreams();
+  window.addEventListener('popstate', () => {
+    openRouteFromNavigator({ replaceHistory: true }).catch((e) => {
+      console.error('Failed to restore navigation state', e);
+    });
+  });
+  await openRouteFromNavigator({ replaceHistory: true });
   await loadSchedulerStatus();
   startPolling();
 })();

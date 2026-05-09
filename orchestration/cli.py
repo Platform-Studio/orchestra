@@ -43,8 +43,12 @@ def cmd_workstream_create(args):
         kwargs["task_states"] = json.loads(args.states)
     if args.retry:
         kwargs["retry"] = json.loads(args.retry)
-    if args.mounted_workspace_path:
-        kwargs["mounted_workspace_path"] = args.mounted_workspace_path
+    if args.working_directory:
+        kwargs["working_directory"] = args.working_directory
+    if args.artifact_root:
+        kwargs["artifact_root"] = args.artifact_root
+    if args.child_workstream_root:
+        kwargs["child_workstream_root"] = args.child_workstream_root
     ws = create_workstream(**kwargs)
     _output(ws.to_dict())
 
@@ -72,11 +76,43 @@ def cmd_workstream_context(args):
     _output(read_workstream_context(args.id, base_dir=args.base_dir))
 
 
+def cmd_workstream_gettags(args):
+    from .workstreams import get_workstream_tags
+    _output(get_workstream_tags(args.id, base_dir=args.base_dir))
+
+
+def cmd_workstream_upsert_tag(args):
+    from .workstreams import upsert_workstream_tag
+    _output(upsert_workstream_tag(args.id, args.name, args.color, base_dir=args.base_dir))
+
+
 def cmd_workstream_update_context(args):
     from .workstreams import set_workstream_context
     ws = set_workstream_context(
         args.id,
         context=args.content,
+        base_dir=args.base_dir,
+        updated_by=args.updated_by,
+    )
+    _output(ws.to_dict())
+
+
+def cmd_workstream_agent_concurrency(args):
+    from .workstreams import read_workstream_agent_concurrency
+    _output(read_workstream_agent_concurrency(args.id, base_dir=args.base_dir))
+
+
+def cmd_workstream_update_agent_concurrency(args):
+    from .workstreams import set_workstream_agent_concurrency
+
+    try:
+        policy = json.loads(args.policy)
+    except json.JSONDecodeError as exc:
+        _error(f"Invalid JSON for --policy: {exc}")
+
+    ws = set_workstream_agent_concurrency(
+        args.id,
+        agent_concurrency=policy,
         base_dir=args.base_dir,
         updated_by=args.updated_by,
     )
@@ -155,6 +191,29 @@ def cmd_workstream_descendants(args):
         for kid in kids:
             stack.append((kid.id, depth + 1))
 
+    _output(result)
+
+
+def cmd_workstream_migrate_artifact_root_home(args):
+    from .migration import migrate_artifact_root_home
+
+    result = migrate_artifact_root_home(
+        args.id,
+        base_dir=args.base_dir,
+        dry_run=not args.apply,
+        target_root=args.target_root,
+        archive_conflicts=args.archive_conflicts,
+    )
+    _output(result)
+
+
+def cmd_workstream_migrate_child_layout(args):
+    from .migration import migrate_child_workstream_layout
+
+    result = migrate_child_workstream_layout(
+        base_dir=args.base_dir,
+        dry_run=not args.apply,
+    )
     _output(result)
 
 
@@ -418,6 +477,8 @@ def cmd_trigger_create(args):
         kwargs["on_state"] = args.on_state
     if args.on_schedule:
         kwargs["on_schedule"] = args.on_schedule
+    if args.task_selection:
+        kwargs["task_selection"] = args.task_selection
     if args.filter:
         kwargs["filter"] = json.loads(args.filter)
     if args.agent:
@@ -639,7 +700,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--parent")
     p.add_argument("--states", help="JSON string of task states map")
     p.add_argument("--retry", help="JSON string of retry config")
-    p.add_argument("--mounted-workspace-path", help="Path to mounted workspace root for descendants")
+    p.add_argument("--working-directory", help="Code workspace root for this workstream subtree")
+    p.add_argument("--artifact-root", help="Artifact root for this workstream subtree")
+    p.add_argument("--child-workstream-root", help="State root where child workstreams should be stored")
     p.set_defaults(func=cmd_workstream_create)
 
     p = ws_sub.add_parser("list")
@@ -653,11 +716,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id")
     p.set_defaults(func=cmd_workstream_context)
 
+    p = ws_sub.add_parser("agent-concurrency")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_workstream_agent_concurrency)
+
+    p = ws_sub.add_parser("gettags")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_workstream_gettags)
+
+    p = ws_sub.add_parser("upsert-tag")
+    p.add_argument("id")
+    p.add_argument("--name", required=True)
+    p.add_argument("--color")
+    p.set_defaults(func=cmd_workstream_upsert_tag)
+
     p = ws_sub.add_parser("update-context")
     p.add_argument("id")
     p.add_argument("--content", required=True)
     p.add_argument("--updated-by")
     p.set_defaults(func=cmd_workstream_update_context)
+
+    p = ws_sub.add_parser("update-agent-concurrency")
+    p.add_argument("id")
+    p.add_argument("--policy", required=True, help="JSON object describing agent concurrency policy")
+    p.add_argument("--updated-by")
+    p.set_defaults(func=cmd_workstream_update_agent_concurrency)
 
     p = ws_sub.add_parser("find")
     p.add_argument("--query", required=True)
@@ -670,6 +753,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", help="Root workstream ID to traverse")
     p.add_argument("--include-self", action="store_true", help="Include the root workstream in output")
     p.set_defaults(func=cmd_workstream_descendants)
+
+    p = ws_sub.add_parser("migrate-artifact-root-home")
+    p.add_argument("id", help="Root workstream ID whose explicit artifact_root should move into foundation storage")
+    p.add_argument("--apply", action="store_true", help="Apply migration; default is dry run")
+    p.add_argument("--target-root", help="Optional new artifact root path inside the foundation repo")
+    p.add_argument("--archive-conflicts", action="store_true", help="Preserve conflicting source artifacts under artifacts/_migration_conflicts/<workstream_id>/ instead of failing")
+    p.set_defaults(func=cmd_workstream_migrate_artifact_root_home)
+
+    p = ws_sub.add_parser("migrate-child-layout")
+    p.add_argument("--apply", action="store_true", help="Apply migration; default is dry run")
+    p.set_defaults(func=cmd_workstream_migrate_child_layout)
 
     # ── Task ─────────────────────────────────────────────────────────
     env_parser = subparsers.add_parser("env")
@@ -834,6 +928,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("workstream_id")
     p.add_argument("--on-state", help="State transition that fires this trigger")
     p.add_argument("--on-schedule", help="Cron expression for schedule-based trigger")
+    p.add_argument("--task-selection", choices=["first_unlocked", "all_unlocked"], help="For state triggers, run on the first unlocked task or batch all unlocked tasks in the state")
     p.add_argument("--filter", help="JSON string of task filter for schedule triggers")
     p.add_argument("--action", required=True, choices=["run_agent", "run_command"])
     p.add_argument("--agent")

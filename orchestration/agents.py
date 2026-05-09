@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 import yaml
 from .image_validation import validate_task_image_attachments
+from .persistence import resolve_workstream_root
 
 try:
     from dotenv import load_dotenv
@@ -311,7 +312,7 @@ def _compact_json(value) -> str:
 
 
 def _state_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, ".orchestration")
+    return os.path.join(resolve_workstream_root(base_dir), ".orchestration")
 
 
 def _active_agents_path(base_dir: str) -> str:
@@ -462,7 +463,7 @@ def _agent_identity_keys(agent_ref: str, base_dir: str = ".") -> set:
     return {k for k in keys if k}
 
 
-def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = ".") -> int:
+def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = ".", concurrency_state: str = None) -> int:
     """Count active runs for a specific agent within a workstream."""
     if not workstream_id or not agent_ref:
         return 0
@@ -475,9 +476,14 @@ def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = 
         runs = _prune_dead_active_runs(base_dir)
 
     count = 0
+    target_state = str(concurrency_state or "").strip().lower()
     for run in runs:
         if str(run.get("workstream_id") or "") != str(workstream_id):
             continue
+        if target_state:
+            run_state = str(run.get("concurrency_state") or "").strip().lower()
+            if run_state != target_state:
+                continue
 
         run_keys = set()
         for candidate in (run.get("agent"), run.get("agent_ref")):
@@ -1477,7 +1483,7 @@ def _classify_run_outcome(returncode: int, timeout_expired: bool) -> str:
     return "failed"
 
 
-def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None) -> dict:
+def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None, concurrency_state: str = None) -> dict:
     """Run an agent via the configured local runtime against 0-N tasks.
 
     Callers are responsible for locking/unlocking tasks. This function
@@ -1495,6 +1501,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         base_dir: Workspace root.
         allow_paused_workstream: When true, allow manual execution even if the workstream is paused.
         retried_from_run_id: Optional originating run id when this run is a manual retry/replay.
+        concurrency_state: Optional state bucket used for agent concurrency.
     """
     if task_ids is None:
         task_ids = []
@@ -1570,25 +1577,12 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         orchestration_root = os.path.abspath(base_dir)
         workspace_root = orchestration_root
         if ws:
-            # For descendants under a mounted workstream, mounted_workspace_path is
-            # often set on an ancestor. Resolve the workspace that actually stores
-            # this workstream's files first.
             try:
                 workspace_root = os.path.abspath(
                     resolve_workstream_workspace(ws.id, base_dir=base_dir)
                 )
             except Exception:
                 workspace_root = orchestration_root
-
-            # If the current workstream itself is mounted, descendants should be
-            # developed in the mounted target path rather than the YAML storage root.
-            if ws.mounted_workspace_path:
-                _expanded = os.path.expanduser(ws.mounted_workspace_path)
-                workspace_root = (
-                    os.path.abspath(_expanded)
-                    if os.path.isabs(_expanded)
-                    else os.path.abspath(os.path.join(orchestration_root, _expanded))
-                )
         _path_context = (
             f"ORCHESTRATION_ROOT: {orchestration_root} "
             f"(orchestration CLI, artifacts, agent instructions)\n"
@@ -1728,6 +1722,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "effort": effort,
             "workstream_id": workstream_id,
             "workstream_path": _workstream_path(base_dir, workstream_id),
+            "concurrency_state": concurrency_state,
             "task_ids": list(task_ids),
             "tasks": task_titles,
             "prompt": task_prompt,
@@ -1783,6 +1778,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "model": model,
                 "effort": effort,
                 "workstream_id": workstream_id,
+                "concurrency_state": concurrency_state,
                 "task_ids": list(task_ids),
                 "pid": proc.pid,
                 "started_at": started_at,

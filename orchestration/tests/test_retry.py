@@ -129,12 +129,12 @@ class TestFindExpiredLocks:
         expired = find_expired_locks(workspace)
         assert len(expired) == 2
 
-    def test_finds_expired_lock_in_mounted_descendant(self, workspace, tmp_path):
-        mount_root = tmp_path / "mounted_repo"
-        mount_root.mkdir()
+    def test_finds_expired_lock_in_working_directory_descendant(self, workspace, tmp_path):
+        working_root = tmp_path / "mounted_repo"
+        working_root.mkdir()
 
         parent = create_workstream(name="Mounted Parent", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         from orchestration.workstreams import save_workstream
         save_workstream(parent, base_dir=workspace)
 
@@ -166,6 +166,18 @@ class TestFindOrphanedLocks:
     @patch("orchestration.locks._is_process_alive", return_value=False)
     def test_skips_expired_locks(self, _mock_alive, workspace, task):
         _make_expired_lock(task.id, workspace, pid=424242)
+        orphaned = find_orphaned_locks(workspace)
+        assert orphaned == []
+
+    def test_skips_lock_when_parent_dead_but_subprocess_alive(self, workspace, task, monkeypatch):
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        update_lock_pid(task.id, subprocess_pid=525252, base_dir=workspace)
+
+        monkeypatch.setattr(
+            "orchestration.locks._is_process_alive",
+            lambda pid: pid == 525252,
+        )
+
         orphaned = find_orphaned_locks(workspace)
         assert orphaned == []
 
@@ -420,6 +432,20 @@ class TestCleanupOrphanedLocks:
     def test_no_orphaned_locks_when_pid_alive(self, _mock_alive, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+
+        results = cleanup_orphaned_locks(workspace)
+        assert results == []
+        assert lock_status(task.id, base_dir=workspace) is not None
+
+    def test_keeps_lock_when_scheduler_pid_dead_but_subprocess_alive(self, workspace, ws, monkeypatch):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        update_lock_pid(task.id, subprocess_pid=525252, base_dir=workspace)
+
+        monkeypatch.setattr(
+            "orchestration.locks._is_process_alive",
+            lambda pid: pid == 525252,
+        )
 
         results = cleanup_orphaned_locks(workspace)
         assert results == []

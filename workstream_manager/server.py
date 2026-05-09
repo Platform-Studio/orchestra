@@ -16,6 +16,8 @@ import subprocess
 import sys
 import base64
 import mimetypes
+import threading
+import time
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
@@ -37,7 +39,10 @@ if WORKSPACE_DIR not in sys.path:
 from orchestration.workstreams import (
     list_workstreams, read_workstream, create_workstream,
     find_workstreams, save_workstream, list_workstream_hierarchy_env,
-    list_effective_workstream_env, resolve_workstream_workspace, set_workstream_context,
+    list_effective_workstream_env, resolve_workstream_workspace,
+    resolve_workstream_artifact_root, resolve_workstream_child_state_root, set_workstream_context,
+    read_workstream_agent_concurrency, set_workstream_agent_concurrency,
+    get_workstream_tags, upsert_workstream_tag,
 )
 from orchestration.tasks import (
     CorruptTaskError, create_task, read_task, update_task, list_tasks,
@@ -70,6 +75,54 @@ def _serialize_board_tasks(tasks):
         task_dict["lock"] = {"locked": False}
         task_dicts.append(task_dict)
     return task_dicts
+
+
+_POLL_SIDEBAR_CACHE_TTL_SECONDS = 5.0
+_poll_sidebar_cache_lock = threading.Lock()
+_poll_sidebar_cache = {
+    "expires_at": 0.0,
+    "data": None,
+}
+
+
+def _invalidate_poll_sidebar_cache() -> None:
+    with _poll_sidebar_cache_lock:
+        _poll_sidebar_cache["expires_at"] = 0.0
+        _poll_sidebar_cache["data"] = None
+
+
+def _build_poll_sidebar_snapshot() -> dict:
+    wss = list_workstreams(base_dir=WORKSPACE_DIR)
+    counts = {}
+    for ws in wss:
+        counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
+    try:
+        # Count only currently live runs from the active registry. This avoids
+        # inflating the sidebar badge with stale historical metadata entries.
+        _active_runs = list_active_agents(base_dir=WORKSPACE_DIR)
+        active_run_count = sum(1 for r in _active_runs if r.get("pid") is not None)
+    except Exception:
+        active_run_count = 0
+    return {
+        "workstreams": [w.to_dict() for w in wss],
+        "counts": counts,
+        "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
+        "active_triggers": get_active_triggers(),
+        "active_agent_runs": active_run_count,
+    }
+
+
+def _get_poll_sidebar_snapshot() -> dict:
+    with _poll_sidebar_cache_lock:
+        now = time.monotonic()
+        cached = _poll_sidebar_cache["data"]
+        if cached is not None and now < _poll_sidebar_cache["expires_at"]:
+            return cached
+
+        snapshot = _build_poll_sidebar_snapshot()
+        _poll_sidebar_cache["data"] = snapshot
+        _poll_sidebar_cache["expires_at"] = time.monotonic() + _POLL_SIDEBAR_CACHE_TTL_SECONDS
+        return snapshot
 
 
 def _run_orchestration_cli(args: list[str]) -> dict:
@@ -189,11 +242,7 @@ def handle_workstream(method, parts, params):
         wss = list_workstreams(base_dir=WORKSPACE_DIR)
         return _ok([w.to_dict() for w in wss])
     elif m == "counts":
-        wss = list_workstreams(base_dir=WORKSPACE_DIR)
-        counts = {}
-        for ws in wss:
-            counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
-        return _ok(counts)
+        return _ok(dict(_get_poll_sidebar_snapshot()["counts"]))
     elif m == "read" and parts:
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(ws.to_dict())
@@ -208,23 +257,48 @@ def handle_workstream(method, parts, params):
             )
             return _ok(updated.to_dict())
         return _ok({"id": ws.id, "name": ws.name, "context": ws.context})
+    elif m == "concurrency" and parts:
+        ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
+        if params.get("_http_method") == "POST":
+            updated = set_workstream_agent_concurrency(
+                ws.id,
+                agent_concurrency=params.get("agent_concurrency"),
+                base_dir=WORKSPACE_DIR,
+                updated_by=params.get("updated_by") or "Workspace Manager",
+            )
+            return _ok(updated.to_dict())
+        return _ok(read_workstream_agent_concurrency(ws.id, base_dir=WORKSPACE_DIR))
+    elif m == "gettags" and parts:
+        return _ok(get_workstream_tags(parts[0], base_dir=WORKSPACE_DIR))
+    elif m == "upsert-tag" and parts:
+        tag = upsert_workstream_tag(
+            parts[0],
+            params.get("name"),
+            params.get("color"),
+            base_dir=WORKSPACE_DIR,
+        )
+        return _ok(tag)
     elif m == "info" and parts:
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
         levels = list_workstream_hierarchy_env(parts[0], base_dir=WORKSPACE_DIR)
         effective = list_effective_workstream_env(parts[0], base_dir=WORKSPACE_DIR, include_system=False)
         resolved_root = resolve_workstream_workspace(ws.id, base_dir=WORKSPACE_DIR)
-        if ws.mounted_workspace_path:
-            expanded = os.path.expanduser(ws.mounted_workspace_path)
-            if os.path.isabs(expanded):
-                resolved_root = os.path.abspath(expanded)
-            else:
-                resolved_root = os.path.abspath(os.path.join(resolved_root, expanded))
+        resolved_artifact_root = resolve_workstream_artifact_root(ws.id, base_dir=WORKSPACE_DIR)
+        resolved_child_state_root = resolve_workstream_child_state_root(ws.id, base_dir=WORKSPACE_DIR)
+        ws_data = ws.to_dict()
         return _ok({
             "id": ws.id,
             "name": ws.name,
             "task_states": ws.task_states,
-            "mounted_workspace_path": ws.mounted_workspace_path,
+            "agent_concurrency": ws.agent_concurrency,
+            "working_directory": getattr(ws, "working_directory", None),
+            "artifact_root": getattr(ws, "artifact_root", None),
+            "child_workstream_root": getattr(ws, "child_workstream_root", None),
+            "mount_available": ws_data.get("mount_available"),
             "resolved_workspace_path": resolved_root,
+            "resolved_artifact_root": resolved_artifact_root,
+            "resolved_artifact_directory": os.path.join(resolved_artifact_root, "artifacts") if resolved_artifact_root else None,
+            "resolved_child_workstream_root": resolved_child_state_root,
             "effective_env": effective,
             "env_hierarchy": levels,
         })
@@ -255,6 +329,12 @@ def handle_workstream(method, parts, params):
             kwargs["parent_id"] = params["parent"]
         if "states" in params:
             kwargs["task_states"] = json.loads(params["states"])
+        if "working_directory" in params:
+            kwargs["working_directory"] = params["working_directory"]
+        if "artifact_root" in params:
+            kwargs["artifact_root"] = params["artifact_root"]
+        if "child_workstream_root" in params:
+            kwargs["child_workstream_root"] = params["child_workstream_root"]
         ws = create_workstream(**kwargs)
         return _ok(ws.to_dict())
     return _err(f"Unknown workstream method: {m}")
@@ -281,12 +361,24 @@ def handle_task(method, parts, params):
             return [p.strip() for p in raw.split(",") if p.strip()]
         return [str(raw).strip()]
 
+    def _parse_tags(raw):
+        if raw is None:
+            return None
+        if isinstance(raw, list):
+            return [str(v).strip() for v in raw if str(v).strip()]
+        if isinstance(raw, str):
+            if not raw.strip():
+                return []
+            return [tag.strip() for tag in raw.split(",") if tag.strip()]
+        text = str(raw).strip()
+        return [text] if text else []
+
     if m == "list" and parts:
         kwargs = {"workstream_id": parts[0], "base_dir": WORKSPACE_DIR}
         if "status" in params:
             kwargs["status"] = params["status"]
         if "tags" in params:
-            kwargs["tags"] = [t.strip() for t in params["tags"].split(",")]
+            kwargs["tags"] = _parse_tags(params.get("tags"))
         tasks = list_tasks(**kwargs)
         return _ok([t.to_dict() for t in tasks])
     elif m == "read" and parts:
@@ -296,8 +388,10 @@ def handle_task(method, parts, params):
         kwargs = {"workstream_id": parts[0], "title": params["title"], "base_dir": WORKSPACE_DIR}
         if "description" in params:
             kwargs["description"] = params["description"]
+        if "status" in params:
+            kwargs["initial_status"] = params["status"]
         if "tags" in params:
-            kwargs["tags"] = [t.strip() for t in params["tags"].split(",")]
+            kwargs["tags"] = _parse_tags(params.get("tags"))
         if "scheduled-at" in params:
             kwargs["scheduled_at"] = params["scheduled-at"]
         if "scheduled-action" in params:
@@ -315,7 +409,7 @@ def handle_task(method, parts, params):
         if "description" in params:
             kwargs["description"] = params["description"]
         if "tags" in params:
-            kwargs["tags"] = [t.strip() for t in params["tags"].split(",")]
+            kwargs["tags"] = _parse_tags(params.get("tags"))
         if "scheduled-at" in params:
             kwargs["scheduled_at"] = params["scheduled-at"]
         if "scheduled-action" in params:
@@ -489,24 +583,7 @@ def handle_agent(method, parts, params):
 
 def handle_poll(method, parts, params):
     """Combined polling endpoint — returns workstreams, counts, scheduler, and optionally board metadata."""
-    wss = list_workstreams(base_dir=WORKSPACE_DIR)
-    counts = {}
-    for ws in wss:
-        counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
-    try:
-        # Count only currently live runs from the active registry. This avoids
-        # inflating the sidebar badge with stale historical metadata entries.
-        _active_runs = list_active_agents(base_dir=WORKSPACE_DIR)
-        active_run_count = sum(1 for r in _active_runs if r.get("pid") is not None)
-    except Exception:
-        active_run_count = 0
-    result = {
-        "workstreams": [w.to_dict() for w in wss],
-        "counts": counts,
-        "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
-        "active_triggers": get_active_triggers(),
-        "active_agent_runs": active_run_count,
-    }
+    result = dict(_get_poll_sidebar_snapshot())
     # If a board ID is requested, include it
     ws_id = params.get("board") or (method if method != "all" else None)
     if ws_id:
@@ -647,6 +724,13 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_DIR, **kwargs)
 
+    @staticmethod
+    def _is_app_route(path):
+        parts = [segment for segment in str(path or "/").split("/") if segment]
+        if not parts:
+            return True
+        return len(parts) == 2 and parts[0] in {"workstreams", "task"}
+
     def _send_json(self, code: int, body: str):
         encoded = body.encode()
         self._json_response = True
@@ -716,6 +800,8 @@ class Handler(SimpleHTTPRequestHandler):
                 status_code, resp = handler(method, [method] + positional, params)
             else:
                 status_code, resp = handler(method, positional, params)
+            if http_method == "POST" and status_code < 400:
+                _invalidate_poll_sidebar_cache()
             self._send_json(status_code, resp)
         except CorruptTaskError as e:
             self._send_json(422, json.dumps({"status": "error", "message": str(e), "code": "CORRUPT_TASK"}))
@@ -734,7 +820,9 @@ class Handler(SimpleHTTPRequestHandler):
         if self._handle_api("GET"):
             return
         parsed = urlparse(self.path)
-        if "." not in os.path.basename(parsed.path) and parsed.path != "/":
+        if self._is_app_route(parsed.path):
+            self.path = "/"
+        elif "." not in os.path.basename(parsed.path) and parsed.path != "/":
             self.path = "/"
         super().do_GET()
 

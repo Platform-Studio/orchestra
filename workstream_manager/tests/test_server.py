@@ -28,7 +28,11 @@ def _fake_workstream(**kwargs):
         "name": "Test WS",
         "description": "desc",
         "parent_id": None,
-        "mounted_workspace_path": "/tmp/workspace",
+        "working_directory": "/tmp/workspace",
+        "artifact_root": "/tmp/artifacts",
+        "child_workstream_root": "/tmp/workstreams",
+        "mount_available": False,
+        "agent_concurrency": {},
         "task_states": {"backlog": ["doing"], "doing": ["done"], "done": []},
         "paused": False,
         "retry": None,
@@ -125,9 +129,15 @@ _PATCHES = {
     "create_workstream": "workstream_manager.server.create_workstream",
     "find_workstreams":  "workstream_manager.server.find_workstreams",
     "save_workstream":   "workstream_manager.server.save_workstream",
+    "read_workstream_agent_concurrency": "workstream_manager.server.read_workstream_agent_concurrency",
+    "set_workstream_agent_concurrency": "workstream_manager.server.set_workstream_agent_concurrency",
+    "get_workstream_tags": "workstream_manager.server.get_workstream_tags",
+    "upsert_workstream_tag": "workstream_manager.server.upsert_workstream_tag",
     "list_workstream_hierarchy_env": "workstream_manager.server.list_workstream_hierarchy_env",
     "list_effective_workstream_env": "workstream_manager.server.list_effective_workstream_env",
     "resolve_workstream_workspace": "workstream_manager.server.resolve_workstream_workspace",
+    "resolve_workstream_artifact_root": "workstream_manager.server.resolve_workstream_artifact_root",
+    "resolve_workstream_child_state_root": "workstream_manager.server.resolve_workstream_child_state_root",
     "create_task":       "workstream_manager.server.create_task",
     "read_task":         "workstream_manager.server.read_task",
     "update_task":       "workstream_manager.server.update_task",
@@ -173,9 +183,15 @@ def api(tmp_path):
     mocks["list_workstream_hierarchy_env"].return_value = []
     mocks["list_effective_workstream_env"].return_value = {}
     mocks["resolve_workstream_workspace"].return_value = "/tmp/workspace"
+    mocks["resolve_workstream_artifact_root"].return_value = "/tmp/artifact-base"
+    mocks["resolve_workstream_child_state_root"].return_value = "/tmp/state-base"
+    mocks["get_workstream_tags"].return_value = []
+    mocks["upsert_workstream_tag"].return_value = {"name": "Urgent", "color": "#eb5a46"}
     mocks["_run_orchestration_cli"].return_value = {}
 
-    from workstream_manager.server import Handler, ThreadingHTTPServer
+    from workstream_manager.server import Handler, ThreadingHTTPServer, _invalidate_poll_sidebar_cache
+
+    _invalidate_poll_sidebar_cache()
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     port = server.server_address[1]
@@ -193,6 +209,12 @@ def api(tmp_path):
                 return resp.status, json.loads(resp.read())
             except urllib.error.HTTPError as e:
                 return e.code, json.loads(e.read())
+
+        @staticmethod
+        def get_text(path):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}{path}")
+            resp = urllib.request.urlopen(req)
+            return resp.status, resp.read().decode("utf-8")
 
         @staticmethod
         def post(path, body=None):
@@ -215,6 +237,7 @@ def api(tmp_path):
     yield api_obj
 
     server.shutdown()
+    _invalidate_poll_sidebar_cache()
     for p in patches.values():
         p.stop()
 
@@ -222,6 +245,18 @@ def api(tmp_path):
 # ── Routing tests ───────────────────────────────────────────────
 
 class TestRouting:
+    def test_direct_workstream_route_serves_app_shell(self, api):
+        code, body = api.get_text("/workstreams/ws-123")
+
+        assert code == 200
+        assert 'id="sidebar-tree"' in body
+
+    def test_direct_task_route_serves_app_shell(self, api):
+        code, body = api.get_text("/task/task-123")
+
+        assert code == 200
+        assert 'id="task-modal"' in body
+
     def test_short_api_path_returns_400(self, api):
         code, body = api.get("/api/workstream")
         assert code == 400
@@ -441,6 +476,47 @@ class TestWorkstream:
         assert code == 200
         assert body["data"]["id"] == "ws-42"
         assert body["data"]["task_states"] == ws.task_states
+        assert body["data"]["mount_available"] is False
+        assert body["data"]["working_directory"] == "/tmp/workspace"
+        assert body["data"]["artifact_root"] == "/tmp/artifacts"
+        assert body["data"]["child_workstream_root"] == "/tmp/workstreams"
+        assert body["data"]["resolved_artifact_directory"] == "/tmp/artifact-base/artifacts"
+        assert body["data"]["resolved_child_workstream_root"] == "/tmp/state-base"
+
+    def test_info_includes_agent_concurrency(self, api):
+        ws = _fake_workstream(id="ws-42", agent_concurrency={"default": 1})
+        api.mocks["read_workstream"].return_value = ws
+        code, body = api.get("/api/workstream/info/ws-42")
+        assert code == 200
+        assert body["data"]["agent_concurrency"] == {"default": 1}
+
+    def test_concurrency_get(self, api):
+        ws = _fake_workstream(id="ws-42")
+        api.mocks["read_workstream"].return_value = ws
+        api.mocks["read_workstream_agent_concurrency"].return_value = {
+            "workstream_id": "ws-42",
+            "name": "Test WS",
+            "agent_concurrency": {"default": 1},
+        }
+
+        code, body = api.get("/api/workstream/concurrency/ws-42")
+
+        assert code == 200
+        assert body["data"]["agent_concurrency"] == {"default": 1}
+
+    def test_concurrency_post(self, api):
+        ws = _fake_workstream(id="ws-42", agent_concurrency={"default": 2})
+        api.mocks["read_workstream"].return_value = ws
+        api.mocks["set_workstream_agent_concurrency"].return_value = ws
+
+        code, body = api.post("/api/workstream/concurrency/ws-42", {"agent_concurrency": {"default": 2}})
+
+        assert code == 200
+        call = api.mocks["set_workstream_agent_concurrency"].call_args
+        assert call.args[:1] == ("ws-42",)
+        assert call.kwargs["agent_concurrency"] == {"default": 2}
+        assert call.kwargs["updated_by"] == "Workspace Manager"
+        assert body["data"]["agent_concurrency"] == {"default": 2}
 
     def test_find(self, api):
         ws = _fake_workstream()
@@ -449,6 +525,23 @@ class TestWorkstream:
         assert code == 200
         assert len(body["data"]) == 1
         api.mocks["find_workstreams"].assert_called_once()
+
+    def test_gettags(self, api):
+        api.mocks["get_workstream_tags"].return_value = [{"name": "Urgent", "color": "#eb5a46"}]
+
+        code, body = api.get("/api/workstream/gettags/ws-1")
+
+        assert code == 200
+        assert body["data"] == [{"name": "Urgent", "color": "#eb5a46"}]
+
+    def test_upsert_tag(self, api):
+        code, body = api.post("/api/workstream/upsert-tag/ws-1", {"name": "Urgent", "color": "#eb5a46"})
+
+        assert code == 200
+        call = api.mocks["upsert_workstream_tag"].call_args
+        assert call.args[:3] == ("ws-1", "Urgent", "#eb5a46")
+        assert call.kwargs["base_dir"]
+        assert body["data"] == {"name": "Urgent", "color": "#eb5a46"}
 
     def test_create(self, api):
         ws = _fake_workstream(name="New")
@@ -510,6 +603,17 @@ class TestTask:
         })
         assert code == 200
         assert body["data"]["title"] == "Apple"
+
+    def test_create_passes_explicit_initial_status(self, api):
+        api.mocks["create_task"].return_value = _fake_task(status="doing")
+        code, body = api.post("/api/task/create/ws-1", {
+            "title": "Apple",
+            "status": "doing",
+        })
+        assert code == 200
+        call_kw = api.mocks["create_task"].call_args
+        kw = call_kw.kwargs if call_kw.kwargs else call_kw[1]
+        assert kw["initial_status"] == "doing"
 
     def test_create_with_schedule(self, api):
         api.mocks["create_task"].return_value = _fake_task()
@@ -803,6 +907,41 @@ class TestPoll:
         assert code == 200
         assert body["data"]["active_agent_runs"] == 0
 
+    def test_poll_reuses_cached_sidebar_snapshot_between_requests(self, api):
+        ws = _fake_workstream()
+        api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["list_tasks"].return_value = [_fake_task(), _fake_task()]
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        first_code, first_body = api.get("/api/poll/all")
+        second_code, second_body = api.get("/api/poll/all")
+
+        assert first_code == 200
+        assert second_code == 200
+        assert first_body["data"]["counts"] == second_body["data"]["counts"]
+        api.mocks["list_workstreams"].assert_called_once()
+        api.mocks["list_tasks"].assert_called_once_with("ws-1", base_dir=api.mocks["list_tasks"].call_args.kwargs["base_dir"])
+
+    def test_successful_post_invalidates_poll_sidebar_snapshot(self, api):
+        ws_one = _fake_workstream(id="ws-1")
+        ws_two = _fake_workstream(id="ws-2", name="Second WS")
+        api.mocks["list_workstreams"].side_effect = [[ws_one], [ws_one, ws_two]]
+        api.mocks["list_tasks"].return_value = []
+        api.mocks["scheduler_status"].return_value = {"running": False}
+
+        first_code, first_body = api.get("/api/poll/all")
+        cached_code, cached_body = api.get("/api/poll/all")
+        post_code, _ = api.post("/api/workstream/upsert-tag/ws-1", {"name": "Urgent", "color": "#eb5a46"})
+        refreshed_code, refreshed_body = api.get("/api/poll/all")
+
+        assert first_code == 200
+        assert cached_code == 200
+        assert post_code == 200
+        assert refreshed_code == 200
+        assert [ws["id"] for ws in first_body["data"]["workstreams"]] == ["ws-1"]
+        assert [ws["id"] for ws in cached_body["data"]["workstreams"]] == ["ws-1"]
+        assert [ws["id"] for ws in refreshed_body["data"]["workstreams"]] == ["ws-1", "ws-2"]
+
 
 # ── Concurrency / resilience tests ──────────────────────────────
 
@@ -900,6 +1039,19 @@ class TestRequestParsing:
         call_kw = api.mocks["create_task"].call_args
         kw = call_kw.kwargs if call_kw.kwargs else call_kw[1]
         assert kw["tags"] == ["a", "b", "c"]
+
+    def test_tag_arrays_pass_through_for_create_and_update(self, api):
+        api.mocks["create_task"].return_value = _fake_task()
+        api.post("/api/task/create/ws-1", {"title": "X", "tags": ["a", "b", "c"]})
+        create_call = api.mocks["create_task"].call_args
+        create_kw = create_call.kwargs if create_call.kwargs else create_call[1]
+        assert create_kw["tags"] == ["a", "b", "c"]
+
+        api.mocks["update_task"].return_value = _fake_task()
+        api.post("/api/task/update/t-1", {"tags": ["x", "y"]})
+        update_call = api.mocks["update_task"].call_args
+        update_kw = update_call.kwargs if update_call.kwargs else update_call[1]
+        assert update_kw["tags"] == ["x", "y"]
 
     def test_task_update_force_passed_through(self, api):
         api.mocks["update_task"].return_value = _fake_task()

@@ -12,13 +12,14 @@ import tempfile
 import yaml
 
 from .models import now_iso
+from .persistence import resolve_workstream_root
 
 AUDIT_FILE = "workspace_audit.yaml"
 MAX_ENTRIES = 500
 
 
 def _audit_path(base_dir: str) -> str:
-    return os.path.join(base_dir, AUDIT_FILE)
+    return os.path.join(resolve_workstream_root(base_dir), AUDIT_FILE)
 
 
 def _load_audit(base_dir: str) -> list:

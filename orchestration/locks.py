@@ -5,6 +5,7 @@ import yaml
 from datetime import datetime, timezone, timedelta
 
 from .models import Lock, now_iso
+from .persistence import resolve_workstream_root
 from .tasks import _find_task_file, _tasks_dir, _tasks_dir_for_workstream
 from .workstreams import list_workstreams
 
@@ -245,7 +246,7 @@ def _is_process_alive(pid: int) -> bool:
 
 
 def find_orphaned_locks(base_dir: str = ".") -> list:
-    """Scan all workstreams for non-expired locks whose owner pid is dead.
+    """Scan all workstreams for non-expired locks whose owning processes are dead.
 
     Returns list of dicts: {task_id, workstream_id, lock, lock_path}
     """
@@ -267,9 +268,13 @@ def find_orphaned_locks(base_dir: str = ".") -> list:
                 # Expired locks are handled by the retry pipeline.
                 if lock.is_expired():
                     continue
-                if lock.pid is None:
+                if lock.pid is None and lock.subprocess_pid is None:
                     continue
-                if _is_process_alive(lock.pid):
+
+                # Detached agent runs can outlive the scheduler process that
+                # originally acquired the task lock. Treat the lock as live if
+                # either the parent pid or the recorded subprocess pid is still alive.
+                if _is_process_alive(lock.subprocess_pid) or _is_process_alive(lock.pid):
                     continue
                 task_id = fname.replace(".yaml.lock", "")
                 orphaned.append({
@@ -291,7 +296,7 @@ _PROCESS_LOCKS_SUBDIR = "process_locks"
 
 
 def _process_locks_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, ".orchestration", _PROCESS_LOCKS_SUBDIR)
+    return os.path.join(resolve_workstream_root(base_dir), ".orchestration", _PROCESS_LOCKS_SUBDIR)
 
 
 def _process_lock_path(run_id: str, base_dir: str) -> str:

@@ -18,6 +18,7 @@ import threading
 from datetime import datetime, timezone
 
 from .models import now_iso
+from .persistence import resolve_workstream_root
 from .workstreams import list_workstreams
 from .tasks import list_tasks, list_tasks_for_workstream, read_task, _save_task
 from .triggers import execute_trigger
@@ -28,7 +29,7 @@ TICK_INTERVAL = 60  # seconds
 
 
 def _state_path(base_dir: str) -> str:
-    return os.path.join(base_dir, SCHEDULER_STATE_FILE)
+    return os.path.join(resolve_workstream_root(base_dir), SCHEDULER_STATE_FILE)
 
 
 def _load_state(base_dir: str) -> dict:
@@ -279,6 +280,12 @@ def _ordered_state_triggers(ws) -> list:
     return [trigger for _, trigger in ordered]
 
 
+def _select_state_trigger_task_ids(trigger, eligible_task_ids: list) -> list:
+    if getattr(trigger, "task_selection", None) == "all_unlocked":
+        return list(eligible_task_ids)
+    return list(eligible_task_ids[:1])
+
+
 def _audit_trigger(trigger, result, ws, base_dir, task_ids=None):
     """Log a workspace audit entry for a scheduled trigger fire."""
     from .workspace_audit import log_event
@@ -300,38 +307,56 @@ def _audit_trigger(trigger, result, ws, base_dir, task_ids=None):
     log_event("trigger_fired", desc, base_dir, **kwargs)
 
 
-def _workstream_agent_limit(ws, agent_ref: str, base_dir: str = ".") -> int:
-    """Resolve per-agent concurrency limit from workstream policy."""
-    default_limit = 1
-    overrides = {}
-
+def _resolve_agent_concurrency_bucket(ws, agent_ref: str, task_state: str = None, base_dir: str = ".") -> tuple[tuple, int, str | None]:
+    """Resolve the bucket key and limit for an agent concurrency check."""
     policy = getattr(ws, "agent_concurrency", None)
-    if isinstance(policy, dict):
-        try:
-            default_limit = int(policy.get("default", 1) or 1)
-        except (TypeError, ValueError):
-            default_limit = 1
-        raw_overrides = policy.get("overrides", {})
-        if isinstance(raw_overrides, dict):
-            overrides = raw_overrides
-
-    default_limit = max(1, default_limit)
-
-    if not agent_ref:
-        return default_limit
+    if not isinstance(policy, dict):
+        policy = {}
 
     from .agents import _agent_identity_keys
 
-    identity_keys = _agent_identity_keys(agent_ref, base_dir=base_dir)
-    for key, value in overrides.items():
-        normalized_key = str(key or "").strip().lower()
-        if normalized_key and normalized_key in identity_keys:
-            try:
-                return max(1, int(value))
-            except (TypeError, ValueError):
-                return default_limit
+    identity_keys = _agent_identity_keys(agent_ref, base_dir=base_dir) if agent_ref else set()
 
-    return default_limit
+    def _resolve_limit(default_limit, overrides) -> int:
+        try:
+            resolved_default = int(default_limit or 1)
+        except (TypeError, ValueError):
+            resolved_default = 1
+        resolved_default = max(1, resolved_default)
+
+        if not identity_keys or not isinstance(overrides, dict):
+            return resolved_default
+
+        for key, value in overrides.items():
+            normalized_key = str(key or "").strip().lower()
+            if normalized_key and normalized_key in identity_keys:
+                try:
+                    return max(1, int(value))
+                except (TypeError, ValueError):
+                    return resolved_default
+        return resolved_default
+
+    if task_state:
+        raw_state_overrides = policy.get("state_overrides", {})
+        if isinstance(raw_state_overrides, dict):
+            target_state = str(task_state or "").strip().lower()
+            for state_name, state_policy in raw_state_overrides.items():
+                if str(state_name or "").strip().lower() != target_state:
+                    continue
+                if isinstance(state_policy, dict):
+                    state_bucket = str(state_name or task_state).strip()
+                    return (
+                        (ws.id, str(agent_ref or "").strip().lower(), target_state),
+                        _resolve_limit(state_policy.get("default", 1), state_policy.get("overrides", {})),
+                        state_bucket,
+                    )
+                break
+
+    return (
+        (ws.id, str(agent_ref or "").strip().lower()),
+        _resolve_limit(policy.get("default", 1), policy.get("overrides", {})),
+        None,
+    )
 
 
 def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str, ignore_paused: bool = False) -> None:
@@ -401,11 +426,22 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
 
     agent_id = trigger.agent or f"trigger:{trigger.id}"
 
-    # Enforce workstream-level concurrency only for run_agent triggers.
+    # Enforce workstream-level concurrency, with optional state-scoped buckets,
+    # only for run_agent triggers.
     if trigger.action == "run_agent" and trigger.agent:
         from .agents import count_active_agent_runs
-        current_runs = count_active_agent_runs(ws.id, trigger.agent, base_dir=base_dir)
-        max_runs = _workstream_agent_limit(ws, trigger.agent, base_dir=base_dir)
+        _, max_runs, concurrency_state = _resolve_agent_concurrency_bucket(
+            ws,
+            trigger.agent,
+            task_state=trigger.on_state,
+            base_dir=base_dir,
+        )
+        current_runs = count_active_agent_runs(
+            ws.id,
+            trigger.agent,
+            base_dir=base_dir,
+            concurrency_state=concurrency_state,
+        )
         if current_runs >= max_runs:
             from .workspace_audit import log_event as _log_event
             _log_event(
@@ -622,12 +658,22 @@ def tick(base_dir: str = ".") -> dict:
                 continue
 
             # For agent triggers, respect workstream-level per-agent
-            # concurrency. Command triggers are unconstrained here.
+            # concurrency, with optional state-scoped buckets.
+            # Command triggers are unconstrained here.
             if trigger.action == "run_agent" and trigger.agent:
                 from .agents import count_active_agent_runs
-                current_runs = count_active_agent_runs(ws.id, trigger.agent, base_dir=base_dir)
-                max_runs = _workstream_agent_limit(ws, trigger.agent, base_dir=base_dir)
-                slot_key = (ws.id, str(trigger.agent or "").strip().lower())
+                slot_key, max_runs, concurrency_state = _resolve_agent_concurrency_bucket(
+                    ws,
+                    trigger.agent,
+                    task_state=trigger.on_state,
+                    base_dir=base_dir,
+                )
+                current_runs = count_active_agent_runs(
+                    ws.id,
+                    trigger.agent,
+                    base_dir=base_dir,
+                    concurrency_state=concurrency_state,
+                )
                 pending_slots = pending_agent_slots.get(slot_key, 0)
                 free_slots = max(0, max_runs - current_runs - pending_slots)
             else:
@@ -641,22 +687,27 @@ def tick(base_dir: str = ".") -> dict:
                 })
                 continue
 
-            task_id = matching_ids[0]
+            selected_task_ids = _select_state_trigger_task_ids(trigger, matching_ids)
             # background=True: locks acquired here (synchronous), execution on daemon thread.
             # _audit_trigger is called inside _run_and_unlock for dispatched results.
-            result = _lock_invoke_unlock(trigger, [task_id], ws, base_dir, background=True)
+            result = _lock_invoke_unlock(trigger, selected_task_ids, ws, base_dir, background=True)
             if result.get("status") not in ("dispatched",):
                 # Only audit non-dispatched outcomes (e.g. skipped due to lock contention)
-                _audit_trigger(trigger, result, ws, base_dir, task_ids=[task_id])
+                _audit_trigger(trigger, result, ws, base_dir, task_ids=selected_task_ids)
             elif trigger.action == "run_agent" and trigger.agent:
-                active_locks.add(task_id)
-                slot_key = (ws.id, str(trigger.agent or "").strip().lower())
+                active_locks.update(selected_task_ids)
+                slot_key, _, _ = _resolve_agent_concurrency_bucket(
+                    ws,
+                    trigger.agent,
+                    task_state=trigger.on_state,
+                    base_dir=base_dir,
+                )
                 pending_agent_slots[slot_key] = pending_agent_slots.get(slot_key, 0) + 1
             elif result.get("status") == "dispatched":
-                active_locks.add(task_id)
+                active_locks.update(selected_task_ids)
             results["state_triggers_fired"].append({
                 "trigger_id": trigger.id,
-                "task_ids": [task_id],
+                "task_ids": selected_task_ids,
                 "result": result,
             })
 

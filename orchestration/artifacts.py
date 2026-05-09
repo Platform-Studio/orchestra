@@ -4,56 +4,24 @@ import filecmp
 import os
 import shutil
 
+from .persistence import resolve_artifact_root
+from .workstreams import resolve_workstream_artifact_root
+
 
 def _normalize_name(value: str) -> str:
     return "".join(ch for ch in str(value).lower() if ch.isalnum())
 
 
 def _artifacts_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, "artifacts")
+    return os.path.join(resolve_artifact_root(base_dir), "artifacts")
 
 
 def _resolve_artifact_root(path: str, base_dir: str = ".", workstream_id: str = None) -> tuple:
-    """Resolve (artifacts_root, relative_path) with mounted workspace awareness.
-
-    If workstream_id is provided, the artifact root is the workspace root that owns
-    that workstream plus `/artifacts`.
-    Without workstream_id, a best-effort mapping is applied: if the logical path
-    contains a mounted workstream node name, the path remainder after that node is
-    rooted at the mounted workspace's `/artifacts` directory.
-    """
-    from .workstreams import read_workstream, _workspace_root_for, list_workstreams, _normalize_mounted_workspace_path, resolve_workstream_workspace
-
+    """Resolve (artifacts_root, relative_path) from the configured artifact store."""
     rel_path = path.lstrip("/")
-    base_abs = os.path.abspath(base_dir)
-
     if workstream_id:
-        ws_root = resolve_workstream_workspace(workstream_id, base_dir=base_dir)
-        return _artifacts_dir(ws_root), rel_path
-
-    # Best-effort path-based mounted node mapping.
-    parts = [p for p in rel_path.split("/") if p]
-    if not parts:
-        return _artifacts_dir(base_abs), rel_path
-
-    by_norm_name = {}
-    for ws in list_workstreams(base_dir=base_dir):
-        norm_name = _normalize_name(ws.name)
-        if norm_name not in by_norm_name:
-            by_norm_name[norm_name] = []
-        by_norm_name[norm_name].append(ws)
-
-    for idx, part in enumerate(parts):
-        candidates = by_norm_name.get(_normalize_name(part), [])
-        for ws in candidates:
-            if not ws.mounted_workspace_path:
-                continue
-            ws_root = _workspace_root_for(ws, base_dir)
-            target_workspace = _normalize_mounted_workspace_path(ws.mounted_workspace_path, ws_root)
-            suffix = "/".join(parts[idx + 1:])
-            return _artifacts_dir(target_workspace), suffix
-
-    return _artifacts_dir(base_abs), rel_path
+        return os.path.join(resolve_workstream_artifact_root(workstream_id, base_dir=base_dir), "artifacts"), rel_path
+    return _artifacts_dir(base_dir), rel_path
 
 
 def _validate_path(artifacts_dir: str, path: str) -> str:
@@ -114,8 +82,6 @@ def copy_artifact_tree(
     mounted outside the current workspace root. Existing files with different
     contents are treated as conflicts unless ``overwrite=True``.
     """
-    from .workstreams import resolve_workstream_workspace
-
     if not workstream_id:
         raise ValueError("workstream_id is required for copytree")
 
@@ -124,12 +90,6 @@ def copy_artifact_tree(
         raise ValueError("source_prefix must not be empty")
 
     base_abs = os.path.abspath(base_dir)
-    destination_workspace = resolve_workstream_workspace(workstream_id, base_dir=base_dir)
-    if os.path.abspath(destination_workspace) == os.path.abspath(base_abs):
-        raise ValueError(
-            f"Workstream {workstream_id} is not mounted to a separate workspace; mount it before running artifact copytree"
-        )
-
     source_root_base = os.path.abspath(source_base_dir) if source_base_dir else base_abs
     source_root = _artifacts_dir(source_root_base)
     destination_root, _ = _resolve_artifact_root("", base_dir=base_dir, workstream_id=workstream_id)

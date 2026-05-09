@@ -292,6 +292,15 @@ def test_count_active_agent_runs_kills_expired_process_lock_runs(workspace, monk
     assert not os.path.exists(os.path.join(process_locks_dir, f"{run_id}.lock"))
 
 
+def test_state_dir_uses_workstream_root_file_uri(workspace, tmp_path, monkeypatch):
+    from orchestration.agents import _state_dir
+
+    state_root = tmp_path / "shared_state"
+    monkeypatch.setenv("WORKSTREAM_ROOT", f"file:{state_root}")
+
+    assert _state_dir(workspace) == os.path.join(str(state_root.resolve()), ".orchestration")
+
+
 def test_list_agent_runs_demotes_stale_running_status(workspace):
     run_id = "run-stale"
     meta = _base_run(run_id, "ws-1", ["t-1"])
@@ -496,12 +505,12 @@ def test_run_agent_omits_learning_prompt_when_disabled(mock_popen, mock_which, w
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
-def test_run_agent_uses_mounted_workspace_root_for_descendant(mock_popen, mock_which, workspace):
-    mount_root = os.path.join(workspace, "mounted_repo")
-    os.makedirs(mount_root, exist_ok=True)
+def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which, workspace):
+    working_root = os.path.join(workspace, "mounted_repo")
+    os.makedirs(working_root, exist_ok=True)
 
     parent = create_workstream(name="Mounted Parent", base_dir=workspace)
-    parent.mounted_workspace_path = mount_root
+    parent.working_directory = working_root
     save_workstream(parent, workspace)
 
     child = create_workstream(name="Mounted Child", parent_id=parent.id, base_dir=workspace)
@@ -510,11 +519,29 @@ def test_run_agent_uses_mounted_workspace_root_for_descendant(mock_popen, mock_w
 
     cmd = mock_popen.call_args.args[0]
     prompt = cmd[cmd.index("-p") + 1]
-    assert f"WORKSPACE_ROOT: {mount_root}" in prompt
+    assert f"WORKSPACE_ROOT: {working_root}" in prompt
 
     popen_env = mock_popen.call_args.kwargs["env"]
-    assert popen_env["WORKSPACE_ROOT"] == mount_root
+    assert popen_env["WORKSPACE_ROOT"] == working_root
     assert popen_env["ORCHESTRATION_ROOT"] == os.path.abspath(workspace)
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_persists_concurrency_state(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Deploy WS", base_dir=workspace)
+    task = create_task(ws.id, title="Deploy", base_dir=workspace)
+
+    result = run_agent(
+        "test_agent",
+        task_ids=[task.id],
+        workstream_id=ws.id,
+        base_dir=workspace,
+        concurrency_state="Staging Deploy",
+    )
+
+    details = get_agent_run(result["run_id"], base_dir=workspace)
+    assert details["run"]["concurrency_state"] == "Staging Deploy"
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

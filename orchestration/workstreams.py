@@ -4,33 +4,87 @@ import os
 import re
 import yaml
 
-from .models import Workstream, RetryConfig, new_id
+from .models import Workstream, RetryConfig, new_id, normalize_agent_concurrency_policy
+from .persistence import resolve_artifact_root, resolve_workstream_root
 
 
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TAG_COLOR_PALETTE = (
+    "#61bd4f", "#f2d600", "#ff9f1a", "#eb5a46", "#c377e0",
+    "#0079bf", "#00c2e0", "#51e898", "#ff78cb", "#344563",
+    "#b3bac5", "#055a8c", "#89609e", "#cd8313", "#4bbf6b",
+)
 
 
 def _abs_base_dir(base_dir: str) -> str:
     return os.path.abspath(os.path.expanduser(base_dir))
 
 
+def _state_base_dir(base_dir: str) -> str:
+    return resolve_workstream_root(base_dir)
+
+
+def _local_ws_dir(state_root: str) -> str:
+    return os.path.join(_abs_base_dir(state_root), "workstreams")
+
+
 def _ws_dir(base_dir: str) -> str:
-    return os.path.join(_abs_base_dir(base_dir), "workstreams")
+    return _local_ws_dir(_state_base_dir(base_dir))
 
 
 def _ws_path(base_dir: str, ws_id: str) -> str:
-    return os.path.join(_ws_dir(base_dir), f"{ws_id}.yaml")
+    return os.path.join(_local_ws_dir(base_dir), f"{ws_id}.yaml")
 
 
 def _ws_env_path(base_dir: str, ws_id: str) -> str:
-    return os.path.join(_ws_dir(base_dir), ws_id, ".env")
+    return os.path.join(_local_ws_dir(base_dir), ws_id, ".env")
 
 
-def _normalize_mounted_workspace_path(path: str, current_workspace_root: str) -> str:
+def _workstream_home_dir(state_root: str, ws_id: str) -> str:
+    return os.path.join(_local_ws_dir(state_root), ws_id)
+
+
+def _resolve_root_path(path: str, anchor_root: str) -> str:
     expanded = os.path.expanduser(path)
     if os.path.isabs(expanded):
         return os.path.abspath(expanded)
-    return os.path.abspath(os.path.join(current_workspace_root, expanded))
+    return os.path.abspath(os.path.join(anchor_root, expanded))
+
+
+def _normalize_tag_name(name: str) -> str:
+    return re.sub(r"\s+", " ", str(name or "").strip())
+
+
+def _default_tag_color(name: str) -> str:
+    normalized = _normalize_tag_name(name)
+    if not normalized:
+        return TAG_COLOR_PALETTE[0]
+    idx = sum(ord(ch) for ch in normalized) % len(TAG_COLOR_PALETTE)
+    return TAG_COLOR_PALETTE[idx]
+
+
+def _normalize_tag_color(name: str, color: str = None) -> str:
+    candidate = str(color or "").strip().lower()
+    if candidate in TAG_COLOR_PALETTE:
+        return candidate
+    return _default_tag_color(name)
+
+
+def _normalize_tag_definitions(raw_definitions) -> list[dict]:
+    normalized = []
+    seen = set()
+    for raw in raw_definitions or []:
+        if isinstance(raw, dict):
+            name = _normalize_tag_name(raw.get("name"))
+            color = _normalize_tag_color(name, raw.get("color"))
+        else:
+            name = _normalize_tag_name(raw)
+            color = _normalize_tag_color(name)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append({"name": name, "color": color})
+    return normalized
 
 
 def _set_workspace_root(ws: Workstream, workspace_root: str) -> Workstream:
@@ -39,11 +93,23 @@ def _set_workspace_root(ws: Workstream, workspace_root: str) -> Workstream:
 
 
 def _workspace_root_for(ws: Workstream, fallback_base_dir: str) -> str:
-    return getattr(ws, "_workspace_root", _abs_base_dir(fallback_base_dir))
+    return getattr(ws, "_workspace_root", _state_base_dir(fallback_base_dir))
+
+
+def _configured_working_directory(ws: Workstream) -> str | None:
+    return ws.working_directory
+
+
+def _configured_artifact_root(ws: Workstream) -> str | None:
+    return ws.artifact_root
+
+
+def _configured_child_workstream_root(ws: Workstream) -> str | None:
+    return ws.child_workstream_root
 
 
 def _list_local_workstreams(workspace_root: str) -> list:
-    ws_dir = _ws_dir(workspace_root)
+    ws_dir = _local_ws_dir(workspace_root)
     if not os.path.exists(ws_dir):
         return []
     result = []
@@ -59,102 +125,118 @@ def _list_local_workstreams(workspace_root: str) -> list:
     return result
 
 
+def _write_workstream_to_root(ws: Workstream, state_root: str) -> None:
+    os.makedirs(_local_ws_dir(state_root), exist_ok=True)
+    with open(_ws_path(state_root, ws.id), "w") as f:
+        yaml.dump(ws.to_dict(include_transient=False), f, default_flow_style=False, sort_keys=False)
+
+
 def _collect_effective_workstreams(base_dir: str) -> dict:
-    base_root = _abs_base_dir(base_dir)
-    by_id = {}
-    ws_cache = {}
-    visiting_mounts = set()
+    state_root = _state_base_dir(base_dir)
+    default_working_directory = _abs_base_dir(base_dir)
+    default_artifact_root = resolve_artifact_root(base_dir)
+    cache = {}
+    visible = {}
+    active = set()
 
-    def get_workspace_workstreams(workspace_root: str):
-        if workspace_root not in ws_cache:
-            ws_cache[workspace_root] = _list_local_workstreams(workspace_root)
-        return ws_cache[workspace_root]
+    def _index_for_root(root: str) -> dict:
+        normalized_root = _abs_base_dir(root)
+        if normalized_root in cache:
+            return cache[normalized_root]
 
-    def add_descendants_from_workspace(parent_id: str, workspace_root: str):
-        workspace_workstreams = get_workspace_workstreams(workspace_root)
-        children = [w for w in workspace_workstreams if w.parent_id == parent_id]
-        children.sort(key=lambda w: (w.name.lower(), w.id))
-        for child in children:
-            if child.id not in by_id:
-                by_id[child.id] = child
-            add_descendants_from_workspace(child.id, workspace_root)
-            add_mounted_children(child)
+        by_parent = {}
+        for ws in _list_local_workstreams(normalized_root):
+            by_parent.setdefault(ws.parent_id, []).append(ws)
+        for children in by_parent.values():
+            children.sort(key=lambda item: (item.name.lower(), item.id))
+        cache[normalized_root] = {"by_parent": by_parent}
+        return cache[normalized_root]
 
-    def remove_descendants_from_workspace(parent_id: str, workspace_root: str):
-        workspace_workstreams = get_workspace_workstreams(workspace_root)
-        children = [w for w in workspace_workstreams if w.parent_id == parent_id]
-        for child in children:
-            by_id.pop(child.id, None)
-            remove_descendants_from_workspace(child.id, workspace_root)
-
-    def add_mounted_children(ws: Workstream):
-        mount_path = ws.mounted_workspace_path
-        if not mount_path:
+    def _visit(ws: Workstream, effective_working_directory: str, effective_artifact_root: str) -> None:
+        if ws.id in active:
+            raise RuntimeError(f"Cycle detected in workstream hierarchy at {ws.id}")
+        if ws.id in visible:
+            existing_root = _workspace_root_for(visible[ws.id], state_root)
+            current_root = _workspace_root_for(ws, state_root)
+            if existing_root != current_root:
+                raise RuntimeError(f"Duplicate workstream ID {ws.id} found in multiple state roots")
             return
-        workspace_root = _workspace_root_for(ws, base_root)
-        target_root = _normalize_mounted_workspace_path(mount_path, workspace_root)
-        key = (ws.id, target_root)
-        if key in visiting_mounts:
-            return
-        visiting_mounts.add(key)
-        try:
-            add_descendants_from_workspace(ws.id, target_root)
-        finally:
-            visiting_mounts.remove(key)
 
-    for ws in get_workspace_workstreams(base_root):
-        by_id[ws.id] = ws
+        active.add(ws.id)
+        ws_state_root = _workspace_root_for(ws, state_root)
 
-    # Mounts override local descendants: when a node is mounted, its subtree
-    # should be sourced from the mounted workspace.
-    for ws in list(by_id.values()):
-        if ws.mounted_workspace_path:
-            local_root = _workspace_root_for(ws, base_root)
-            remove_descendants_from_workspace(ws.id, local_root)
-        add_mounted_children(ws)
+        working_directory = effective_working_directory
+        configured_working_directory = _configured_working_directory(ws)
+        if configured_working_directory is not None:
+            working_directory = _resolve_root_path(configured_working_directory, ws_state_root)
+            setattr(ws, "_mount_available", os.path.isdir(working_directory))
 
-    return by_id
+        artifact_root = effective_artifact_root
+        configured_artifact_root = _configured_artifact_root(ws)
+        if configured_artifact_root is not None:
+            artifact_root = _resolve_root_path(configured_artifact_root, ws_state_root)
+
+        child_state_root = _workstream_home_dir(ws_state_root, ws.id)
+        configured_child_root = _configured_child_workstream_root(ws)
+        if configured_child_root is not None:
+            child_state_root = _resolve_root_path(configured_child_root, ws_state_root)
+
+        setattr(ws, "_resolved_workspace_path", working_directory)
+        setattr(ws, "_resolved_artifact_root", artifact_root)
+        setattr(ws, "_resolved_child_workstream_root", child_state_root)
+        visible[ws.id] = ws
+
+        child_index = _index_for_root(child_state_root)
+        for child in child_index["by_parent"].get(ws.id, []):
+            _visit(child, working_directory, artifact_root)
+
+        active.remove(ws.id)
+
+    root_index = _index_for_root(state_root)
+    for root_ws in root_index["by_parent"].get(None, []):
+        _visit(root_ws, default_working_directory, default_artifact_root)
+
+    return visible
 
 
 def workstream_workspace_index(base_dir: str = ".") -> dict:
-    """Return map of workstream ID -> workspace root containing its files."""
+    """Return map of visible workstream ID -> persistence root containing its files."""
     by_id = _collect_effective_workstreams(base_dir)
     return {ws_id: _workspace_root_for(ws, base_dir) for ws_id, ws in by_id.items()}
 
 
-def resolve_workstream_workspace(ws_id: str, base_dir: str = ".") -> str:
-    """Resolve which workspace root stores this workstream's YAML/task files."""
-    # First honor mounted ancestors in the selected workstream's lineage.
-    try:
-        by_id = {ws.id: ws for ws in list_workstreams(base_dir=base_dir)}
-        current = by_id.get(ws_id)
-        visited = set()
-        while current and current.id not in visited:
-            visited.add(current.id)
-            if current.mounted_workspace_path:
-                workspace_root = _workspace_root_for(current, _abs_base_dir(base_dir))
-                return _normalize_mounted_workspace_path(
-                    current.mounted_workspace_path,
-                    workspace_root,
-                )
-            if not current.parent_id:
-                break
-            current = by_id.get(current.parent_id)
-    except Exception:
-        # Fall through to index/local resolution below.
-        pass
-
+def resolve_workstream_state_root(ws_id: str, base_dir: str = ".") -> str:
+    """Resolve where a workstream's persisted YAML/task files live."""
     idx = workstream_workspace_index(base_dir)
     root = idx.get(ws_id)
     if root is not None:
         return root
-
-    # Fallback for legacy/local-only workstreams not present in effective index.
-    local_path = _ws_path(base_dir, ws_id)
-    if os.path.exists(local_path):
-        return _abs_base_dir(base_dir)
-
     raise FileNotFoundError(f"Workstream {ws_id} not found")
+
+
+def resolve_workstream_child_state_root(ws_id: str, base_dir: str = ".") -> str:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    resolved = getattr(ws, "_resolved_child_workstream_root", None)
+    if resolved is not None:
+        return resolved
+    return resolve_workstream_state_root(ws_id, base_dir=base_dir)
+
+
+def resolve_workstream_artifact_root(ws_id: str, base_dir: str = ".") -> str:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    resolved = getattr(ws, "_resolved_artifact_root", None)
+    if resolved is not None:
+        return resolved
+    return resolve_artifact_root(base_dir)
+
+
+def resolve_workstream_workspace(ws_id: str, base_dir: str = ".") -> str:
+    """Resolve the effective code workspace root for a workstream."""
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    resolved = getattr(ws, "_resolved_workspace_path", None)
+    if resolved is not None:
+        return resolved
+    return _abs_base_dir(base_dir)
 
 
 def _validate_env_key(key: str) -> None:
@@ -198,8 +280,8 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
 
     Layers include:
     - workstream-local `.env` files
-        - mounted workspace root `.env` files for mounted nodes in the lineage,
-            including the selected mounted workstream itself
+        - working-directory root `.env` files for nodes in the lineage,
+            including the selected workstream itself when it defines one
     """
     by_id = {ws.id: ws for ws in list_workstreams(base_dir=base_dir)}
     if ws_id not in by_id:
@@ -210,8 +292,8 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
     for ws_level_id in lineage:
         ws = by_id[ws_level_id]
 
-        ws_root = resolve_workstream_workspace(ws_level_id, base_dir=base_dir)
-        local_env_path = _ws_env_path(ws_root, ws_level_id)
+        ws_state_root = resolve_workstream_state_root(ws_level_id, base_dir=base_dir)
+        local_env_path = _ws_env_path(ws_state_root, ws_level_id)
         if os.path.exists(local_env_path):
             layers.append({
                 "kind": "workstream",
@@ -222,15 +304,18 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
                 "env": _read_env_file(local_env_path),
             })
 
-        if ws.mounted_workspace_path:
-            current_ws_root = _workspace_root_for(ws, base_dir)
-            mounted_root = _normalize_mounted_workspace_path(ws.mounted_workspace_path, current_ws_root)
-            mounted_env_path = os.path.join(mounted_root, ".env")
+        configured_working_directory = _configured_working_directory(ws)
+        if configured_working_directory is not None:
+            working_root = getattr(ws, "_resolved_workspace_path", None)
+            if working_root is None:
+                current_ws_root = _workspace_root_for(ws, base_dir)
+                working_root = _resolve_root_path(configured_working_directory, current_ws_root)
+            mounted_env_path = os.path.join(working_root, ".env")
             if os.path.exists(mounted_env_path):
                 layers.append({
-                    "kind": "mounted-root",
+                    "kind": "working-directory-root",
                     "id": ws.id,
-                    "name": f"{ws.name} mounted root",
+                    "name": f"{ws.name} working directory root",
                     "parent_id": ws.id,
                     "path": mounted_env_path,
                     "env": _read_env_file(mounted_env_path),
@@ -241,14 +326,14 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
 
 def read_workstream_env(ws_id: str, base_dir: str = ".") -> dict:
     """Return key/value pairs from a workstream-local .env file."""
-    ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
+    ws_root = resolve_workstream_state_root(ws_id, base_dir=base_dir)
     env_path = _ws_env_path(ws_root, ws_id)
     return _read_env_file(env_path)
 
 
 def write_workstream_env(ws_id: str, values: dict, base_dir: str = ".") -> None:
     """Write key/value pairs to a workstream-local .env file."""
-    ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
+    ws_root = resolve_workstream_state_root(ws_id, base_dir=base_dir)
     ws_data_dir = os.path.join(_ws_dir(ws_root), ws_id)
     os.makedirs(ws_data_dir, exist_ok=True)
     env_path = _ws_env_path(ws_root, ws_id)
@@ -381,12 +466,14 @@ def create_workstream(
     parent_id: str = None,
     task_states: dict = None,
     retry: dict = None,
-    mounted_workspace_path: str = None,
+    working_directory: str = None,
+    artifact_root: str = None,
+    child_workstream_root: str = None,
     base_dir: str = ".",
 ) -> Workstream:
-    target_base_dir = _abs_base_dir(base_dir)
+    target_base_dir = _state_base_dir(base_dir)
     if parent_id:
-        target_base_dir = resolve_workstream_workspace(parent_id, base_dir=base_dir)
+        target_base_dir = resolve_workstream_child_state_root(parent_id, base_dir=base_dir)
 
     ws_id = new_id()
     ws = Workstream(
@@ -395,7 +482,9 @@ def create_workstream(
         description=description,
         context=context,
         parent_id=parent_id,
-        mounted_workspace_path=mounted_workspace_path,
+        working_directory=working_directory,
+        artifact_root=artifact_root,
+        child_workstream_root=child_workstream_root,
     )
     if task_states:
         ws.task_states = task_states
@@ -403,12 +492,12 @@ def create_workstream(
         ws.retry = RetryConfig.from_dict(retry)
 
     # Create directories
-    os.makedirs(_ws_dir(target_base_dir), exist_ok=True)
-    tasks_dir = os.path.join(_ws_dir(target_base_dir), ws_id, "tasks")
+    os.makedirs(_local_ws_dir(target_base_dir), exist_ok=True)
+    tasks_dir = os.path.join(_local_ws_dir(target_base_dir), ws_id, "tasks")
     os.makedirs(tasks_dir, exist_ok=True)
 
     # Save workstream YAML
-    save_workstream(ws, target_base_dir)
+    _write_workstream_to_root(ws, target_base_dir)
     return ws
 
 
@@ -418,12 +507,6 @@ def list_workstreams(base_dir: str = ".") -> list:
 
 
 def read_workstream(ws_id: str, base_dir: str = ".") -> Workstream:
-    path = _ws_path(base_dir, ws_id)
-    if os.path.exists(path):
-        with open(path) as f:
-            data = yaml.safe_load(f)
-        return _set_workspace_root(Workstream.from_dict(data), _abs_base_dir(base_dir))
-
     by_id = _collect_effective_workstreams(base_dir)
     ws = by_id.get(ws_id)
     if ws is None:
@@ -440,6 +523,49 @@ def find_workstreams(query: str, base_dir: str = ".") -> list:
         elif ws.description and query_lower in ws.description.lower():
             result.append(ws)
     return result
+
+
+def get_workstream_tags(workstream_id: str, base_dir: str = ".") -> list[dict]:
+    ws = read_workstream(workstream_id, base_dir=base_dir)
+    tag_definitions = _normalize_tag_definitions(getattr(ws, "tag_definitions", []))
+    known_names = {entry["name"] for entry in tag_definitions}
+
+    from .tasks import list_tasks
+
+    for task in list_tasks(workstream_id, base_dir=base_dir):
+        for raw_tag in getattr(task, "tags", []) or []:
+            name = _normalize_tag_name(raw_tag)
+            if not name or name in known_names:
+                continue
+            known_names.add(name)
+            tag_definitions.append({"name": name, "color": _default_tag_color(name)})
+
+    return tag_definitions
+
+
+def upsert_workstream_tag(workstream_id: str, name: str, color: str = None, base_dir: str = ".") -> dict:
+    ws = read_workstream(workstream_id, base_dir=base_dir)
+    normalized_name = _normalize_tag_name(name)
+    if not normalized_name:
+        raise ValueError("Tag name is required")
+
+    normalized_color = _normalize_tag_color(normalized_name, color)
+    tag_definitions = _normalize_tag_definitions(getattr(ws, "tag_definitions", []))
+
+    updated = None
+    for entry in tag_definitions:
+        if entry["name"] == normalized_name:
+            entry["color"] = normalized_color
+            updated = entry
+            break
+
+    if updated is None:
+        updated = {"name": normalized_name, "color": normalized_color}
+        tag_definitions.append(updated)
+
+    ws.tag_definitions = tag_definitions
+    save_workstream(ws, base_dir)
+    return updated
 
 
 def read_workstream_context(ws_id: str, base_dir: str = ".") -> dict:
@@ -485,13 +611,50 @@ def set_workstream_context(
     return ws
 
 
+def read_workstream_agent_concurrency(ws_id: str, base_dir: str = ".") -> dict:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    return {
+        "workstream_id": ws.id,
+        "name": ws.name,
+        "agent_concurrency": normalize_agent_concurrency_policy(ws.agent_concurrency),
+    }
+
+
+def set_workstream_agent_concurrency(
+    ws_id: str,
+    agent_concurrency=None,
+    base_dir: str = ".",
+    updated_by: str = None,
+) -> Workstream:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    normalized = normalize_agent_concurrency_policy(agent_concurrency)
+    previous = normalize_agent_concurrency_policy(ws.agent_concurrency)
+    if previous == normalized:
+        return ws
+
+    ws.agent_concurrency = normalized
+    save_workstream(ws, base_dir)
+
+    from .workspace_audit import log_event
+
+    actor = f" by {updated_by}" if updated_by else ""
+    if normalized:
+        description = f"Workstream agent concurrency updated{actor}"
+    else:
+        description = f"Workstream agent concurrency cleared{actor}"
+    log_event(
+        "workstream_agent_concurrency_updated",
+        description,
+        base_dir,
+        workstream_id=ws.id,
+    )
+    return ws
+
+
 def save_workstream(ws: Workstream, base_dir: str = ".") -> None:
     """Save a workstream to its YAML file."""
     try:
-        target_root = resolve_workstream_workspace(ws.id, base_dir=base_dir)
+        target_root = resolve_workstream_state_root(ws.id, base_dir=base_dir)
     except FileNotFoundError:
-        target_root = _abs_base_dir(base_dir)
-
-    os.makedirs(_ws_dir(target_root), exist_ok=True)
-    with open(_ws_path(target_root, ws.id), "w") as f:
-        yaml.dump(ws.to_dict(), f, default_flow_style=False, sort_keys=False)
+        target_root = _state_base_dir(base_dir)
+    _write_workstream_to_root(ws, target_root)

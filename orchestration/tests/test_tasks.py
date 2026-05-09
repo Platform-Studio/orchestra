@@ -1,5 +1,8 @@
 """Tests for task operations."""
 
+import os
+from pathlib import Path
+
 import pytest
 from orchestration.workstreams import create_workstream, list_workstreams, save_workstream
 from orchestration.tasks import (
@@ -75,12 +78,39 @@ class TestCreateTask:
         task = create_task(ws.id, title="T", base_dir=workspace)
         assert task.status == "pending"
 
+    def test_create_with_explicit_initial_status(self, workspace, ws):
+        task = create_task(ws.id, title="T", initial_status="In Progress", base_dir=workspace)
+        assert task.status == "In Progress"
+
+    def test_create_with_invalid_initial_status_raises(self, workspace, ws):
+        with pytest.raises(ValueError, match="Unknown task state"):
+            create_task(ws.id, title="T", initial_status="Not A State", base_dir=workspace)
+
 
 class TestReadTask:
     def test_read_existing(self, workspace, ws):
         task = create_task(ws.id, title="Read Me", base_dir=workspace)
         loaded = read_task(task.id, base_dir=workspace)
         assert loaded.title == "Read Me"
+        assert loaded.id == task.id
+
+    def test_read_task_uses_workspace_index_not_per_task_root_resolution(self, workspace, tmp_path, monkeypatch):
+        working_root = tmp_path / "career_pivot_repo"
+        working_root.mkdir()
+
+        parent = create_workstream(name="career_pivot", base_dir=workspace)
+        parent.working_directory = str(working_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
+        task = create_task(child.id, title="Mounted task", base_dir=workspace)
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("should use workspace index")
+
+        monkeypatch.setattr("orchestration.tasks.resolve_workstream_state_root", _boom)
+
+        loaded = read_task(task.id, base_dir=workspace)
         assert loaded.id == task.id
 
     def test_read_not_found(self, workspace):
@@ -169,12 +199,12 @@ class TestListTasks:
         assert len(tasks) == 1
         assert tasks[0].title == "T1"
 
-    def test_list_tasks_for_workstream_uses_cached_workspace_root_for_mounted_child(self, workspace, tmp_path, monkeypatch):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
+    def test_list_tasks_for_workstream_uses_cached_workspace_root_for_working_directory_child(self, workspace, tmp_path, monkeypatch):
+        working_root = tmp_path / "career_pivot_repo"
+        working_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         save_workstream(parent, base_dir=workspace)
 
         child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
@@ -185,7 +215,7 @@ class TestListTasks:
         def _boom(*args, **kwargs):
             raise AssertionError("should use cached workspace root")
 
-        monkeypatch.setattr("orchestration.tasks.resolve_workstream_workspace", _boom)
+        monkeypatch.setattr("orchestration.tasks.resolve_workstream_state_root", _boom)
 
         tasks = list_tasks_for_workstream(loaded_child, base_dir=workspace)
         assert [t.id for t in tasks] == [task.id]
@@ -197,41 +227,49 @@ class TestTaskOrdering:
         t2 = create_task(ws.id, title="T2", base_dir=workspace)
         assert t1.rank is not None
         assert t2.rank is not None
-        assert float(t2.rank) > float(t1.rank)
+        assert float(t2.rank) < float(t1.rank)
+
+    def test_new_tasks_are_added_to_top_of_state_list(self, workspace, ws):
+        t1 = create_task(ws.id, title="T1", base_dir=workspace)
+        t2 = create_task(ws.id, title="T2", base_dir=workspace)
+        t3 = create_task(ws.id, title="T3", base_dir=workspace)
+
+        ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
+        assert ordered == [t3.id, t2.id, t1.id]
 
     def test_move_up_reorders_within_status(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
         t2 = create_task(ws.id, title="T2", base_dir=workspace)
         t3 = create_task(ws.id, title="T3", base_dir=workspace)
 
-        move_task_up(t3.id, base_dir=workspace)
+        move_task_up(t1.id, base_dir=workspace)
         ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
-        assert ordered == [t1.id, t3.id, t2.id]
+        assert ordered == [t3.id, t1.id, t2.id]
 
     def test_move_down_reorders_within_status(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
         t2 = create_task(ws.id, title="T2", base_dir=workspace)
         t3 = create_task(ws.id, title="T3", base_dir=workspace)
 
-        move_task_down(t1.id, base_dir=workspace)
+        move_task_down(t3.id, base_dir=workspace)
         ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
-        assert ordered == [t2.id, t1.id, t3.id]
+        assert ordered == [t2.id, t3.id, t1.id]
 
     def test_move_up_on_first_is_noop(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
         t2 = create_task(ws.id, title="T2", base_dir=workspace)
-        moved = move_task_up(t1.id, base_dir=workspace)
+        moved = move_task_up(t2.id, base_dir=workspace)
         ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
-        assert moved.id == t1.id
-        assert ordered == [t1.id, t2.id]
+        assert moved.id == t2.id
+        assert ordered == [t2.id, t1.id]
 
     def test_move_down_on_last_is_noop(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
         t2 = create_task(ws.id, title="T2", base_dir=workspace)
-        moved = move_task_down(t2.id, base_dir=workspace)
+        moved = move_task_down(t1.id, base_dir=workspace)
         ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
-        assert moved.id == t2.id
-        assert ordered == [t1.id, t2.id]
+        assert moved.id == t1.id
+        assert ordered == [t2.id, t1.id]
 
     def test_move_before_reorders_to_target_position(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
@@ -241,7 +279,7 @@ class TestTaskOrdering:
 
         move_task_before(t4.id, t2.id, base_dir=workspace)
         ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
-        assert ordered == [t1.id, t4.id, t2.id, t3.id]
+        assert ordered == [t3.id, t4.id, t2.id, t1.id]
 
     def test_move_after_reorders_to_target_position(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
@@ -251,16 +289,16 @@ class TestTaskOrdering:
 
         move_task_after(t1.id, t3.id, base_dir=workspace)
         ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
-        assert ordered == [t2.id, t3.id, t1.id, t4.id]
+        assert ordered == [t4.id, t3.id, t1.id, t2.id]
 
     def test_move_to_index_reorders_directly(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
         t2 = create_task(ws.id, title="T2", base_dir=workspace)
         t3 = create_task(ws.id, title="T3", base_dir=workspace)
 
-        move_task_to_index(t3.id, 0, base_dir=workspace)
+        move_task_to_index(t1.id, 0, base_dir=workspace)
         ordered = [t.id for t in list_tasks(ws.id, status="To Do", base_dir=workspace)]
-        assert ordered == [t3.id, t1.id, t2.id]
+        assert ordered == [t1.id, t3.id, t2.id]
 
     def test_move_before_requires_same_status(self, workspace, ws):
         t1 = create_task(ws.id, title="T1", base_dir=workspace)
@@ -375,11 +413,11 @@ class TestTaskAttachments:
             attach_to_task(task.id, "Theses/missing.md", base_dir=workspace)
 
     def test_attach_to_child_task_after_parent_artifact_copytree(self, workspace, tmp_path):
-        mount_root = tmp_path / "stashmap_repo"
-        mount_root.mkdir()
+        working_root = tmp_path / "stashmap_repo"
+        working_root.mkdir()
 
         parent = create_workstream(name="StashMap", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         save_workstream(parent, base_dir=workspace)
         child = create_workstream(name="Product Development", parent_id=parent.id, base_dir=workspace)
 
@@ -396,7 +434,7 @@ class TestTaskAttachments:
         updated = attach_to_task(task.id, artifact_path, base_dir=workspace)
 
         assert updated.attachments == [artifact_path]
-        assert (mount_root / "artifacts" / artifact_path).read_text() == "# Architecture"
+        assert os.path.exists(os.path.join(workspace, "artifacts", artifact_path))
 
     def test_detach_from_task(self, workspace, ws):
         task = create_task(ws.id, title="T", attachments=["Theses/a.md"], base_dir=workspace)

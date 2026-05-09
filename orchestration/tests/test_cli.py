@@ -1,6 +1,7 @@
 """Tests for the CLI interface."""
 
 import json
+import shutil
 import subprocess
 import sys
 import os
@@ -62,18 +63,26 @@ class TestCLIWorkstream:
         data = json.loads(result.stdout)
         assert "Open" in data["data"]["task_states"]
 
-    def test_create_with_mounted_workspace_path(self, workspace):
-        mount_root = Path(workspace) / "external_repo"
-        mount_root.mkdir()
+    def test_create_with_explicit_routing_fields(self, workspace):
+        working_root = Path(workspace) / "code_root"
+        artifact_root = Path(workspace) / "artifact_root"
+        child_root = Path(workspace) / "child_root"
+        for path in (working_root, artifact_root, child_root):
+            path.mkdir()
+
         result = run_cli(
             "workstream", "create",
-            "--name", "Career Pivot",
-            "--mounted-workspace-path", str(mount_root),
+            "--name", "Routed",
+            "--working-directory", str(working_root),
+            "--artifact-root", str(artifact_root),
+            "--child-workstream-root", str(child_root),
             base_dir=workspace,
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
-        assert data["data"]["mounted_workspace_path"] == str(mount_root)
+        assert data["data"]["working_directory"] == str(working_root)
+        assert data["data"]["artifact_root"] == str(artifact_root)
+        assert data["data"]["child_workstream_root"] == str(child_root)
 
     def test_context_read_and_update(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", "--context", "brief one", base_dir=workspace)
@@ -95,6 +104,60 @@ class TestCLIWorkstream:
         audit_path = Path(workspace) / "workspace_audit.yaml"
         audit = yaml.safe_load(audit_path.read_text())
         assert any(e["type"] == "workstream_context_updated" and e["description"] == "Workstream context updated by cli-test" for e in audit)
+
+    def test_agent_concurrency_read_and_update(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("workstream", "agent-concurrency", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"]["agent_concurrency"] == {}
+
+        policy = json.dumps({
+            "default": 1,
+            "state_overrides": {
+                "Staging Deploy": {"overrides": {"DevOps Engineer": 1}},
+                "Production Deploy": {"overrides": {"DevOps Engineer": 1}},
+            },
+        })
+        result = run_cli(
+            "workstream", "update-agent-concurrency", ws_id,
+            "--policy", policy,
+            "--updated-by", "cli-test",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["agent_concurrency"]["state_overrides"]["Staging Deploy"]["overrides"]["DevOps Engineer"] == 1
+
+        audit_path = Path(workspace) / "workspace_audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text())
+        assert any(
+            e["type"] == "workstream_agent_concurrency_updated"
+            and e["description"] == "Workstream agent concurrency updated by cli-test"
+            for e in audit
+        )
+
+    def test_gettags_and_upsert_tag(self, workspace):
+        result = run_cli("workstream", "create", "--name", "Tags", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli(
+            "workstream", "upsert-tag", ws_id,
+            "--name", "Urgent",
+            "--color", "#eb5a46",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"] == {"name": "Urgent", "color": "#eb5a46"}
+
+        run_cli("task", "create", ws_id, "--title", "Card", "--tags", "Urgent, Review", base_dir=workspace)
+
+        result = run_cli("workstream", "gettags", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert {tag["name"] for tag in data} == {"Urgent", "Review"}
+        assert next(tag for tag in data if tag["name"] == "Urgent")["color"] == "#eb5a46"
 
     def test_tree(self, workspace):
         # Create parent
@@ -155,6 +218,110 @@ class TestCLIWorkstream:
         depths = {r["id"]: r["depth"] for r in rows}
         assert depths[root_id] == 0
         assert depths[child_id] == 1
+
+    def test_migrate_artifact_root_home(self, workspace, tmp_path):
+        mount_root = tmp_path / "mounted_repo"
+        mount_root.mkdir()
+
+        result = run_cli("workstream", "create", "--name", "Product", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        root_yaml = Path(workspace) / "workstreams" / f"{ws_id}.yaml"
+        data = yaml.safe_load(root_yaml.read_text())
+        data["working_directory"] = str(mount_root)
+        data["artifact_root"] = str(mount_root)
+        root_yaml.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+        result = run_cli("workstream", "create", "--name", "Child", "--parent", ws_id, base_dir=workspace)
+        child_id = json.loads(result.stdout)["data"]["id"]
+        result = run_cli(
+            "artifact", "create",
+            "--path", "reports/one.md",
+            "--content", "hello",
+            "--workstream", ws_id,
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+
+        result = run_cli("workstream", "migrate-artifact-root-home", ws_id, base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["data"]["planned_artifact_file_count"] == 1
+
+        result = run_cli("workstream", "migrate-artifact-root-home", ws_id, "--apply", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["data"]["applied"] is True
+
+        reloaded = yaml.safe_load(root_yaml.read_text())
+        assert reloaded.get("artifact_root") is None
+        assert Path(workspace, "artifacts", "reports", "one.md").exists()
+
+    def test_migrate_artifact_root_home_can_archive_conflicts(self, workspace, tmp_path):
+        mount_root = tmp_path / "mounted_repo"
+        mount_root.mkdir()
+
+        result = run_cli("workstream", "create", "--name", "Product", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        root_yaml = Path(workspace) / "workstreams" / f"{ws_id}.yaml"
+        data = yaml.safe_load(root_yaml.read_text())
+        data["working_directory"] = str(mount_root)
+        data["artifact_root"] = str(mount_root)
+        root_yaml.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+        result = run_cli(
+            "artifact", "create",
+            "--path", "reports/one.md",
+            "--content", "source",
+            "--workstream", ws_id,
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+
+        result = run_cli(
+            "artifact", "create",
+            "--path", "reports/one.md",
+            "--content", "dest",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+
+        result = run_cli(
+            "workstream", "migrate-artifact-root-home", ws_id,
+            "--apply", "--archive-conflicts",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["data"]["applied"] is True
+        assert Path(workspace, "artifacts", "_migration_conflicts", ws_id, "reports", "one.md").exists()
+
+    def test_migrate_child_layout(self, workspace):
+        result = run_cli("workstream", "create", "--name", "Root", base_dir=workspace)
+        root_id = json.loads(result.stdout)["data"]["id"]
+        result = run_cli("workstream", "create", "--name", "Child", "--parent", root_id, base_dir=workspace)
+        child_id = json.loads(result.stdout)["data"]["id"]
+
+        flat_yaml = Path(workspace) / "workstreams" / f"{child_id}.yaml"
+        target_yaml = Path(workspace) / "workstreams" / root_id / "workstreams" / f"{child_id}.yaml"
+        target_dir = Path(workspace) / "workstreams" / root_id / "workstreams" / child_id
+        flat_yaml.write_text(target_yaml.read_text())
+        shutil.copytree(target_dir, Path(workspace) / "workstreams" / child_id)
+        target_yaml.unlink()
+        shutil.rmtree(target_dir)
+
+        result = run_cli("workstream", "migrate-child-layout", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert child_id in data["data"]["moved_workstream_ids"]
+
+        result = run_cli("workstream", "migrate-child-layout", "--apply", base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["data"]["applied"] is True
+        assert target_yaml.exists()
+        assert not flat_yaml.exists()
 
 
 class TestCLITask:
@@ -257,21 +424,22 @@ class TestCLITask:
         t2 = json.loads(run_cli("task", "create", ws_id, "--title", "T2", base_dir=workspace).stdout)["data"]["id"]
         t3 = json.loads(run_cli("task", "create", ws_id, "--title", "T3", base_dir=workspace).stdout)["data"]["id"]
 
-        # Move T3 before T1 -> [T3, T1, T2]
+        # New tasks are inserted at the top, so the initial order is [T3, T2, T1].
+        # Move T3 immediately before T1 -> [T2, T3, T1]
         result = run_cli("task", "move-before", t3, t1, base_dir=workspace)
         assert result.returncode == 0
 
-        # Move T1 after T2 -> [T3, T2, T1]
+        # Move T1 immediately after T2 -> [T2, T1, T3]
         result = run_cli("task", "move-after", t1, t2, base_dir=workspace)
         assert result.returncode == 0
 
-        # Move T2 to index 0 -> [T2, T3, T1]
+        # T2 is already at index 0, so this is a no-op.
         result = run_cli("task", "move-to-index", t2, "0", base_dir=workspace)
         assert result.returncode == 0
 
         listed = json.loads(run_cli("task", "list", ws_id, "--status", "To Do", base_dir=workspace).stdout)["data"]
         ordered_ids = [t["id"] for t in listed]
-        assert ordered_ids == [t2, t3, t1]
+        assert ordered_ids == [t2, t1, t3]
 
 
 class TestCLILock:
@@ -336,7 +504,7 @@ class TestCLIArtifact:
         assert result.returncode == 0
         assert "test.md" in json.loads(result.stdout)["data"]
 
-    def test_artifact_copytree_requires_mounted_destination(self, workspace):
+    def test_artifact_copytree_can_target_local_artifact_store(self, workspace):
         ws_result = run_cli("workstream", "create", "--name", "Local WS", base_dir=workspace)
         ws_id = json.loads(ws_result.stdout)["data"]["id"]
         run_cli(
@@ -351,18 +519,18 @@ class TestCLIArtifact:
             "--workstream", ws_id,
             base_dir=workspace,
         )
-        assert result.returncode != 0
-        err = json.loads(result.stderr)
-        assert "not mounted" in err["message"].lower()
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["skipped_same_count"] == 1
 
-    def test_artifact_copytree_copies_to_mounted_workspace(self, workspace):
-        mount_root = Path(workspace) / "mounted_repo"
-        mount_root.mkdir()
+    def test_artifact_copytree_copies_to_workspace_artifacts_for_working_directory_context(self, workspace):
+        working_root = Path(workspace) / "mounted_repo"
+        working_root.mkdir()
 
         parent_result = run_cli(
             "workstream", "create",
             "--name", "Startup",
-            "--mounted-workspace-path", str(mount_root),
+            "--working-directory", str(working_root),
             base_dir=workspace,
         )
         parent_id = json.loads(parent_result.stdout)["data"]["id"]
@@ -390,8 +558,9 @@ class TestCLIArtifact:
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
-        assert data["copy_count"] == 1
-        assert (mount_root / "artifacts" / "Stage 2 Research" / "example" / "readme.md").read_text() == "hello"
+        assert data["copy_count"] == 0
+        assert data["skipped_same_count"] == 1
+        assert (Path(workspace) / "artifacts" / "Stage 2 Research" / "example" / "readme.md").read_text() == "hello"
 
     def test_artifact_read_logs_audit_when_run_context_present(self, workspace, monkeypatch):
         run_cli("artifact", "create", "--path", "x.md", "--content", "hello", base_dir=workspace)
@@ -421,13 +590,13 @@ class TestCLIArtifact:
         assert entries == []
 
     def test_artifact_commands_infer_workstream_from_agent_context(self, workspace, monkeypatch):
-        mount_root = Path(workspace) / "career_pivot_repo"
-        mount_root.mkdir()
+        working_root = Path(workspace) / "career_pivot_repo"
+        working_root.mkdir()
 
         result = run_cli(
             "workstream", "create",
             "--name", "Career Pivot",
-            "--mounted-workspace-path", str(mount_root),
+            "--working-directory", str(working_root),
             base_dir=workspace,
         )
         parent_id = json.loads(result.stdout)["data"]["id"]
@@ -450,7 +619,7 @@ class TestCLIArtifact:
         )
         assert result.returncode == 0
 
-        created_path = mount_root / "artifacts" / "reports" / "hello.md"
+        created_path = Path(workspace) / "artifacts" / "reports" / "hello.md"
         assert created_path.exists()
 
         result = run_cli("artifact", "read", "reports/hello.md", base_dir=workspace)
@@ -504,6 +673,28 @@ class TestCLIScheduleTrigger:
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert data["on_schedule"] == "0 9 * * 1"
+
+    def test_create_state_trigger_with_task_selection(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli(
+            "trigger",
+            "create",
+            ws_id,
+            "--on-state",
+            "To Do",
+            "--task-selection",
+            "all_unlocked",
+            "--action",
+            "run_agent",
+            "--agent",
+            "test_agent",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["task_selection"] == "all_unlocked"
 
     def test_create_trigger_requires_state_or_schedule(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
