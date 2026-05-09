@@ -177,6 +177,27 @@ class TestFindOrphanedLocks:
         orphaned = find_orphaned_locks(workspace)
         assert orphaned == []
 
+    @patch("orchestration.locks._is_process_alive")
+    def test_skips_lock_with_dead_parent_but_live_subprocess(self, mock_alive, workspace, task):
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        update_lock_pid(task.id, subprocess_pid=434343, base_dir=workspace)
+        mock_alive.side_effect = lambda pid: pid == 434343
+
+        orphaned = find_orphaned_locks(workspace)
+
+        assert orphaned == []
+
+    @patch("orchestration.locks._is_process_alive")
+    def test_finds_lock_when_parent_and_subprocess_dead(self, mock_alive, workspace, task):
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        update_lock_pid(task.id, subprocess_pid=434343, base_dir=workspace)
+        mock_alive.return_value = False
+
+        orphaned = find_orphaned_locks(workspace)
+
+        assert len(orphaned) == 1
+        assert orphaned[0]["task_id"] == task.id
+
     @patch("orchestration.locks._is_process_alive", return_value=False)
     def test_skips_expired_locks(self, _mock_alive, workspace, task):
         _make_expired_lock(task.id, workspace, pid=424242)

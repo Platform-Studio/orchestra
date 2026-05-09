@@ -72,6 +72,62 @@ def _serialize_board_tasks(tasks):
     return task_dicts
 
 
+def _task_storage_dir(workstream) -> str:
+    ws_root = getattr(workstream, "_workspace_root", None)
+    if not ws_root:
+        ws_root = resolve_workstream_workspace(workstream.id, base_dir=WORKSPACE_DIR)
+    return os.path.join(ws_root, "workstreams", workstream.id, "tasks")
+
+
+def _count_task_files(tasks_dir: str) -> int:
+    try:
+        with os.scandir(tasks_dir) as entries:
+            return sum(1 for entry in entries if entry.is_file() and entry.name.endswith(".yaml"))
+    except FileNotFoundError:
+        return 0
+
+
+def _task_counts_by_workstream(workstreams) -> dict:
+    return {
+        workstream.id: _count_task_files(_task_storage_dir(workstream))
+        for workstream in workstreams
+    }
+
+
+def _agent_run_status(run: dict) -> str:
+    status = str((run or {}).get("status") or "").strip().lower()
+    if status:
+        return status
+    return "completed" if (run or {}).get("ended_at") else "running"
+
+
+def _sort_agent_runs_for_display(runs: list[dict]) -> list[dict]:
+    ordered = sorted(runs, key=lambda run: str(run.get("started_at") or ""), reverse=True)
+    ordered.sort(key=lambda run: 0 if _agent_run_status(run) == "running" else 1)
+    return ordered
+
+
+def _serialize_agent_run_summary(run: dict) -> dict:
+    return {
+        "run_id": run.get("run_id"),
+        "agent": run.get("agent"),
+        "agent_ref": run.get("agent_ref"),
+        "workstream_id": run.get("workstream_id"),
+        "workstream_path": run.get("workstream_path"),
+        "tasks": run.get("tasks") or [],
+        "started_at": run.get("started_at"),
+        "ended_at": run.get("ended_at"),
+        "status": _agent_run_status(run),
+        "exit_code": run.get("exit_code"),
+        "pid": run.get("pid"),
+        "runtime": run.get("runtime"),
+        "model": run.get("model"),
+        "effort": run.get("effort"),
+        "retried_from_run_id": run.get("retried_from_run_id"),
+        "retried_to_run_ids": run.get("retried_to_run_ids") or [],
+    }
+
+
 def _run_orchestration_cli(args: list[str]) -> dict:
     """Run orchestration CLI and return parsed JSON payload.
 
@@ -190,9 +246,7 @@ def handle_workstream(method, parts, params):
         return _ok([w.to_dict() for w in wss])
     elif m == "counts":
         wss = list_workstreams(base_dir=WORKSPACE_DIR)
-        counts = {}
-        for ws in wss:
-            counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
+        counts = _task_counts_by_workstream(wss)
         return _ok(counts)
     elif m == "read" and parts:
         ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
@@ -472,7 +526,8 @@ def handle_agent(method, parts, params):
     if method == "runs":
         limit = int(params.get("limit", "100"))
         runs = list_agent_runs(limit=limit, base_dir=WORKSPACE_DIR)
-        return _ok(runs)
+        summaries = [_serialize_agent_run_summary(run) for run in runs]
+        return _ok(_sort_agent_runs_for_display(summaries))
     if method == "run" and parts:
         details = get_agent_run(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(details)
@@ -490,9 +545,7 @@ def handle_agent(method, parts, params):
 def handle_poll(method, parts, params):
     """Combined polling endpoint — returns workstreams, counts, scheduler, and optionally board metadata."""
     wss = list_workstreams(base_dir=WORKSPACE_DIR)
-    counts = {}
-    for ws in wss:
-        counts[ws.id] = len(list_tasks(ws.id, base_dir=WORKSPACE_DIR))
+    counts = _task_counts_by_workstream(wss)
     try:
         # Count only currently live runs from the active registry. This avoids
         # inflating the sidebar badge with stale historical metadata entries.

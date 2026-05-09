@@ -245,7 +245,11 @@ def _is_process_alive(pid: int) -> bool:
 
 
 def find_orphaned_locks(base_dir: str = ".") -> list:
-    """Scan all workstreams for non-expired locks whose owner pid is dead.
+    """Scan all workstreams for non-expired locks whose owner process is dead.
+
+    Scheduler-launched agents store the scheduler pid as ``pid`` and the actual
+    runtime process as ``subprocess_pid``. Treat the lock as live when either
+    process still exists so a scheduler restart does not orphan active agent work.
 
     Returns list of dicts: {task_id, workstream_id, lock, lock_path}
     """
@@ -267,9 +271,10 @@ def find_orphaned_locks(base_dir: str = ".") -> list:
                 # Expired locks are handled by the retry pipeline.
                 if lock.is_expired():
                     continue
-                if lock.pid is None:
+                candidate_pids = [pid for pid in (lock.pid, lock.subprocess_pid) if pid is not None]
+                if not candidate_pids:
                     continue
-                if _is_process_alive(lock.pid):
+                if any(_is_process_alive(pid) for pid in candidate_pids):
                     continue
                 task_id = fname.replace(".yaml.lock", "")
                 orphaned.append({
