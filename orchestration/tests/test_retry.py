@@ -17,7 +17,7 @@ from orchestration.retry import (
     handle_expired_lock, cleanup_expired_locks, manual_retry,
     cleanup_orphaned_locks,
     _compute_backoff, _get_retry_config, _find_last_agent,
-    _is_process_alive,
+    _is_process_alive, _is_our_process,
 )
 
 
@@ -101,6 +101,20 @@ class TestLockPID:
         assert lock.agent_id == "old-agent"
 
 
+class TestProcessDetection:
+    @patch("subprocess.run")
+    def test_is_our_process_accepts_cline_cli_process(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="node /usr/lib/node_modules/cline/dist/cli.mjs")
+
+        assert _is_our_process(12345) is True
+
+    @patch("subprocess.run")
+    def test_is_our_process_rejects_unrelated_node_process(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="node server.js")
+
+        assert _is_our_process(12345) is False
+
+
 # ── Find expired locks ───────────────────────────────────────────
 
 class TestFindExpiredLocks:
@@ -162,6 +176,27 @@ class TestFindOrphanedLocks:
         acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
         orphaned = find_orphaned_locks(workspace)
         assert orphaned == []
+
+    @patch("orchestration.locks._is_process_alive")
+    def test_skips_lock_with_dead_parent_but_live_subprocess(self, mock_alive, workspace, task):
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        update_lock_pid(task.id, subprocess_pid=434343, base_dir=workspace)
+        mock_alive.side_effect = lambda pid: pid == 434343
+
+        orphaned = find_orphaned_locks(workspace)
+
+        assert orphaned == []
+
+    @patch("orchestration.locks._is_process_alive")
+    def test_finds_lock_when_parent_and_subprocess_dead(self, mock_alive, workspace, task):
+        acquire_lock(task.id, agent_id="agent-1", ttl_seconds=600, pid=424242, base_dir=workspace)
+        update_lock_pid(task.id, subprocess_pid=434343, base_dir=workspace)
+        mock_alive.return_value = False
+
+        orphaned = find_orphaned_locks(workspace)
+
+        assert len(orphaned) == 1
+        assert orphaned[0]["task_id"] == task.id
 
     @patch("orchestration.locks._is_process_alive", return_value=False)
     def test_skips_expired_locks(self, _mock_alive, workspace, task):

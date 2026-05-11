@@ -138,6 +138,7 @@ _PATCHES = {
     "resolve_workstream_workspace": "workstream_manager.server.resolve_workstream_workspace",
     "resolve_workstream_artifact_root": "workstream_manager.server.resolve_workstream_artifact_root",
     "resolve_workstream_child_state_root": "workstream_manager.server.resolve_workstream_child_state_root",
+    "_task_counts_by_workstream": "workstream_manager.server._task_counts_by_workstream",
     "create_task":       "workstream_manager.server.create_task",
     "read_task":         "workstream_manager.server.read_task",
     "update_task":       "workstream_manager.server.update_task",
@@ -158,6 +159,9 @@ _PATCHES = {
     "scheduler_status":  "workstream_manager.server.scheduler_status",
     "list_active_agents": "workstream_manager.server.list_active_agents",
     "list_agent_runs": "workstream_manager.server.list_agent_runs",
+    "get_agent_run": "workstream_manager.server.get_agent_run",
+    "tail_active_agent": "workstream_manager.server.tail_active_agent",
+    "kill_agent_run": "workstream_manager.server.kill_agent_run",
     "retry_agent_run":   "workstream_manager.server.retry_agent_run",
 }
 
@@ -180,6 +184,9 @@ def api(tmp_path):
     mocks["scheduler_status"].return_value = {"running": False, "last_tick": None}
     mocks["list_active_agents"].return_value = []
     mocks["list_agent_runs"].return_value = []
+    mocks["get_agent_run"].return_value = {"run": {"run_id": "run-1"}, "output": "", "cli_calls": [], "retry": {}, "interruption_reason": None}
+    mocks["tail_active_agent"].return_value = {"run": {"run_id": "run-1", "status": "running"}, "tail": "live output", "line_count": 1}
+    mocks["kill_agent_run"].return_value = {"run_id": "run-1", "status": "killed"}
     mocks["list_workstream_hierarchy_env"].return_value = []
     mocks["list_effective_workstream_env"].return_value = {}
     mocks["resolve_workstream_workspace"].return_value = "/tmp/workspace"
@@ -187,6 +194,7 @@ def api(tmp_path):
     mocks["resolve_workstream_child_state_root"].return_value = "/tmp/state-base"
     mocks["get_workstream_tags"].return_value = []
     mocks["upsert_workstream_tag"].return_value = {"name": "Urgent", "color": "#eb5a46"}
+    mocks["_task_counts_by_workstream"].return_value = {}
     mocks["_run_orchestration_cli"].return_value = {}
 
     from workstream_manager.server import Handler, ThreadingHTTPServer, _invalidate_poll_sidebar_cache
@@ -457,10 +465,11 @@ class TestWorkstream:
     def test_counts(self, api):
         ws = _fake_workstream()
         api.mocks["list_workstreams"].return_value = [ws]
-        api.mocks["list_tasks"].return_value = [_fake_task(), _fake_task()]
+        api.mocks["_task_counts_by_workstream"].return_value = {"ws-1": 2}
         code, body = api.get("/api/workstream/counts")
         assert code == 200
         assert body["data"]["ws-1"] == 2
+        api.mocks["list_tasks"].assert_not_called()
 
     def test_read(self, api):
         ws = _fake_workstream(id="ws-42")
@@ -827,13 +836,77 @@ class TestScheduler:
         assert body["data"]["running"] is True
 
 
+class TestAgent:
+    def test_runs_summary_is_sorted_running_first(self, api):
+        api.mocks["list_agent_runs"].return_value = [
+            {
+                "run_id": "run-completed",
+                "agent": "Completed Agent",
+                "agent_ref": "completed_agent",
+                "workstream_id": "ws-1",
+                "workstream_path": "WS / Completed",
+                "tasks": [{"id": "t-1", "title": "Done task"}],
+                "started_at": "2026-01-02T00:00:00+00:00",
+                "ended_at": "2026-01-02T00:10:00+00:00",
+                "status": "completed",
+                "prompt": "very large prompt",
+                "system_prompt": "large system prompt",
+                "command_line": "secretly large command",
+                "log_path": ".orchestration/agent_runs/run-completed.log",
+            },
+            {
+                "run_id": "run-running",
+                "agent": "Running Agent",
+                "agent_ref": "running_agent",
+                "workstream_id": "ws-2",
+                "workstream_path": "WS / Running",
+                "tasks": [{"id": "t-2", "title": "Live task"}],
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "ended_at": None,
+                "status": "running",
+                "prompt": "another large prompt",
+                "system_prompt": "another large system prompt",
+                "command_line": "another large command",
+                "log_path": ".orchestration/agent_runs/run-running.log",
+                "runtime": "cline",
+                "model": "deepseek/deepseek-v4-pro",
+                "effort": "high",
+            },
+        ]
+
+        code, body = api.get("/api/agent/runs?limit=100")
+
+        assert code == 200
+        assert [run["run_id"] for run in body["data"]] == ["run-running", "run-completed"]
+        assert body["data"][0]["status"] == "running"
+        assert "prompt" not in body["data"][0]
+        assert "system_prompt" not in body["data"][0]
+        assert "command_line" not in body["data"][0]
+        assert "log_path" not in body["data"][0]
+
+    def test_tail(self, api):
+        from workstream_manager.server import WORKSPACE_DIR
+
+        api.mocks["tail_active_agent"].return_value = {
+            "run": {"run_id": "run-1", "status": "running"},
+            "tail": "hello\nworld\n",
+            "line_count": 2,
+        }
+
+        code, body = api.get("/api/agent/tail/run-1?lines=400")
+
+        assert code == 200
+        assert body["data"]["tail"] == "hello\nworld\n"
+        api.mocks["tail_active_agent"].assert_called_with("run-1", lines=400, base_dir=WORKSPACE_DIR)
+
+
 # ── Poll endpoint ───────────────────────────────────────────────
 
 class TestPoll:
     def test_poll_returns_workstreams_counts_scheduler(self, api):
         ws = _fake_workstream()
         api.mocks["list_workstreams"].return_value = [ws]
-        api.mocks["list_tasks"].return_value = [_fake_task(), _fake_task()]
+        api.mocks["_task_counts_by_workstream"].return_value = {"ws-1": 2}
         api.mocks["scheduler_status"].return_value = {"running": True, "last_tick": "2026-01-01"}
 
         code, body = api.get("/api/poll/all")
@@ -843,11 +916,13 @@ class TestPoll:
         assert data["counts"]["ws-1"] == 2
         assert data["scheduler"]["running"] is True
         assert "board" not in data
+        api.mocks["list_tasks"].assert_not_called()
 
     def test_poll_with_board_id(self, api):
         ws = _fake_workstream()
         t = _fake_task()
         api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["_task_counts_by_workstream"].return_value = {"ws-1": 1}
         api.mocks["list_tasks"].return_value = [t]
         api.mocks["read_workstream"].return_value = ws
         api.mocks["scheduler_status"].return_value = {"running": False}
@@ -862,6 +937,7 @@ class TestPoll:
 
     def test_poll_with_missing_board_skips_board(self, api):
         api.mocks["list_workstreams"].return_value = []
+        api.mocks["_task_counts_by_workstream"].return_value = {}
         api.mocks["read_workstream"].side_effect = FileNotFoundError("nope")
         api.mocks["scheduler_status"].return_value = {"running": False}
 
@@ -873,6 +949,7 @@ class TestPoll:
         ws = _fake_workstream()
         t = _fake_task()
         api.mocks["list_workstreams"].return_value = [ws]
+        api.mocks["_task_counts_by_workstream"].return_value = {"ws-1": 1}
         api.mocks["list_tasks"].return_value = [t]
         api.mocks["read_workstream"].return_value = ws
         api.mocks["scheduler_status"].return_value = {"running": False}
@@ -882,6 +959,24 @@ class TestPoll:
         assert code == 200
         assert body["data"]["board"]["tasks"][0]["lock"]["locked"] is False
         api.mocks["_run_orchestration_cli"].side_effect = None
+
+
+class TestTaskCountsHelper:
+    def test_counts_only_task_yaml_files(self, tmp_path):
+        from workstream_manager.server import _task_counts_by_workstream
+
+        ws_root = tmp_path / "mounted"
+        tasks_dir = ws_root / "workstreams" / "ws-1" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "task-1.yaml").write_text("id: task-1\n", encoding="utf-8")
+        (tasks_dir / "task-1.yaml.lock").write_text("agent_id: bot\n", encoding="utf-8")
+        (tasks_dir / "notes.txt").write_text("ignore\n", encoding="utf-8")
+        (tasks_dir / "task-2.yaml").write_text("id: task-2\n", encoding="utf-8")
+
+        ws = _fake_workstream(id="ws-1")
+        ws._workspace_root = str(ws_root)
+
+        assert _task_counts_by_workstream([ws]) == {"ws-1": 2}
 
     def test_poll_active_agent_runs_excludes_pidless_entries(self, api):
         ws = _fake_workstream()
@@ -910,7 +1005,7 @@ class TestPoll:
     def test_poll_reuses_cached_sidebar_snapshot_between_requests(self, api):
         ws = _fake_workstream()
         api.mocks["list_workstreams"].return_value = [ws]
-        api.mocks["list_tasks"].return_value = [_fake_task(), _fake_task()]
+        api.mocks["_task_counts_by_workstream"].return_value = {"ws-1": 2}
         api.mocks["scheduler_status"].return_value = {"running": False}
 
         first_code, first_body = api.get("/api/poll/all")
@@ -920,7 +1015,8 @@ class TestPoll:
         assert second_code == 200
         assert first_body["data"]["counts"] == second_body["data"]["counts"]
         api.mocks["list_workstreams"].assert_called_once()
-        api.mocks["list_tasks"].assert_called_once_with("ws-1", base_dir=api.mocks["list_tasks"].call_args.kwargs["base_dir"])
+        api.mocks["_task_counts_by_workstream"].assert_called_once_with([ws])
+        api.mocks["list_tasks"].assert_not_called()
 
     def test_successful_post_invalidates_poll_sidebar_snapshot(self, api):
         ws_one = _fake_workstream(id="ws-1")

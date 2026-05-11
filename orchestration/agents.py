@@ -31,6 +31,7 @@ DEFAULT_AGENT_RUNTIME = "claude-code"
 AGENT_RUNTIME_ENV_VAR = "ORCHESTRATION_AGENT_RUNTIME"
 CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
+CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
 
 CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 CLINE_MODEL_LEVEL_DEFAULTS = {
@@ -1163,32 +1164,124 @@ def _build_cline_prompt(task_prompt: str, system_prompt: str) -> str:
 
 
 def _resolve_cline_config_dir() -> str | None:
-    """Return a valid Cline config directory override, if one is configured.
+    """Return a valid Cline home directory override, if one is configured.
 
-    Ignore non-Cline directories so existing auth in Cline's default config
-    location still works when the override env var is misconfigured.
+    Cline's --config flag expects the Cline home directory and appends data/
+    internally. Accept either ~/.cline or ~/.cline/data from operators, but
+    normalize the latter back to ~/.cline so auth and task history resolve.
     """
     raw = str(os.getenv(CLINE_CONFIG_DIR_ENV_VAR, "") or "").strip()
-    if not raw or not os.path.isdir(raw):
+    if not raw:
+        return None
+    path = os.path.abspath(os.path.expandvars(os.path.expanduser(raw)))
+    if not os.path.isdir(path):
         return None
 
     # A common misconfiguration is pointing at the Node/npm bin directory where
     # the `cline` executable lives. Cline may create a partial `data/` tree there,
     # but it is still not the intended config root and will bypass the user's
     # real authenticated state.
-    binary_markers = ("node", "npm", "npx", "corepack")
-    if os.path.basename(raw) == "bin" and sum(
-        1 for name in binary_markers if os.path.exists(os.path.join(raw, name))
-    ) >= 2:
+    def _looks_like_node_bin_dir(candidate: str) -> bool:
+        binary_markers = ("node", "npm", "npx", "corepack")
+        return os.path.basename(candidate) == "bin" and sum(
+            1 for name in binary_markers if os.path.exists(os.path.join(candidate, name))
+        ) >= 2
+
+    if _looks_like_node_bin_dir(path):
         return None
 
-    dir_markers = ("data", "settings", "state", "workspaces")
+    data_dir_markers = ("settings", "state", "workspaces", "tasks")
     file_markers = ("globalState.json", "secrets.json")
-    if any(os.path.isdir(os.path.join(raw, name)) for name in dir_markers):
-        return raw
-    if any(os.path.isfile(os.path.join(raw, name)) for name in file_markers):
-        return raw
+    path_looks_like_data_dir = (
+        os.path.basename(path) == "data" and (
+            any(os.path.isdir(os.path.join(path, name)) for name in data_dir_markers)
+            or any(os.path.isfile(os.path.join(path, name)) for name in file_markers)
+        )
+    )
+    if path_looks_like_data_dir:
+        parent = os.path.dirname(path)
+        if parent and not _looks_like_node_bin_dir(parent):
+            return parent
+        return None
+
+    if any(os.path.isfile(os.path.join(path, name)) for name in file_markers):
+        parent = os.path.dirname(path)
+        if parent and not _looks_like_node_bin_dir(parent):
+            return parent
+        return None
+
+    if os.path.isdir(os.path.join(path, "data")) or not os.listdir(path):
+        return path
+
     return None
+
+
+def _cline_verbose_enabled() -> bool:
+    """Return whether Cline should stream verbose reasoning/progress logs."""
+    return _coerce_bool(os.getenv(CLINE_VERBOSE_ENV_VAR), default=False)
+
+
+def _coerce_timeout_seconds(value) -> int:
+    """Normalize timeout configuration to a positive integer number of seconds."""
+    try:
+        timeout_seconds = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid agent timeout '{value}'. Expected a positive integer number of seconds")
+    if timeout_seconds <= 0:
+        raise ValueError(f"Invalid agent timeout '{value}'. Expected a positive integer number of seconds")
+    return timeout_seconds
+
+
+def _runtime_process_timeout_seconds(runtime: str, runtime_timeout_seconds: int) -> int:
+    """Return the parent subprocess timeout for a runtime invocation."""
+    if _normalize_agent_runtime(runtime) != "cline":
+        return runtime_timeout_seconds
+    # Cline has its own --timeout and needs room to flush output, persist state,
+    # and exit after its internal task timeout fires.
+    grace = max(30, min(300, int(runtime_timeout_seconds * 0.10)))
+    return runtime_timeout_seconds + grace
+
+
+def _terminate_process_group(proc, grace_seconds: float = 10.0) -> None:
+    """Terminate a detached subprocess session, escalating to SIGKILL if needed."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except OSError:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+    try:
+        proc.wait(timeout=grace_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except AttributeError:
+        pass
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    try:
+        proc.wait(timeout=grace_seconds)
+    except Exception:
+        pass
+
+
+def _runtime_reported_timeout(runtime: str, output: str, returncode: int) -> bool:
+    """Detect runtime-native timeout failures that exit before our parent timeout."""
+    if returncode == 0 or _normalize_agent_runtime(runtime) != "cline":
+        return False
+    normalized_output = str(output or "").lower()
+    return "error: timeout" in normalized_output or (
+        "timeout" in normalized_output and '"message"' in normalized_output
+    )
 
 
 def _build_runtime_command(
@@ -1216,8 +1309,9 @@ def _build_runtime_command(
             model,
             "--timeout",
             str(timeout_seconds),
-            "--verbose",
         ]
+        if _cline_verbose_enabled():
+            cmd.append("--verbose")
         cline_config_dir = _resolve_cline_config_dir()
         if cline_config_dir:
             cmd.extend(["--config", cline_config_dir])
@@ -1689,7 +1783,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         # Resolve model and effort for CLI and for run metadata
         model = _resolve_agent_model(agent_def, runtime=runtime)
         effort = _resolve_agent_effort(agent_def)
-        effective_timeout = timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
+        effective_timeout = _coerce_timeout_seconds(
+            timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
+        )
 
         # Initialize run metadata
         _ensure_state_dirs(base_dir)
@@ -1748,6 +1844,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             timeout_seconds=effective_timeout,
             task_cwd=task_cwd,
         )
+        process_timeout = _runtime_process_timeout_seconds(runtime, effective_timeout)
         command_line = shlex.join(cmd)
 
         run_meta["command_line"] = command_line
@@ -1789,7 +1886,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             # Acquire a process-level lock so standalone (non-task) agents can be
             # auto-detected and cleaned up if they hang past their TTL.
             from .locks import acquire_process_lock
-            _process_lock_ttl = effective_timeout + 300
+            _process_lock_ttl = process_timeout + 300
             try:
                 acquire_process_lock(
                     run_id,
@@ -1807,11 +1904,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 update_lock_pid(tid, proc.pid, base_dir=base_dir)
 
             try:
-                proc.communicate(timeout=effective_timeout)
+                proc.communicate(timeout=process_timeout)
             except subprocess.TimeoutExpired:
                 timeout_expired = True
-                proc.kill()
-                proc.communicate()
+                _terminate_process_group(proc)
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
             finally:
                 _unregister_active_agent(base_dir, run_id)
                 from .locks import release_process_lock
@@ -1843,7 +1943,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "retried_from_run_id": retried_from_run_id,
                 "retried_to_run_ids": [],
             }
-        final_status = _classify_run_outcome(returncode, timeout_expired)
+        final_status = _classify_run_outcome(
+            returncode,
+            timeout_expired or _runtime_reported_timeout(runtime, output, returncode),
+        )
         run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = final_status
         run_meta["exit_code"] = returncode

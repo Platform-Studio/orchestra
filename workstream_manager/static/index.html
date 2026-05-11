@@ -4193,6 +4193,17 @@ function normalizedRunStatus(run) {
   return run && run.ended_at ? 'completed' : 'running';
 }
 
+function sortAgentRunsForDisplay(runs) {
+  return [...(Array.isArray(runs) ? runs : [])].sort((left, right) => {
+    const leftRunning = normalizedRunStatus(left) === 'running' ? 0 : 1;
+    const rightRunning = normalizedRunStatus(right) === 'running' ? 0 : 1;
+    if (leftRunning !== rightRunning) return leftRunning - rightRunning;
+    return String(right && right.started_at ? right.started_at : '').localeCompare(
+      String(left && left.started_at ? left.started_at : '')
+    );
+  });
+}
+
 function isKillableStatus(status) {
   return status === 'running';
 }
@@ -4280,7 +4291,7 @@ function setAgentRunStatusFilter(value) {
 async function refreshActiveAgentsModal() {
   const content = document.getElementById('active-agents-content');
   try {
-    activeAgentRuns = await api('agent/runs?limit=100');
+    activeAgentRuns = sortAgentRunsForDisplay(await api('agent/runs?limit=100', { timeoutMs: 30000 }));
   } catch (e) {
     content.innerHTML = `
       <div class="modal-header">
@@ -4539,13 +4550,64 @@ async function selectActiveAgentRun(runId) {
 
 async function refreshActiveAgentTail() {
   if (!selectedAgentRunId) return;
-  try {
-    captureAgentRunsScrollState();
-    const data = await api(`agent/run/${encodeURIComponent(selectedAgentRunId)}`);
+  const selectedRunIndex = activeAgentRuns.findIndex(r => r.run_id === selectedAgentRunId);
+  const selectedRun = selectedRunIndex >= 0 ? activeAgentRuns[selectedRunIndex] : null;
+  const shouldUseTail = !!selectedRun && normalizedRunStatus(selectedRun) === 'running' && !!selectedAgentArtifacts;
+
+  async function loadRunDetails() {
+    const data = await api(`agent/run/${encodeURIComponent(selectedAgentRunId)}`, { timeoutMs: 30000 });
     selectedAgentArtifacts = data;
     selectedAgentArtifactsError = '';
+    if (selectedRunIndex >= 0 && data && data.run) {
+      activeAgentRuns[selectedRunIndex] = {
+        ...activeAgentRuns[selectedRunIndex],
+        ...data.run,
+      };
+      activeAgentRuns = sortAgentRunsForDisplay(activeAgentRuns);
+    }
+    if (data && data.run && normalizedRunStatus(data.run) !== 'running' && activeAgentTailTimer) {
+      clearInterval(activeAgentTailTimer);
+      activeAgentTailTimer = null;
+    }
     renderActiveAgentsModal();
+  }
+
+  try {
+    captureAgentRunsScrollState();
+    if (shouldUseTail) {
+      const data = await api(`agent/tail/${encodeURIComponent(selectedAgentRunId)}?lines=40`, { timeoutMs: 30000 });
+      selectedAgentArtifacts = {
+        ...(selectedAgentArtifacts || {}),
+        run: {
+          ...((selectedAgentArtifacts && selectedAgentArtifacts.run) || {}),
+          ...(data.run || {}),
+          status: 'running',
+        },
+        output: String(data.tail || ''),
+      };
+      selectedAgentArtifactsError = '';
+      if (selectedRunIndex >= 0 && data && data.run) {
+        activeAgentRuns[selectedRunIndex] = {
+          ...activeAgentRuns[selectedRunIndex],
+          ...(data.run || {}),
+          status: 'running',
+        };
+        activeAgentRuns = sortAgentRunsForDisplay(activeAgentRuns);
+      }
+      renderActiveAgentsModal();
+      return;
+    }
+
+    await loadRunDetails();
   } catch (e) {
+    if (shouldUseTail) {
+      try {
+        await loadRunDetails();
+        return;
+      } catch (fallbackError) {
+        e = fallbackError;
+      }
+    }
     selectedAgentArtifacts = null;
     selectedAgentArtifactsError = e && (e.message || String(e)) ? (e.message || String(e)) : 'unknown error';
     renderActiveAgentsModal();

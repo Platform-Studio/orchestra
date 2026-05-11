@@ -8,7 +8,7 @@ All commands output **JSON** to stdout on success, and a JSON error object to st
 
 - Python 3.x
 - `pip install pyyaml` (already in project)
-- For agent execution: Claude Code CLI (`claude`) installed and `ANTHROPIC_API_KEY` set in `.env`
+- For agent execution: Claude Code CLI (`claude`) installed and `ANTHROPIC_API_KEY` set in `.env`, or Cline CLI (`cline`) installed and authenticated with `cline auth` when using `x-runtime: cline`
 
 ### General Usage
 
