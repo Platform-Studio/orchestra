@@ -82,6 +82,24 @@ def test_triggers_modal_labels_state_task_selection_mode() -> None:
     assert "(first unlocked task)" in html
 
 
+def test_workstream_manager_plays_tuning_sound_on_initial_load_and_resume() -> None:
+    html = _index_html()
+
+    assert "const WORKSTREAM_MANAGER_TUNING_SOUND = 'workstream_startup.mp3';" in html
+    assert "async function maybePlayInitialTuningUpSound()" in html
+    assert "void maybePlayInitialTuningUpSound();" in html
+    assert "if (action === 'resume') {" in html
+    assert "await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);" in html
+
+
+def test_workstream_manager_schedules_interaction_retry_when_initial_autoplay_is_blocked() -> None:
+    html = _index_html()
+
+    assert "function scheduleInitialTuningUpRetry()" in html
+    assert "document.addEventListener('pointerdown', retry, true);" in html
+    assert "document.addEventListener('keydown', retry, true);" in html
+
+
 def test_workstream_info_includes_agent_concurrency_editor() -> None:
     html = _index_html()
 
@@ -92,11 +110,15 @@ def test_workstream_info_includes_agent_concurrency_editor() -> None:
     assert 'state_overrides' in html
 
 
-def test_sidebar_shows_broken_mount_badge_when_mount_is_missing() -> None:
+def test_sidebar_uses_separate_data_and_code_mount_badges() -> None:
     html = _index_html()
 
-    assert 'mount_available !== false' in html
-    assert 'mount-badge mount-broken' in html
+    assert 'Artifact root:' in html
+    assert 'Child workstream root:' in html
+    assert 'class="mount-badge"' in html
+    assert "'code-badge code-ready'" in html
+    assert "'code-badge code-missing'" in html
+    assert "api('workstream/code-status'" in html
     assert 'Working directory missing:' in html
 
 

@@ -20,7 +20,7 @@ import threading
 import time
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -31,6 +31,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 # Resolve paths
 WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+AUDIO_FILE_PATH_ENV_VAR = "AUDIO_FILE_PATH"
 
 # Ensure workspace is on the Python path so orchestration imports work
 if WORKSPACE_DIR not in sys.path:
@@ -42,7 +43,7 @@ from orchestration.workstreams import (
     list_effective_workstream_env, resolve_workstream_workspace, resolve_workstream_state_root,
     resolve_workstream_artifact_root, resolve_workstream_child_state_root, set_workstream_context,
     read_workstream_agent_concurrency, set_workstream_agent_concurrency,
-    get_workstream_tags, upsert_workstream_tag,
+    get_workstream_tags, upsert_workstream_tag, get_workstream_code_mount_statuses,
 )
 from orchestration.tasks import (
     CorruptTaskError, create_task, read_task, update_task, list_tasks,
@@ -92,7 +93,7 @@ def _invalidate_poll_sidebar_cache() -> None:
 
 
 def _build_poll_sidebar_snapshot() -> dict:
-    wss = list_workstreams(base_dir=WORKSPACE_DIR)
+    wss = list_workstreams(base_dir=WORKSPACE_DIR, include_mount_status=False)
     counts = _task_counts_by_workstream(wss)
     try:
         # Count only currently live runs from the active registry. This avoids
@@ -102,7 +103,7 @@ def _build_poll_sidebar_snapshot() -> dict:
     except Exception:
         active_run_count = 0
     return {
-        "workstreams": [w.to_dict() for w in wss],
+        "workstreams": [w.to_dict(include_transient=False) for w in wss],
         "counts": counts,
         "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
         "active_triggers": get_active_triggers(),
@@ -278,6 +279,34 @@ def _build_artifact_preview(resolved_path: str) -> dict:
     }
 
 
+def _resolve_audio_root() -> str:
+    override = str(os.environ.get(AUDIO_FILE_PATH_ENV_VAR) or "").strip()
+    if override:
+        expanded = os.path.expanduser(override)
+        if os.path.isabs(expanded):
+            return os.path.abspath(expanded)
+        return os.path.abspath(os.path.join(WORKSPACE_DIR, expanded))
+    return os.path.abspath(os.path.join(WORKSPACE_DIR, "audio"))
+
+
+def _resolve_audio_path(request_path: str) -> str:
+    relative = str(request_path or "").strip().lstrip("/")
+    if not relative:
+        raise FileNotFoundError("Audio file not found")
+
+    audio_root = _resolve_audio_root()
+    resolved = os.path.abspath(os.path.join(audio_root, relative))
+    try:
+        if os.path.commonpath([resolved, audio_root]) != audio_root:
+            raise FileNotFoundError("Audio file not found")
+    except ValueError:
+        raise FileNotFoundError("Audio file not found")
+
+    if not os.path.isfile(resolved):
+        raise FileNotFoundError("Audio file not found")
+    return resolved
+
+
 # ── Route handlers ───────────────────────────────────────────────
 
 def handle_board(parts, params):
@@ -293,8 +322,12 @@ def handle_board(parts, params):
 def handle_workstream(method, parts, params):
     m = method
     if m == "list":
-        wss = list_workstreams(base_dir=WORKSPACE_DIR)
-        return _ok([w.to_dict() for w in wss])
+        wss = list_workstreams(base_dir=WORKSPACE_DIR, include_mount_status=False)
+        return _ok([w.to_dict(include_transient=False) for w in wss])
+    elif m == "code-status":
+        requested_ids = params.get("ids")
+        workstream_ids = requested_ids if isinstance(requested_ids, list) else None
+        return _ok(get_workstream_code_mount_statuses(workstream_ids, base_dir=WORKSPACE_DIR))
     elif m == "counts":
         return _ok(dict(_get_poll_sidebar_snapshot()["counts"]))
     elif m == "read" and parts:
@@ -804,6 +837,28 @@ class Handler(SimpleHTTPRequestHandler):
             if hasattr(self, "_json_response"):
                 delattr(self, "_json_response")
 
+    def _send_binary_file(self, file_path: str) -> None:
+        with open(file_path, "rb") as handle:
+            raw = handle.read()
+        mime_type, _ = mimetypes.guess_type(file_path)
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _handle_audio(self, parsed) -> bool:
+        if not parsed.path.startswith("/audio/"):
+            return False
+        requested = unquote(parsed.path[len("/audio/"):])
+        try:
+            resolved = _resolve_audio_path(requested)
+        except FileNotFoundError:
+            self.send_error(404, "Audio file not found")
+            return True
+        self._send_binary_file(resolved)
+        return True
+
     def _handle_api(self, http_method: str):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -875,6 +930,8 @@ class Handler(SimpleHTTPRequestHandler):
         if self._handle_api("GET"):
             return
         parsed = urlparse(self.path)
+        if self._handle_audio(parsed):
+            return
         if self._is_app_route(parsed.path):
             self.path = "/"
         elif "." not in os.path.basename(parsed.path) and parsed.path != "/":

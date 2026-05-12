@@ -131,7 +131,7 @@ def _write_workstream_to_root(ws: Workstream, state_root: str) -> None:
         yaml.dump(ws.to_dict(include_transient=False), f, default_flow_style=False, sort_keys=False)
 
 
-def _collect_effective_workstreams(base_dir: str) -> dict:
+def _collect_effective_workstreams(base_dir: str, *, include_mount_status: bool = True) -> dict:
     state_root = _state_base_dir(base_dir)
     default_working_directory = _abs_base_dir(base_dir)
     default_artifact_root = resolve_artifact_root(base_dir)
@@ -169,7 +169,8 @@ def _collect_effective_workstreams(base_dir: str) -> dict:
         configured_working_directory = _configured_working_directory(ws)
         if configured_working_directory is not None:
             working_directory = _resolve_root_path(configured_working_directory, ws_state_root)
-            setattr(ws, "_mount_available", os.path.isdir(working_directory))
+            if include_mount_status:
+                setattr(ws, "_mount_available", os.path.isdir(working_directory))
 
         artifact_root = effective_artifact_root
         configured_artifact_root = _configured_artifact_root(ws)
@@ -501,8 +502,8 @@ def create_workstream(
     return ws
 
 
-def list_workstreams(base_dir: str = ".") -> list:
-    by_id = _collect_effective_workstreams(base_dir)
+def list_workstreams(base_dir: str = ".", *, include_mount_status: bool = True) -> list:
+    by_id = _collect_effective_workstreams(base_dir, include_mount_status=include_mount_status)
     return sorted(by_id.values(), key=lambda w: (w.name.lower(), w.id))
 
 
@@ -512,6 +513,40 @@ def read_workstream(ws_id: str, base_dir: str = ".") -> Workstream:
     if ws is None:
         raise FileNotFoundError(f"Workstream {ws_id} not found")
     return ws
+
+
+def get_workstream_code_mount_statuses(workstream_ids: list[str] | None = None, base_dir: str = ".") -> dict[str, dict]:
+    by_id = _collect_effective_workstreams(base_dir, include_mount_status=False)
+    if workstream_ids is None:
+        target_ids = sorted(by_id.keys())
+    else:
+        target_ids = []
+        seen = set()
+        for workstream_id in workstream_ids:
+            if workstream_id in by_id and workstream_id not in seen:
+                target_ids.append(workstream_id)
+                seen.add(workstream_id)
+
+    statuses: dict[str, dict] = {}
+    for workstream_id in target_ids:
+        ws = by_id[workstream_id]
+        configured_working_directory = _configured_working_directory(ws)
+        if configured_working_directory is None:
+            statuses[workstream_id] = {
+                "configured": False,
+                "exists": None,
+                "resolved_path": None,
+            }
+            continue
+
+        ws_state_root = _workspace_root_for(ws, _state_base_dir(base_dir))
+        resolved_path = _resolve_root_path(configured_working_directory, ws_state_root)
+        statuses[workstream_id] = {
+            "configured": True,
+            "exists": os.path.isdir(resolved_path),
+            "resolved_path": resolved_path,
+        }
+    return statuses
 
 
 def find_workstreams(query: str, base_dir: str = ".") -> list:

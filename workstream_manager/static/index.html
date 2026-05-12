@@ -82,10 +82,27 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   line-height: 1;
   flex-shrink: 0;
 }
-.sidebar-item .mount-badge.mount-broken {
-  border-color: rgba(248,81,73,0.45);
-  background: rgba(248,81,73,0.14);
-  color: #f85149;
+.sidebar-item .code-badge {
+  margin-left: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #8b949e;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.sidebar-item .code-badge.code-ready {
+  color: #3fb950;
+}
+.sidebar-item .code-badge.code-missing {
+  color: #8b949e;
 }
 
 /* ── Tag editor ──────────────────────────────────────────────── */
@@ -1633,6 +1650,9 @@ async function api(path, opts = {}) {
 
 // ── State ───────────────────────────────────────────────────────
 let allWorkstreams = [];
+let codeMountStatusById = {};
+let codeMountStatusSignature = '';
+let codeMountStatusRequestId = 0;
 let selectedWsId = null;
 let selectedWs = null;
 let pollTimer = null;
@@ -1653,6 +1673,9 @@ let taskDragState = null;
 let isBoardDragInProgress = false;
 let taskCommentDraftByTaskId = {}; // { [taskId]: string }
 let taskCommentEditing = null; // { taskId: string, index: number } | null
+const WORKSTREAM_MANAGER_TUNING_SOUND = 'workstream_startup.mp3';
+let attemptedInitialTuningUpSound = false;
+let pendingInitialTuningUpRetry = false;
 let agentRunsScrollState = {
   list: 0,
   detail: 0,
@@ -1692,6 +1715,47 @@ function syncNavigatorRoute(path, { replace = false } = {}) {
   const nextPath = path || '/';
   if (!replace && window.location.pathname === nextPath) return;
   window.history[method]({}, '', nextPath);
+}
+
+function workstreamManagerAudioUrl(fileName) {
+  const trimmed = String(fileName || '').trim();
+  if (!trimmed) return '';
+  return `/audio/${encodeURIComponent(trimmed)}`;
+}
+
+async function playWorkstreamManagerSound(fileName) {
+  const src = workstreamManagerAudioUrl(fileName);
+  if (!src) return false;
+  try {
+    const audio = new Audio(src);
+    audio.preload = 'auto';
+    await audio.play();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleInitialTuningUpRetry() {
+  if (pendingInitialTuningUpRetry) return;
+  pendingInitialTuningUpRetry = true;
+
+  const retry = async () => {
+    document.removeEventListener('pointerdown', retry, true);
+    document.removeEventListener('keydown', retry, true);
+    pendingInitialTuningUpRetry = false;
+    await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);
+  };
+
+  document.addEventListener('pointerdown', retry, true);
+  document.addEventListener('keydown', retry, true);
+}
+
+async function maybePlayInitialTuningUpSound() {
+  if (attemptedInitialTuningUpSound) return;
+  attemptedInitialTuningUpSound = true;
+  const played = await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);
+  if (!played) scheduleInitialTuningUpRetry();
 }
 
 function renderEmptyBoard() {
@@ -2404,6 +2468,27 @@ function renderSidebar() {
   }
 
   let html = '';
+  function renderDataMountBadge(ws) {
+    const details = [];
+    if (ws.artifact_root) details.push(`Artifact root: ${ws.artifact_root}`);
+    if (ws.child_workstream_root) details.push(`Child workstream root: ${ws.child_workstream_root}`);
+    if (!details.length) return '';
+    return `<span class="mount-badge" title="${esc(details.join(' | '))}">M</span>`;
+  }
+
+  function renderCodeMountBadge(ws) {
+    const workingDirectory = ws.working_directory || '';
+    if (!workingDirectory) return '';
+    const status = codeMountStatusById[ws.id];
+    if (!status || status.configured !== true) return '';
+    const resolvedPath = status.resolved_path || workingDirectory;
+    const title = status.exists
+      ? `Working directory: ${resolvedPath}`
+      : `Working directory missing: ${resolvedPath}`;
+    const badgeClass = status.exists ? 'code-badge code-ready' : 'code-badge code-missing';
+    return `<span class="${badgeClass}" title="${esc(title)}">&lt;&gt;</span>`;
+  }
+
   function renderItem(ws, depth) {
     const active = ws.id === selectedWsId ? ' active' : '';
     const cls = depth > 0 ? ` depth-${Math.min(depth, 4)}` : '';
@@ -2412,14 +2497,8 @@ function renderSidebar() {
     const activeDot = activeTriggerCount > 0
       ? `<span class="trigger-active-dot" title="${activeTriggerCount} active trigger${activeTriggerCount === 1 ? '' : 's'}"></span>`
       : '';
-    const workingDirectory = ws.working_directory || '';
-    const hasMount = !!workingDirectory;
-    const mountAvailable = ws.mount_available !== false;
-    const mountBadge = hasMount
-      ? mountAvailable
-        ? `<span class="mount-badge" title="Working directory: ${esc(workingDirectory)}">M</span>`
-        : `<span class="mount-badge mount-broken" title="Working directory missing: ${esc(workingDirectory)}">!</span>`
-      : '';
+    const mountBadge = renderDataMountBadge(ws);
+    const codeBadge = renderCodeMountBadge(ws);
     const count = taskCounts[ws.id] || 0;
     const countBadge = count > 0 ? `<span class="sidebar-count">${count}</span>` : '';
     const kids = childMap[ws.id] || [];
@@ -2427,7 +2506,7 @@ function renderSidebar() {
     const isExpanded = !!expandedMap[ws.id];
     const chevronCls = hasKids ? (isExpanded ? 'sidebar-chevron expanded' : 'sidebar-chevron') : 'sidebar-chevron leaf';
     const chevron = `<span class="${chevronCls}" data-toggle-id="${ws.id}">&#9654;</span>`;
-    html += `<div class="sidebar-item${cls}${active}" data-ws-id="${ws.id}">${chevron}<span class="sidebar-label">${esc(ws.name)}</span>${mountBadge}${activeDot}${countBadge}${pause}</div>`;
+    html += `<div class="sidebar-item${cls}${active}" data-ws-id="${ws.id}">${chevron}<span class="sidebar-label">${esc(ws.name)}</span>${mountBadge}${codeBadge}${activeDot}${countBadge}${pause}</div>`;
     if (hasKids) {
       const collapsedCls = isExpanded ? 'sidebar-children' : 'sidebar-children collapsed';
       html += `<div class="${collapsedCls}">`;
@@ -2443,6 +2522,44 @@ function renderSidebar() {
   });
   tree.querySelectorAll('.sidebar-chevron:not(.leaf)').forEach(el => {
     el.addEventListener('click', (e) => toggleExpand(el.dataset.toggleId, e));
+  });
+
+  refreshCodeMountStatuses();
+}
+
+function refreshCodeMountStatuses() {
+  const mountedCodeWorkstreams = allWorkstreams
+    .filter(ws => !!(ws.working_directory || ''))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const nextSignature = mountedCodeWorkstreams
+    .map(ws => `${ws.id}:${ws.working_directory}`)
+    .join('|');
+
+  if (!nextSignature) {
+    if (codeMountStatusSignature || Object.keys(codeMountStatusById).length) {
+      codeMountStatusSignature = '';
+      codeMountStatusById = {};
+      renderSidebar();
+    }
+    return;
+  }
+  if (nextSignature === codeMountStatusSignature) return;
+
+  codeMountStatusSignature = nextSignature;
+  const requestId = ++codeMountStatusRequestId;
+  api('workstream/code-status', {
+    method: 'POST',
+    body: { ids: mountedCodeWorkstreams.map(ws => ws.id) },
+    timeoutMs: 5000,
+  }).then((data) => {
+    if (requestId !== codeMountStatusRequestId) return;
+    codeMountStatusById = data || {};
+    renderSidebar();
+  }).catch((err) => {
+    if (requestId === codeMountStatusRequestId) {
+      codeMountStatusSignature = '';
+    }
+    console.warn('Failed to refresh code mount status:', err);
   });
 }
 
@@ -2572,6 +2689,7 @@ async function loadBoard() {
   const emptyState = document.getElementById('empty-state');
   if (emptyState) emptyState.style.display = 'none';
   hydrateBoardLocks(ws, tasks);
+  void maybePlayInitialTuningUpSound();
 }
 
 // ── Render board header ─────────────────────────────────────────
@@ -4065,6 +4183,9 @@ async function togglePause() {
   const action = selectedWs.paused ? 'resume' : 'pause';
   await api(`workstream/${action}/${selectedWsId}`, { method: 'POST' });
   await Promise.all([loadWorkstreams(), loadBoard()]);
+  if (action === 'resume') {
+    await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);
+  }
 }
 
 // ── Modal close ─────────────────────────────────────────────────

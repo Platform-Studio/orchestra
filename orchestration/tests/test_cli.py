@@ -504,6 +504,33 @@ class TestCLIArtifact:
         assert result.returncode == 0
         assert "test.md" in json.loads(result.stdout)["data"]
 
+    def test_artifact_create_binary_from_base64(self, workspace):
+        payload_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p8n8AAAAASUVORK5CYII="
+
+        result = run_cli(
+            "artifact", "create",
+            "--path", "assets/pixel.png",
+            "--content-base64", payload_base64,
+            base_dir=workspace,
+        )
+
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["mode"] == "binary"
+        assert data["bytes_written"] > 0
+        assert (Path(workspace) / "artifacts" / "assets" / "pixel.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_artifact_create_rejects_text_mode_for_raster_images(self, workspace):
+        result = run_cli(
+            "artifact", "create",
+            "--path", "assets/pixel.png",
+            "--content", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+            base_dir=workspace,
+        )
+
+        assert result.returncode != 0
+        assert "Raster image artifacts cannot be written with --content" in result.stderr
+
     def test_artifact_copytree_can_target_local_artifact_store(self, workspace):
         ws_result = run_cli("workstream", "create", "--name", "Local WS", base_dir=workspace)
         ws_id = json.loads(ws_result.stdout)["data"]["id"]

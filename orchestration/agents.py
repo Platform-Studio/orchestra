@@ -29,6 +29,10 @@ DEFAULT_LEARNINGS_COMPACTION_THRESHOLD_BYTES = 20_000
 LEARNINGS_COMPACTION_THRESHOLD_ENV_VAR = "ORCHESTRATION_LEARNINGS_COMPACTION_THRESHOLD_BYTES"
 DEFAULT_AGENT_RUNTIME = "claude-code"
 AGENT_RUNTIME_ENV_VAR = "ORCHESTRATION_AGENT_RUNTIME"
+AUDIO_FILE_PATH_ENV_VAR = "AUDIO_FILE_PATH"
+DEFAULT_AGENT_START_SOUND_ENV_VAR = "DEFAULT_AGENT_START_SOUND"
+DEFAULT_AGENT_FINISHED_SOUND_ENV_VAR = "DEFAULT_AGENT_FINISHED_SOUND"
+DEFAULT_AGENT_ERROR_SOUND_ENV_VAR = "DEFAULT_AGENT_ERROR_SOUND"
 CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
 CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
@@ -67,6 +71,89 @@ def _agent_learning_artifact_name(agent_def: dict) -> str:
 def _orchestration_cli_command() -> str:
     """Return the Python command agents should use for the orchestration CLI."""
     return f"{shlex.quote(sys.executable)} -m orchestration.cli"
+
+
+def _audio_file_root(base_dir: str) -> str:
+    """Resolve the root directory for agent sound assets."""
+    override = str(os.getenv(AUDIO_FILE_PATH_ENV_VAR) or "").strip()
+    if override:
+        expanded = os.path.expanduser(override)
+        if os.path.isabs(expanded):
+            return os.path.abspath(expanded)
+        return os.path.abspath(os.path.join(base_dir, expanded))
+    return os.path.abspath(os.path.join(base_dir, "audio"))
+
+
+def _resolve_agent_sound_file(audio_name: str, base_dir: str) -> str | None:
+    """Resolve a configured sound file to an absolute on-disk path."""
+    candidate_name = str(audio_name or "").strip()
+    if not candidate_name:
+        return None
+
+    expanded = os.path.expanduser(candidate_name)
+    if os.path.isabs(expanded):
+        resolved = os.path.abspath(expanded)
+    else:
+        audio_root = _audio_file_root(base_dir)
+        resolved = os.path.abspath(os.path.join(audio_root, expanded))
+        try:
+            if os.path.commonpath([resolved, audio_root]) != audio_root:
+                return None
+        except ValueError:
+            return None
+
+    if not os.path.isfile(resolved):
+        return None
+    return resolved
+
+
+def _resolve_audio_player_command(audio_path: str) -> list[str] | None:
+    """Return a best-effort local audio playback command."""
+    for binary in ("afplay", "paplay", "aplay", "play"):
+        resolved = shutil.which(binary)
+        if resolved:
+            return [resolved, audio_path]
+    return None
+
+
+def _configured_agent_sound_name(agent_def: dict, event: str) -> str | None:
+    """Resolve the configured sound name for an event with header precedence."""
+    env_var_by_event = {
+        "start": DEFAULT_AGENT_START_SOUND_ENV_VAR,
+        "finish": DEFAULT_AGENT_FINISHED_SOUND_ENV_VAR,
+        "error": DEFAULT_AGENT_ERROR_SOUND_ENV_VAR,
+    }
+    sound_key = f"sound_{event}"
+    defined_key = f"{sound_key}_defined"
+    if agent_def.get(defined_key):
+        raw_value = agent_def.get(sound_key)
+    else:
+        raw_value = os.getenv(env_var_by_event[event])
+    candidate_name = str(raw_value or "").strip()
+    return candidate_name or None
+
+
+def _play_agent_sound(agent_def: dict, event: str, base_dir: str) -> str | None:
+    """Play a configured agent sound without blocking the main run lifecycle."""
+    audio_path = _resolve_agent_sound_file(_configured_agent_sound_name(agent_def, event), base_dir)
+    if not audio_path:
+        return None
+
+    command = _resolve_audio_player_command(audio_path)
+    if not command:
+        return None
+
+    try:
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        return None
+    return audio_path
 
 
 def _agent_learning_prompt_section(agent_def: dict, workstream_id: str) -> str:
@@ -1425,6 +1512,12 @@ def _parse_agent_md(path: str) -> dict:
         "model_level": header.get("x-model-level"),
         "effort": header.get("x-effort"),
         "runtime": header.get("x-runtime"),
+        "sound_start": header.get("x-sound-start"),
+        "sound_start_defined": "x-sound-start" in header,
+        "sound_finish": header.get("x-sound-finish"),
+        "sound_finish_defined": "x-sound-finish" in header,
+        "sound_error": header.get("x-sound-error"),
+        "sound_error_defined": "x-sound-error" in header,
         "file": path,
         "body": body,
     }
@@ -1508,7 +1601,9 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         "- `task attach <task_id> --path '<artifact_path>'` — attach an artifact to a task (REQUIRED after creating any artifact)\n"
         "- `task detach <task_id> --path '<artifact_path>'` — remove an artifact attachment from a task\n"
         "- `task list <workstream_id>` — list tasks in a workstream\n"
-        "- `artifact create --path '<path>' --content '<content>' --workstream '<workstream_id>'` — save an artifact\n"
+        "- `artifact create --path '<path>' --content '<content>' --workstream '<workstream_id>'` — save a text artifact\n"
+        "- `artifact create --path '<image_path>' --source-file '<local_file>' --workstream '<workstream_id>'` — save a binary image artifact from a local file\n"
+        "- `artifact create --path '<image_path>' --content-base64 '<base64>' --workstream '<workstream_id>'` — save a binary image artifact when you only have base64 bytes\n"
         "- `artifact read '<path>' --workstream '<workstream_id>'` — read an artifact\n"
         "- `artifact list --workstream '<workstream_id>'` — list artifacts in the workstream root\n"
         "- `artifact list --prefix '<prefix>' --workstream '<workstream_id>'` — list artifacts under a path\n"
@@ -1619,6 +1714,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     if workstream_id:
         ws = read_workstream(workstream_id, base_dir)
         if ws.paused and not allow_paused_workstream:
+            _play_agent_sound(agent_def, "error", base_dir)
             raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
     # Preflight: block obviously invalid image attachments before invoking the runtime.
@@ -1648,6 +1744,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             )
             _save_task(task_obj, base_dir)
 
+        _play_agent_sound(agent_def, "error", base_dir)
         raise RuntimeError(
             "Invalid image attachments detected; refusing to start agent run.\n"
             + "\n".join(details)
@@ -1866,6 +1963,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 # in-flight agent runs that should continue independently.
                 start_new_session=True,
             )
+            _play_agent_sound(agent_def, "start", base_dir)
 
             active_run = {
                 "run_id": run_id,
@@ -1993,6 +2091,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 raise RuntimeError(f"Agent '{agent_def['name']}' was killed (exit {returncode}): {output}")
             raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {returncode}): {output}")
 
+        _play_agent_sound(agent_def, "finish", base_dir)
         response = {
             "agent": agent_def["name"],
             "result": output,
@@ -2005,6 +2104,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         if ws:
             response["workstream_id"] = ws.id
         return response
+
+    except Exception:
+        _play_agent_sound(agent_def, "error", base_dir)
+        raise
 
     finally:
         # Clean up temp file

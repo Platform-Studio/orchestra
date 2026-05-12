@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _resolve_agent_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
+from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
@@ -394,6 +394,12 @@ class _FakeTerminatedProc(_FakeProc):
         return ("", "")
 
 
+class _FakeFailedProc(_FakeProc):
+    def __init__(self):
+        super().__init__()
+        self.returncode = 1
+
+
 def test_resolve_agent_file_accepts_frontmatter_name(workspace):
     agents_dir = os.path.join(workspace, "Agents")
     dashboard_agent = os.path.join(agents_dir, "dashboard_setup_agent.md")
@@ -409,6 +415,154 @@ def test_resolve_agent_file_accepts_frontmatter_name(workspace):
     resolved = _resolve_agent_file("Dashboard Setup", workspace)
 
     assert resolved == dashboard_agent
+
+
+def test_parse_agent_md_reads_sound_headers(workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    sound_agent = os.path.join(agents_dir, "sound_agent.md")
+    with open(sound_agent, "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Sound Agent\n"
+            "x-sound-start: start.wav\n"
+            "x-sound-finish: finish.wav\n"
+            "x-sound-error: error.wav\n"
+            "---\n"
+            "You are sound aware.\n"
+        )
+
+    parsed = _parse_agent_md(sound_agent)
+
+    assert parsed["sound_start"] == "start.wav"
+    assert parsed["sound_start_defined"] is True
+    assert parsed["sound_finish"] == "finish.wav"
+    assert parsed["sound_finish_defined"] is True
+    assert parsed["sound_error"] == "error.wav"
+    assert parsed["sound_error_defined"] is True
+
+
+def test_configured_agent_sound_name_uses_default_env_when_header_missing(monkeypatch):
+    monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "start.mp3")
+
+    configured = _configured_agent_sound_name({}, "start")
+
+    assert configured == "start.mp3"
+
+
+def test_configured_agent_sound_name_explicit_header_overrides_default_even_when_blank(monkeypatch):
+    monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "start.mp3")
+
+    configured = _configured_agent_sound_name({
+        "sound_start": "",
+        "sound_start_defined": True,
+    }, "start")
+
+    assert configured is None
+
+
+def test_resolve_agent_sound_file_uses_audio_file_path_override(workspace, monkeypatch):
+    audio_dir = os.path.join(workspace, "custom_audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    sound_path = os.path.join(audio_dir, "ding.wav")
+    with open(sound_path, "wb") as f:
+        f.write(b"wave")
+
+    monkeypatch.setenv("AUDIO_FILE_PATH", "custom_audio")
+
+    resolved = _resolve_agent_sound_file("ding.wav", workspace)
+
+    assert resolved == sound_path
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/afplay")
+@patch("orchestration.agents.subprocess.Popen")
+def test_play_agent_sound_uses_default_audio_dir(mock_popen, mock_which, workspace):
+    audio_dir = os.path.join(workspace, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    sound_path = os.path.join(audio_dir, "intro.wav")
+    with open(sound_path, "wb") as f:
+        f.write(b"wave")
+
+    played = _play_agent_sound({"sound_start": "intro.wav", "sound_start_defined": True}, "start", workspace)
+
+    assert played == sound_path
+    assert mock_popen.call_args.args[0] == ["/usr/bin/afplay", sound_path]
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/afplay")
+@patch("orchestration.agents.subprocess.Popen")
+def test_play_agent_sound_uses_default_env_when_header_missing(mock_popen, mock_which, workspace, monkeypatch):
+    audio_dir = os.path.join(workspace, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    sound_path = os.path.join(audio_dir, "start.mp3")
+    with open(sound_path, "wb") as f:
+        f.write(b"mp3")
+
+    monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "start.mp3")
+
+    played = _play_agent_sound({}, "start", workspace)
+
+    assert played == sound_path
+    assert mock_popen.call_args.args[0] == ["/usr/bin/afplay", sound_path]
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_plays_start_and_finish_sounds(mock_popen, mock_which, workspace, monkeypatch):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "sound_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Sound Agent\n"
+            "x-sound-start: intro.wav\n"
+            "x-sound-finish: outro.wav\n"
+            "x-sound-error: fail.wav\n"
+            "---\n"
+            "You are sound aware.\n"
+        )
+
+    events = []
+
+    def _fake_play(agent_def, event, base_dir):
+        events.append((event, agent_def.get(f"sound_{event}")))
+        return None
+
+    monkeypatch.setattr("orchestration.agents._play_agent_sound", _fake_play)
+
+    ws = create_workstream(name="Sound WS", base_dir=workspace)
+    run_agent("Sound Agent", workstream_id=ws.id, base_dir=workspace)
+
+    assert events == [("start", "intro.wav"), ("finish", "outro.wav")]
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeFailedProc())
+def test_run_agent_plays_error_sound_on_failure(mock_popen, mock_which, workspace, monkeypatch):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "sound_error_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Sound Error Agent\n"
+            "x-sound-start: intro.wav\n"
+            "x-sound-finish: outro.wav\n"
+            "x-sound-error: fail.wav\n"
+            "---\n"
+            "You are sound aware.\n"
+        )
+
+    events = []
+
+    def _fake_play(agent_def, event, base_dir):
+        events.append((event, agent_def.get(f"sound_{event}")))
+        return None
+
+    monkeypatch.setattr("orchestration.agents._play_agent_sound", _fake_play)
+
+    ws = create_workstream(name="Sound WS", base_dir=workspace)
+    with pytest.raises(RuntimeError, match="failed"):
+        run_agent("Sound Error Agent", workstream_id=ws.id, base_dir=workspace)
+
+    assert events == [("start", "intro.wav"), ("error", "fail.wav")]
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

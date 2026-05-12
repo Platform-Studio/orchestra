@@ -606,9 +606,22 @@ def _artifact_workstream_context(args):
 
 
 def cmd_artifact_create(args):
-    from .artifacts import create_artifact
+    from .artifacts import create_artifact, create_binary_artifact, _is_raster_image_path
     workstream_id = _artifact_workstream_context(args)
-    result = create_artifact(args.path, args.content, base_dir=args.base_dir, workstream_id=workstream_id)
+    if args.content is not None:
+        if _is_raster_image_path(args.path):
+            raise ValueError(
+                "Raster image artifacts cannot be written with --content; use --content-base64 or --source-file"
+            )
+        result = create_artifact(args.path, args.content, base_dir=args.base_dir, workstream_id=workstream_id)
+    else:
+        result = create_binary_artifact(
+            args.path,
+            content_base64=args.content_base64,
+            source_file=args.source_file,
+            base_dir=args.base_dir,
+            workstream_id=workstream_id,
+        )
     _output(result)
 
 
@@ -1006,7 +1019,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = artifact_sub.add_parser("create")
     p.add_argument("--path", required=True)
-    p.add_argument("--content", required=True)
+    content_group = p.add_mutually_exclusive_group(required=True)
+    content_group.add_argument("--content", help="Text content for text artifacts")
+    content_group.add_argument("--content-base64", help="Base64-encoded binary content")
+    content_group.add_argument("--source-file", help="Copy bytes from a local file")
     p.add_argument("--workstream", default=None, help="Optional workstream context for mounted artifact routing")
     p.set_defaults(func=cmd_artifact_create)
 

@@ -1,9 +1,10 @@
 """Tests for artifact operations."""
 
+import base64
 import os
 from pathlib import Path
 import pytest
-from orchestration.artifacts import create_artifact, read_artifact, list_artifacts, copy_artifact_tree
+from orchestration.artifacts import create_artifact, create_binary_artifact, read_artifact, list_artifacts, copy_artifact_tree
 from orchestration.workstreams import create_workstream, save_workstream
 
 
@@ -27,6 +28,37 @@ class TestCreateArtifact:
     def test_path_traversal_blocked(self, workspace):
         with pytest.raises(ValueError, match="Path traversal"):
             create_artifact("../../etc/passwd", "evil", base_dir=workspace)
+
+    def test_create_binary_from_base64(self, workspace):
+        payload = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p8n8AAAAASUVORK5CYII="
+        )
+
+        result = create_binary_artifact(
+            "assets/pixel.png",
+            content_base64=base64.b64encode(payload).decode("ascii"),
+            base_dir=workspace,
+        )
+
+        assert result["created"] is True
+        assert result["mode"] == "binary"
+        assert result["bytes_written"] == len(payload)
+        assert (Path(workspace) / "artifacts" / "assets" / "pixel.png").read_bytes() == payload
+
+    def test_create_binary_from_file(self, workspace, tmp_path):
+        source = tmp_path / "source.png"
+        payload = b"\x89PNG\r\n\x1a\nrest"
+        source.write_bytes(payload)
+
+        result = create_binary_artifact(
+            "assets/copied.png",
+            source_file=str(source),
+            base_dir=workspace,
+        )
+
+        assert result["created"] is True
+        assert result["source"] == "file"
+        assert (Path(workspace) / "artifacts" / "assets" / "copied.png").read_bytes() == payload
 
 
 class TestReadArtifact:

@@ -400,6 +400,26 @@ class TestTaskAttachments:
         updated = attach_to_task(task.id, "Theses/proptech.md", base_dir=workspace)
         assert updated.attachments == ["Theses/proptech.md"]
 
+    def test_attach_invalid_image_rejects_with_clear_error(self, workspace, ws):
+        create_artifact("assets/logo.png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB", base_dir=workspace)
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        with pytest.raises(ValueError, match="Invalid image attachment 'assets/logo.png':"):
+            attach_to_task(task.id, "assets/logo.png", base_dir=workspace)
+
+    def test_create_task_rejects_invalid_image_attachment(self, workspace, ws):
+        create_artifact("assets/logo.png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB", base_dir=workspace)
+
+        with pytest.raises(ValueError, match="Invalid image attachment 'assets/logo.png':"):
+            create_task(ws.id, title="T", attachments=["assets/logo.png"], base_dir=workspace)
+
+    def test_update_task_rejects_invalid_image_attachment(self, workspace, ws):
+        create_artifact("assets/logo.png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB", base_dir=workspace)
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        with pytest.raises(ValueError, match="Invalid image attachment 'assets/logo.png':"):
+            update_task(task.id, attachments=["assets/logo.png"], base_dir=workspace)
+
     def test_attach_is_deduplicated(self, workspace, ws):
         create_artifact("Theses/proptech.md", "# Proptech", base_dir=workspace)
         task = create_task(ws.id, title="T", base_dir=workspace)

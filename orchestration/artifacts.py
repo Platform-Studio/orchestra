@@ -1,11 +1,22 @@
 """Artifact operations."""
 
+import base64
+import binascii
 import filecmp
 import os
 import shutil
 
 from .persistence import resolve_artifact_root
 from .workstreams import resolve_workstream_artifact_root
+
+
+_RASTER_IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+}
 
 
 def _normalize_name(value: str) -> str:
@@ -32,13 +43,62 @@ def _validate_path(artifacts_dir: str, path: str) -> str:
     return full_path
 
 
+def _is_raster_image_path(path: str) -> bool:
+    return os.path.splitext(str(path or ""))[1].lower() in _RASTER_IMAGE_EXTENSIONS
+
+
+def _decode_base64_payload(content_base64: str) -> bytes:
+    try:
+        return base64.b64decode("".join(str(content_base64 or "").split()), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Invalid base64 artifact content") from exc
+
+
 def create_artifact(path: str, content: str, base_dir: str = ".", workstream_id: str = None) -> dict:
     artifacts_dir, rel_path = _resolve_artifact_root(path, base_dir=base_dir, workstream_id=workstream_id)
     full_path = _validate_path(artifacts_dir, rel_path)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    with open(full_path, "w") as f:
+    with open(full_path, "w", encoding="utf-8") as f:
         f.write(content)
     return {"path": path, "created": True}
+
+
+def create_binary_artifact(
+    path: str,
+    *,
+    content_base64: str = None,
+    source_file: str = None,
+    base_dir: str = ".",
+    workstream_id: str = None,
+) -> dict:
+    if bool(content_base64) == bool(source_file):
+        raise ValueError("Provide exactly one of content_base64 or source_file")
+
+    artifacts_dir, rel_path = _resolve_artifact_root(path, base_dir=base_dir, workstream_id=workstream_id)
+    full_path = _validate_path(artifacts_dir, rel_path)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+    if content_base64 is not None:
+        payload = _decode_base64_payload(content_base64)
+        source = "base64"
+    else:
+        with open(source_file, "rb") as f:
+            payload = f.read()
+        source = "file"
+
+    with open(full_path, "wb") as f:
+        f.write(payload)
+
+    result = {
+        "path": path,
+        "created": True,
+        "mode": "binary",
+        "bytes_written": len(payload),
+        "source": source,
+    }
+    if source_file is not None:
+        result["source_file"] = source_file
+    return result
 
 
 def read_artifact(path: str, base_dir: str = ".", workstream_id: str = None) -> str:

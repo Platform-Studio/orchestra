@@ -39,7 +39,7 @@ def _fake_workstream(**kwargs):
     }
     defaults.update(kwargs)
     obj = SimpleNamespace(**defaults)
-    obj.to_dict = lambda: {k: getattr(obj, k) for k in defaults}
+    obj.to_dict = lambda include_transient=True: {k: getattr(obj, k) for k in defaults}
     return obj
 
 
@@ -131,6 +131,7 @@ _PATCHES = {
     "save_workstream":   "workstream_manager.server.save_workstream",
     "read_workstream_agent_concurrency": "workstream_manager.server.read_workstream_agent_concurrency",
     "set_workstream_agent_concurrency": "workstream_manager.server.set_workstream_agent_concurrency",
+    "get_workstream_code_mount_statuses": "workstream_manager.server.get_workstream_code_mount_statuses",
     "get_workstream_tags": "workstream_manager.server.get_workstream_tags",
     "upsert_workstream_tag": "workstream_manager.server.upsert_workstream_tag",
     "list_workstream_hierarchy_env": "workstream_manager.server.list_workstream_hierarchy_env",
@@ -192,6 +193,7 @@ def api(tmp_path):
     mocks["resolve_workstream_workspace"].return_value = "/tmp/workspace"
     mocks["resolve_workstream_artifact_root"].return_value = "/tmp/artifact-base"
     mocks["resolve_workstream_child_state_root"].return_value = "/tmp/state-base"
+    mocks["get_workstream_code_mount_statuses"].return_value = {}
     mocks["get_workstream_tags"].return_value = []
     mocks["upsert_workstream_tag"].return_value = {"name": "Urgent", "color": "#eb5a46"}
     mocks["_task_counts_by_workstream"].return_value = {}
@@ -223,6 +225,15 @@ def api(tmp_path):
             req = urllib.request.Request(f"http://127.0.0.1:{port}{path}")
             resp = urllib.request.urlopen(req)
             return resp.status, resp.read().decode("utf-8")
+
+        @staticmethod
+        def get_raw(path):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}{path}")
+            try:
+                resp = urllib.request.urlopen(req)
+                return resp.status, resp.read(), resp.headers
+            except urllib.error.HTTPError as e:
+                return e.code, e.read(), e.headers
 
         @staticmethod
         def post(path, body=None):
@@ -415,6 +426,27 @@ class TestArtifactPreview:
         assert "Invalid JSON" in body["message"]
 
 
+class TestAudioFiles:
+    def test_audio_file_served_from_override_root(self, api, tmp_path, monkeypatch):
+        sound_path = tmp_path / "workstream_startup.mp3"
+        payload = b"ID3demo"
+        sound_path.write_bytes(payload)
+        monkeypatch.setenv("AUDIO_FILE_PATH", str(tmp_path))
+
+        code, body, headers = api.get_raw("/audio/workstream_startup.mp3")
+
+        assert code == 200
+        assert body == payload
+        assert headers.get_content_type() == "audio/mpeg"
+
+    def test_audio_file_rejects_outside_paths(self, api, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUDIO_FILE_PATH", str(tmp_path))
+
+        code, _, _ = api.get_raw("/audio/../secret.wav")
+
+        assert code == 404
+
+
 # ── Board endpoint ──────────────────────────────────────────────
 
 class TestBoard:
@@ -461,6 +493,18 @@ class TestWorkstream:
         assert code == 200
         assert len(body["data"]) == 1
         assert body["data"][0]["name"] == "Test WS"
+        api.mocks["list_workstreams"].assert_called_once_with(base_dir="/Users/jeremy/foundation", include_mount_status=False)
+
+    def test_code_status(self, api):
+        api.mocks["get_workstream_code_mount_statuses"].return_value = {
+            "ws-1": {"configured": True, "exists": True, "resolved_path": "/tmp/workspace"}
+        }
+
+        code, body = api.post("/api/workstream/code-status", {"ids": ["ws-1"]})
+
+        assert code == 200
+        assert body["data"]["ws-1"]["exists"] is True
+        api.mocks["get_workstream_code_mount_statuses"].assert_called_once_with(["ws-1"], base_dir="/Users/jeremy/foundation")
 
     def test_counts(self, api):
         ws = _fake_workstream()
