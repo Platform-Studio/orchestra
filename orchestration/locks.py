@@ -234,14 +234,28 @@ def find_expired_locks(base_dir: str = ".") -> list:
 
 
 def _is_process_alive(pid: int) -> bool:
-    """Return True when pid exists, False otherwise."""
+    """Return True when pid exists and is not a zombie, False otherwise."""
     if pid is None:
         return False
     try:
         os.kill(pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+
+    # On Linux, a stopped scheduler parent can remain as a zombie briefly. kill(0)
+    # still succeeds for zombies, but they cannot own active work or locks.
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            stat = f.read()
+        end = stat.rfind(")")
+        if end != -1:
+            fields = stat[end + 2 :].split()
+            if fields and fields[0] == "Z":
+                return False
+    except OSError:
+        pass
+
+    return True
 
 
 def find_orphaned_locks(base_dir: str = ".") -> list:

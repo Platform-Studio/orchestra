@@ -17,6 +17,7 @@ from orchestration.locks import (
     release_process_lock,
     process_lock_status,
     find_stale_process_locks,
+    _is_process_alive,
     _process_lock_path,
     _process_locks_dir,
 )
@@ -280,3 +281,20 @@ class TestProcessLocks:
         assert not any(s["run_id"] == self.RUN_ID for s in stale)
         # Cleanup
         release_process_lock(self.RUN_ID, base_dir=workspace)
+
+
+class TestProcessAlive:
+    def test_zombie_pid_is_not_alive(self, monkeypatch):
+        import builtins
+        import io
+
+        monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/123/stat":
+                return io.StringIO("123 (python3) Z 1 1 1 0 -1 0 0 0")
+            return builtins.open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+
+        assert _is_process_alive(123) is False
