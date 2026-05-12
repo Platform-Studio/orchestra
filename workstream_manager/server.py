@@ -54,7 +54,7 @@ from orchestration.tasks import (
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
-from orchestration.agents import list_active_agents, tail_active_agent, list_agent_runs, get_agent_run, kill_agent_run, retry_agent_run
+from orchestration.agents import get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, retry_agent_run, set_global_sound_mute, tail_active_agent
 
 
 def _ok(data):
@@ -646,6 +646,24 @@ def handle_scheduler(method, parts, params):
     return _err(f"Unknown scheduler method: {method}")
 
 
+def handle_sound(method, parts, params):
+    if method != "mute":
+        return _err(f"Unknown sound method: {method}")
+
+    if params.get("_http_method") == "POST":
+        if "muted" not in params:
+            return _err("Missing required parameter: muted", code="INVALID")
+
+        raw = params.get("muted")
+        if isinstance(raw, bool):
+            muted = raw
+        else:
+            muted = str(raw).strip().lower() in {"1", "true", "yes", "on"}
+        return _ok({"muted": set_global_sound_mute(muted, base_dir=WORKSPACE_DIR)})
+
+    return _ok({"muted": get_global_sound_mute(base_dir=WORKSPACE_DIR)})
+
+
 def handle_agent(method, parts, params):
     if method == "active":
         runs = list_active_agents(base_dir=WORKSPACE_DIR)
@@ -796,6 +814,7 @@ ROUTE_MAP = {
     "lock": handle_lock,
     "trigger": handle_trigger,
     "scheduler": handle_scheduler,
+    "sound": handle_sound,
     "agent": handle_agent,
     "audit": handle_audit,
     "retry": handle_retry,

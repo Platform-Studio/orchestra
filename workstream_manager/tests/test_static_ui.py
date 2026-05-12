@@ -92,6 +92,35 @@ def test_workstream_manager_plays_tuning_sound_on_initial_load_and_resume() -> N
     assert "await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);" in html
 
 
+def test_agent_runs_footer_includes_global_mute_toggle() -> None:
+    html = _index_html()
+
+    assert 'id="active-agents-label"' in html
+    assert 'id="agent-runs-mute-toggle"' in html
+    assert 'class="sidebar-footer-toggle"' in html
+    assert "renderAgentRunsLinkLabel(data.active_agent_runs || 0);" in html
+
+
+def test_global_mute_toggle_overrides_all_workstream_manager_sound_playback() -> None:
+    html = _index_html()
+
+    assert "const WORKSTREAM_MANAGER_SOUND_MUTE_STORAGE_KEY = 'workstreamManager.soundMuted';" in html
+    assert "let isWorkstreamManagerMuted = loadWorkstreamManagerMutedPreference();" in html
+    assert "function refreshWorkstreamManagerMutedPreference()" in html
+    assert "async function syncWorkstreamManagerMutedPreferenceFromServer()" in html
+    assert "const data = await api('sound/mute');" in html
+    assert "if (!src || refreshWorkstreamManagerMutedPreference()) return false;" in html
+    assert "function stopAllWorkstreamManagerAudio()" in html
+    assert "audio.pause();" in html
+    assert "audio.currentTime = 0;" in html
+    assert "async function toggleWorkstreamManagerMute(nextValue = !isWorkstreamManagerMuted)" in html
+    assert "await api('sound/mute', {" in html
+    assert "body: { muted: isWorkstreamManagerMuted }," in html
+    assert "renderWorkstreamManagerMuteToggle();" in html
+    assert "window.addEventListener('storage', (event) => {" in html
+    assert "await syncWorkstreamManagerMutedPreferenceFromServer();" in html
+
+
 def test_workstream_manager_schedules_interaction_retry_when_initial_autoplay_is_blocked() -> None:
     html = _index_html()
 

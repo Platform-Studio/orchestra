@@ -158,6 +158,8 @@ _PATCHES = {
     "list_triggers":     "workstream_manager.server.list_triggers",
     "delete_trigger":    "workstream_manager.server.delete_trigger",
     "scheduler_status":  "workstream_manager.server.scheduler_status",
+    "get_global_sound_mute": "workstream_manager.server.get_global_sound_mute",
+    "set_global_sound_mute": "workstream_manager.server.set_global_sound_mute",
     "list_active_agents": "workstream_manager.server.list_active_agents",
     "list_agent_runs": "workstream_manager.server.list_agent_runs",
     "get_agent_run": "workstream_manager.server.get_agent_run",
@@ -183,6 +185,8 @@ def api(tmp_path):
     mocks["list_tasks"].return_value = []
     mocks["list_triggers"].return_value = []
     mocks["scheduler_status"].return_value = {"running": False, "last_tick": None}
+    mocks["get_global_sound_mute"].return_value = False
+    mocks["set_global_sound_mute"].return_value = False
     mocks["list_active_agents"].return_value = []
     mocks["list_agent_runs"].return_value = []
     mocks["get_agent_run"].return_value = {"run": {"run_id": "run-1"}, "output": "", "cli_calls": [], "retry": {}, "interruption_reason": None}
@@ -962,6 +966,32 @@ class TestPoll:
         assert "board" not in data
         api.mocks["list_tasks"].assert_not_called()
 
+
+class TestSound:
+    def test_mute_status(self, api):
+        from workstream_manager.server import WORKSPACE_DIR
+
+        api.mocks["get_global_sound_mute"].return_value = True
+
+        code, body = api.get("/api/sound/mute")
+
+        assert code == 200
+        assert body["data"] == {"muted": True}
+        api.mocks["get_global_sound_mute"].assert_called_with(base_dir=WORKSPACE_DIR)
+
+    def test_set_mute_status(self, api):
+        from workstream_manager.server import WORKSPACE_DIR
+
+        api.mocks["set_global_sound_mute"].return_value = True
+
+        code, body = api.post("/api/sound/mute", {"muted": True})
+
+        assert code == 200
+        assert body["data"] == {"muted": True}
+        api.mocks["set_global_sound_mute"].assert_called_with(True, base_dir=WORKSPACE_DIR)
+
+
+class TestPollBoard:
     def test_poll_with_board_id(self, api):
         ws = _fake_workstream()
         t = _fake_task()

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, list_agent_runs, retry_agent_run, run_agent
+from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, get_global_sound_mute, list_agent_runs, retry_agent_run, run_agent, set_global_sound_mute
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
@@ -504,6 +504,24 @@ def test_play_agent_sound_uses_default_env_when_header_missing(mock_popen, mock_
 
     assert played == sound_path
     assert mock_popen.call_args.args[0] == ["/usr/bin/afplay", sound_path]
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/afplay")
+@patch("orchestration.agents.subprocess.Popen")
+def test_play_agent_sound_returns_none_when_global_mute_enabled(mock_popen, mock_which, workspace):
+    audio_dir = os.path.join(workspace, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    sound_path = os.path.join(audio_dir, "intro.wav")
+    with open(sound_path, "wb") as f:
+        f.write(b"wave")
+
+    assert set_global_sound_mute(True, workspace) is True
+    assert get_global_sound_mute(workspace) is True
+
+    played = _play_agent_sound({"sound_start": "intro.wav", "sound_start_defined": True}, "start", workspace)
+
+    assert played is None
+    mock_popen.assert_not_called()
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

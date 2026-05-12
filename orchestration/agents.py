@@ -36,6 +36,7 @@ DEFAULT_AGENT_ERROR_SOUND_ENV_VAR = "DEFAULT_AGENT_ERROR_SOUND"
 CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
 CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
+GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
 
 CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 CLINE_MODEL_LEVEL_DEFAULTS = {
@@ -135,6 +136,9 @@ def _configured_agent_sound_name(agent_def: dict, event: str) -> str | None:
 
 def _play_agent_sound(agent_def: dict, event: str, base_dir: str) -> str | None:
     """Play a configured agent sound without blocking the main run lifecycle."""
+    if get_global_sound_mute(base_dir):
+        return None
+
     audio_path = _resolve_agent_sound_file(_configured_agent_sound_name(agent_def, event), base_dir)
     if not audio_path:
         return None
@@ -411,6 +415,10 @@ def _agent_runs_dir(base_dir: str) -> str:
     return os.path.join(_state_dir(base_dir), "agent_runs")
 
 
+def _global_sound_mute_path(base_dir: str) -> str:
+    return os.path.join(_state_dir(base_dir), GLOBAL_SOUND_MUTE_FILENAME)
+
+
 def _agent_run_meta_path(base_dir: str, run_id: str) -> str:
     return os.path.join(_agent_runs_dir(base_dir), f"{run_id}.json")
 
@@ -418,6 +426,31 @@ def _agent_run_meta_path(base_dir: str, run_id: str) -> str:
 def _ensure_state_dirs(base_dir: str) -> None:
     os.makedirs(_state_dir(base_dir), exist_ok=True)
     os.makedirs(_agent_runs_dir(base_dir), exist_ok=True)
+
+
+def get_global_sound_mute(base_dir: str) -> bool:
+    path = _global_sound_mute_path(base_dir)
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read().strip().lower()
+    except FileNotFoundError:
+        return False
+    return raw in {"1", "true", "yes", "on", "muted"}
+
+
+def set_global_sound_mute(muted: bool, base_dir: str) -> bool:
+    path = _global_sound_mute_path(base_dir)
+    if muted:
+        _ensure_state_dirs(base_dir)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("1\n")
+        return True
+
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    return False
 
 
 def _write_run_meta(base_dir: str, run_id: str, data: dict) -> None:

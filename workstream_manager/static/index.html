@@ -293,10 +293,14 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-variant-numeric: tabular-nums; color: rgba(255,255,255,0.4);
 }
 .sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 16px 12px;
   border-top: 1px solid rgba(255,255,255,0.06);
 }
 .sidebar-footer-link {
+  flex: 1 1 auto;
   color: rgba(255,255,255,0.65);
   font-size: 12px;
   text-decoration: none;
@@ -305,6 +309,28 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .sidebar-footer-link:hover {
   color: #58a6ff;
   text-decoration: underline;
+}
+.sidebar-footer-toggle {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.72);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.sidebar-footer-toggle:hover {
+  background: rgba(255,255,255,0.1);
+  color: #e6edf3;
+}
+.sidebar-footer-toggle[aria-pressed="true"] {
+  border-color: rgba(255,255,255,0.28);
+  background: rgba(255,255,255,0.12);
+  color: #e6edf3;
 }
 
 /* ── Agent runs modal ───────────────────────────────────────── */
@@ -1532,7 +1558,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
     </div>
     <div class="sidebar-tree" id="sidebar-tree"></div>
     <div class="scheduler-bar" id="scheduler-bar"></div>
-    <div class="sidebar-footer"><a id="active-agents-link" class="sidebar-footer-link" href="javascript:void(0)">Agent Runs</a></div>
+    <div class="sidebar-footer">
+      <a id="active-agents-link" class="sidebar-footer-link" href="javascript:void(0)"><span id="active-agents-label">Agent Runs</span></a>
+      <button id="agent-runs-mute-toggle" class="sidebar-footer-toggle" type="button" aria-pressed="false">Mute</button>
+    </div>
   </div>
 
   <!-- Main board area -->
@@ -1674,8 +1703,11 @@ let isBoardDragInProgress = false;
 let taskCommentDraftByTaskId = {}; // { [taskId]: string }
 let taskCommentEditing = null; // { taskId: string, index: number } | null
 const WORKSTREAM_MANAGER_TUNING_SOUND = 'workstream_startup.mp3';
+const WORKSTREAM_MANAGER_SOUND_MUTE_STORAGE_KEY = 'workstreamManager.soundMuted';
 let attemptedInitialTuningUpSound = false;
 let pendingInitialTuningUpRetry = false;
+let isWorkstreamManagerMuted = loadWorkstreamManagerMutedPreference();
+const activeWorkstreamManagerAudio = new Set();
 let agentRunsScrollState = {
   list: 0,
   detail: 0,
@@ -1723,15 +1755,115 @@ function workstreamManagerAudioUrl(fileName) {
   return `/audio/${encodeURIComponent(trimmed)}`;
 }
 
+function loadWorkstreamManagerMutedPreference() {
+  try {
+    return window.localStorage.getItem(WORKSTREAM_MANAGER_SOUND_MUTE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function refreshWorkstreamManagerMutedPreference() {
+  isWorkstreamManagerMuted = loadWorkstreamManagerMutedPreference();
+  return isWorkstreamManagerMuted;
+}
+
+function persistWorkstreamManagerMutedPreference() {
+  try {
+    window.localStorage.setItem(WORKSTREAM_MANAGER_SOUND_MUTE_STORAGE_KEY, isWorkstreamManagerMuted ? '1' : '0');
+  } catch {}
+}
+
+async function syncWorkstreamManagerMutedPreferenceFromServer() {
+  const data = await api('sound/mute');
+  isWorkstreamManagerMuted = !!(data && data.muted);
+  persistWorkstreamManagerMutedPreference();
+  if (isWorkstreamManagerMuted) stopAllWorkstreamManagerAudio();
+  renderWorkstreamManagerMuteToggle();
+  return isWorkstreamManagerMuted;
+}
+
+function cleanupWorkstreamManagerAudio(audio) {
+  if (!audio) return;
+  activeWorkstreamManagerAudio.delete(audio);
+  audio.onended = null;
+  audio.onpause = null;
+  audio.onerror = null;
+}
+
+function stopAllWorkstreamManagerAudio() {
+  Array.from(activeWorkstreamManagerAudio).forEach((audio) => {
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {}
+    cleanupWorkstreamManagerAudio(audio);
+  });
+}
+
+function renderWorkstreamManagerMuteToggle() {
+  const muteButton = document.getElementById('agent-runs-mute-toggle');
+  if (!muteButton) return;
+  muteButton.textContent = isWorkstreamManagerMuted ? 'Unmute' : 'Mute';
+  muteButton.setAttribute('aria-pressed', isWorkstreamManagerMuted ? 'true' : 'false');
+  muteButton.title = isWorkstreamManagerMuted
+    ? 'Unmute all Workstream Manager sounds'
+    : 'Mute all Workstream Manager sounds';
+}
+
+async function toggleWorkstreamManagerMute(nextValue = !isWorkstreamManagerMuted) {
+  const previousValue = isWorkstreamManagerMuted;
+  const muteButton = document.getElementById('agent-runs-mute-toggle');
+
+  isWorkstreamManagerMuted = !!nextValue;
+  persistWorkstreamManagerMutedPreference();
+  if (isWorkstreamManagerMuted) stopAllWorkstreamManagerAudio();
+  renderWorkstreamManagerMuteToggle();
+
+  if (muteButton) muteButton.disabled = true;
+  try {
+    const muted = await api('sound/mute', {
+      method: 'POST',
+      body: { muted: isWorkstreamManagerMuted },
+    });
+    isWorkstreamManagerMuted = !!(muted && muted.muted);
+    persistWorkstreamManagerMutedPreference();
+    if (isWorkstreamManagerMuted) stopAllWorkstreamManagerAudio();
+    renderWorkstreamManagerMuteToggle();
+    return isWorkstreamManagerMuted;
+  } catch (err) {
+    isWorkstreamManagerMuted = previousValue;
+    persistWorkstreamManagerMutedPreference();
+    if (isWorkstreamManagerMuted) stopAllWorkstreamManagerAudio();
+    renderWorkstreamManagerMuteToggle();
+    throw err;
+  } finally {
+    if (muteButton) muteButton.disabled = false;
+  }
+}
+
+function renderAgentRunsLinkLabel(activeCount = 0) {
+  const label = document.getElementById('active-agents-label');
+  if (!label) return;
+  label.textContent = activeCount > 0 ? `Agent Runs (${activeCount} active)` : 'Agent Runs';
+}
+
 async function playWorkstreamManagerSound(fileName) {
   const src = workstreamManagerAudioUrl(fileName);
-  if (!src) return false;
+  if (!src || refreshWorkstreamManagerMutedPreference()) return false;
+  let audio = null;
   try {
-    const audio = new Audio(src);
+    audio = new Audio(src);
     audio.preload = 'auto';
+    audio.muted = isWorkstreamManagerMuted;
+    audio.onended = () => cleanupWorkstreamManagerAudio(audio);
+    audio.onpause = () => cleanupWorkstreamManagerAudio(audio);
+    audio.onerror = () => cleanupWorkstreamManagerAudio(audio);
+    activeWorkstreamManagerAudio.add(audio);
     await audio.play();
     return true;
   } catch {
+    cleanupWorkstreamManagerAudio(audio);
     return false;
   }
 }
@@ -1754,6 +1886,7 @@ function scheduleInitialTuningUpRetry() {
 async function maybePlayInitialTuningUpSound() {
   if (attemptedInitialTuningUpSound) return;
   attemptedInitialTuningUpSound = true;
+  if (isWorkstreamManagerMuted) return;
   const played = await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);
   if (!played) scheduleInitialTuningUpRetry();
 }
@@ -4763,6 +4896,13 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+window.addEventListener('storage', (event) => {
+  if (event.key !== WORKSTREAM_MANAGER_SOUND_MUTE_STORAGE_KEY) return;
+  const muted = refreshWorkstreamManagerMutedPreference();
+  if (muted) stopAllWorkstreamManagerAudio();
+  renderWorkstreamManagerMuteToggle();
+});
+
 // ── Utility ─────────────────────────────────────────────────────
 function esc(str) {
   if (str == null) return '';
@@ -4834,11 +4974,7 @@ function startPolling() {
       // Update scheduler
       _applySchedulerStatus(data.scheduler);
       // Update Agent Runs sidebar link
-      const _arLink = document.getElementById('active-agents-link');
-      if (_arLink) {
-        const _arc = data.active_agent_runs || 0;
-        _arLink.textContent = _arc > 0 ? `Agent Runs (${_arc} active)` : 'Agent Runs';
-      }
+      renderAgentRunsLinkLabel(data.active_agent_runs || 0);
       // Update board if present
       if (data.board && selectedWsId && !isBoardDragInProgress) {
         selectedWs = data.board.workstream;
@@ -4865,6 +5001,23 @@ function startPolling() {
       e.preventDefault();
       openActiveAgentsModal();
     });
+  }
+  const muteButton = document.getElementById('agent-runs-mute-toggle');
+  if (muteButton) {
+    muteButton.addEventListener('click', async () => {
+      try {
+        await toggleWorkstreamManagerMute();
+      } catch (e) {
+        alert('Failed to update mute setting: ' + (e.message || e));
+      }
+    });
+  }
+  renderAgentRunsLinkLabel();
+  renderWorkstreamManagerMuteToggle();
+  try {
+    await syncWorkstreamManagerMutedPreferenceFromServer();
+  } catch (e) {
+    console.error('Failed to load global mute state', e);
   }
   await loadWorkstreams();
   window.addEventListener('popstate', () => {
