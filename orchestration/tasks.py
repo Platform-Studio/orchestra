@@ -206,6 +206,24 @@ def _save_task(task: Task, base_dir: str = ".") -> None:
         yaml.dump(task.to_dict(), f, default_flow_style=False, sort_keys=False)
 
 
+def _read_task_file(file_path: str, task_id: str) -> Task:
+    try:
+        with open(file_path) as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        raise CorruptTaskError(f"Task file {task_id}.yaml contains invalid YAML: {e}") from e
+
+    if not isinstance(data, dict):
+        raise CorruptTaskError(
+            f"Task file {task_id}.yaml must contain a YAML mapping, got {type(data).__name__}"
+        )
+
+    try:
+        return Task.from_dict(data)
+    except Exception as e:
+        raise CorruptTaskError(f"Task file {task_id}.yaml is structurally invalid: {e}") from e
+
+
 def create_task(
     workstream_id: str,
     title: str,
@@ -264,21 +282,14 @@ def read_task(task_id: str, base_dir: str = ".") -> Task:
     if result is None:
         raise FileNotFoundError(f"Task {task_id} not found")
     _, file_path = result
-    try:
-        with open(file_path) as f:
-            data = yaml.safe_load(f)
-    except Exception as e:
-        raise CorruptTaskError(f"Task file {task_id}.yaml contains invalid YAML: {e}") from e
+    return _read_task_file(file_path, task_id)
 
-    if not isinstance(data, dict):
-        raise CorruptTaskError(
-            f"Task file {task_id}.yaml must contain a YAML mapping, got {type(data).__name__}"
-        )
 
-    try:
-        return Task.from_dict(data)
-    except Exception as e:
-        raise CorruptTaskError(f"Task file {task_id}.yaml is structurally invalid: {e}") from e
+def read_task_from_workstream(workstream_id: str, task_id: str, base_dir: str = ".") -> Task:
+    file_path = _task_path(base_dir, workstream_id, task_id)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Task {task_id} not found")
+    return _read_task_file(file_path, task_id)
 
 
 def _list_tasks_from_dir(

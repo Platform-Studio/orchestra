@@ -11,6 +11,7 @@ from orchestration.locks import (
     acquire_lock,
     release_lock,
     lock_status,
+    lock_status_for_workstream,
     list_workstream_locks,
     list_workstream_locks_for_workstream,
     acquire_process_lock,
@@ -104,6 +105,12 @@ class TestLockStatus:
     def test_status_unlocked(self, workspace, task):
         status = lock_status(task.id, base_dir=workspace)
         assert status is None
+
+    def test_status_for_workstream(self, workspace, ws, task):
+        acquire_lock(task.id, agent_id="agent-1", base_dir=workspace)
+        status = lock_status_for_workstream(ws.id, task.id, base_dir=workspace)
+        assert status is not None
+        assert status.agent_id == "agent-1"
 
     def test_status_expired(self, workspace, task):
         # Create a lock with expired timestamp

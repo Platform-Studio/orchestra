@@ -619,6 +619,19 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-size: 11px; color: #58a6ff; font-weight: 600;
 }
 .card-lock svg { width: 12px; height: 12px; }
+.card-agent-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+.card-agent-link:hover { color: #a5d6ff; text-decoration: underline; }
+.card-agent-duration {
+  color: #8b949e;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
 .card-schedule {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 11px; color: #bc8cff;
@@ -1694,7 +1707,8 @@ let selectedAgentRunId = null;
 let selectedAgentArtifacts = null;  // selected run details (prompt/output/cli_calls)
 let selectedAgentArtifactsError = '';
 let retryingAgentRunId = null;
-let agentRunStatusFilter = '';
+const DEFAULT_AGENT_RUN_STATUS_FILTER = 'running';
+let agentRunStatusFilter = DEFAULT_AGENT_RUN_STATUS_FILTER;
 let workstreamContextDraft = '';
 let boardScrollByWorkstream = {}; // { [wsId]: { boardX: number, columns: { [state]: number } } }
 let boardLockRequestSeq = 0;
@@ -1708,6 +1722,14 @@ let attemptedInitialTuningUpSound = false;
 let pendingInitialTuningUpRetry = false;
 let isWorkstreamManagerMuted = loadWorkstreamManagerMutedPreference();
 const activeWorkstreamManagerAudio = new Set();
+let currentBoardTasks = [];
+let currentBoardLockMap = {};
+let currentBoardRenderKey = '';
+let currentBoardRevision = '';
+let boardActiveAgentRuns = [];
+let boardAgentTimer = null;
+const SIDEBAR_REFRESH_MS = 30000;
+let lastSidebarRefreshAt = 0;
 let agentRunsScrollState = {
   list: 0,
   detail: 0,
@@ -2379,6 +2401,23 @@ function formatCommentTimestamp(ts) {
   return relative ? `${absolute} (${relative})` : absolute;
 }
 
+function formatRunDuration(startIso, endIso) {
+  if (!startIso) return 'unknown';
+  const startMs = Date.parse(startIso);
+  if (!Number.isFinite(startMs)) return 'unknown';
+
+  const endMs = endIso ? Date.parse(endIso) : Date.now();
+  const safeEndMs = Number.isFinite(endMs) ? endMs : Date.now();
+  const totalSec = Math.max(0, Math.floor((safeEndMs - startMs) / 1000));
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 function formatCardScheduleDate(ts) {
   if (!ts) return '';
   const d = new Date(ts);
@@ -2555,7 +2594,23 @@ async function loadWorkstreams() {
   ]);
   allWorkstreams = wss;
   taskCounts = counts || {};
+  lastSidebarRefreshAt = Date.now();
   renderSidebar();
+}
+
+async function refreshSelectedBoardMeta() {
+  if (!selectedWsId || isBoardDragInProgress) return;
+  const meta = await api('board/' + selectedWsId + '?meta=1&locks=1', { timeoutMs: 10000 });
+  if (!selectedWsId || meta.workstream.id !== selectedWsId || isBoardDragInProgress) return;
+
+  selectedWs = meta.workstream;
+  renderBoardHeader(meta.workstream);
+  const nextRevision = meta.revision || '';
+  if (nextRevision && nextRevision !== currentBoardRevision) {
+    await loadBoard();
+  } else if (currentBoardTasks.length) {
+    updateBoard(meta.workstream, currentBoardTasks, buildLockMap(currentBoardTasks, meta.locks || {}));
+  }
 }
 
 // ── Sidebar expand/collapse persistence ─────────────────────────
@@ -2592,8 +2647,9 @@ function renderSidebar() {
   }
 
   const sorted = [...allWorkstreams].sort((a, b) => a.name.localeCompare(b.name));
+  const workstreamIds = new Set(sorted.map(ws => ws.id));
   for (const ws of sorted) {
-    if (ws.parent_id) {
+    if (ws.parent_id && workstreamIds.has(ws.parent_id)) {
       (childMap[ws.parent_id] = childMap[ws.parent_id] || []).push(ws);
     } else {
       roots.push(ws);
@@ -2762,6 +2818,11 @@ async function openAgentRunWorkstream(wsId) {
   await selectWorkstream(wsId);
 }
 
+async function openAgentRun(runId) {
+  if (!runId) return;
+  await openActiveAgentsModal(runId);
+}
+
 function buildLockMap(tasks, locks = {}) {
   const lockMap = {};
   for (const task of tasks) {
@@ -2782,7 +2843,7 @@ async function hydrateBoardLocks(ws, tasks) {
     if (requestSeq !== boardLockRequestSeq) return;
     if (selectedWsId !== ws.id) return;
     if (isBoardDragInProgress) return;
-    renderBoard(ws, tasks, buildLockMap(tasks, locks));
+    updateBoard(ws, tasks, buildLockMap(tasks, locks));
   } catch {}
 }
 
@@ -2816,9 +2877,10 @@ async function loadBoard() {
   const ws = board.workstream;
   const tasks = board.tasks;
   selectedWs = ws;
+  currentBoardRevision = board.revision || '';
 
   renderBoardHeader(ws);
-  renderBoard(ws, tasks, buildLockMap(tasks));
+  updateBoard(ws, tasks, buildLockMap(tasks), { force: true });
   const emptyState = document.getElementById('empty-state');
   if (emptyState) emptyState.style.display = 'none';
   hydrateBoardLocks(ws, tasks);
@@ -2850,6 +2912,98 @@ function renderBoardHeader(ws) {
     ${contextBtn}
     <button class="pause-btn" onclick="togglePause()">${btnLabel}</button>
   `;
+}
+
+function taskRunIds(run) {
+  const ids = [];
+  if (Array.isArray(run.task_ids)) ids.push(...run.task_ids);
+  if (Array.isArray(run.tasks)) {
+    for (const task of run.tasks) {
+      if (task && task.id) ids.push(task.id);
+    }
+  }
+  return [...new Set(ids.map(id => String(id || '')).filter(Boolean))];
+}
+
+function buildBoardAgentRunMap() {
+  const map = {};
+  for (const run of boardActiveAgentRuns || []) {
+    if (normalizedRunStatus(run) !== 'running') continue;
+    for (const taskId of taskRunIds(run)) {
+      if (!map[taskId]) map[taskId] = run;
+    }
+  }
+  return map;
+}
+
+function normalizeBoardRun(run) {
+  return {
+    run_id: run.run_id || '',
+    agent: run.agent || '',
+    agent_ref: run.agent_ref || '',
+    task_ids: taskRunIds(run),
+    started_at: run.started_at || '',
+    ended_at: run.ended_at || '',
+    status: normalizedRunStatus(run),
+  };
+}
+
+function boardRenderKey(ws, tasks, lockMap) {
+  return JSON.stringify({
+    workstream: {
+      id: ws && ws.id,
+      name: ws && ws.name,
+      paused: !!(ws && ws.paused),
+      task_states: ws && ws.task_states,
+      triggers: (ws && ws.triggers || []).map(t => ({ id: t.id, name: t.name, state: t.state, agent: t.agent })),
+    },
+    tasks: (tasks || []).map(t => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      tags: t.tags || [],
+      scheduled_at: t.scheduled_at || '',
+      retry_count: t.retry_count || 0,
+      last_failure_at: t.last_failure_at || '',
+      error: t._error || '',
+    })),
+    locks: Object.fromEntries(Object.entries(lockMap || {}).map(([taskId, lock]) => [taskId, {
+      locked: !!(lock && lock.locked),
+      agent_id: lock && lock.agent_id || '',
+      acquired_at: lock && lock.acquired_at || '',
+      subprocess_pid: lock && lock.subprocess_pid || '',
+    }])),
+    activeRuns: (boardActiveAgentRuns || []).map(normalizeBoardRun),
+  });
+}
+
+function updateBoard(ws, tasks, lockMap, options = {}) {
+  currentBoardTasks = tasks || [];
+  currentBoardLockMap = lockMap || buildLockMap(currentBoardTasks);
+  const nextKey = boardRenderKey(ws, currentBoardTasks, currentBoardLockMap);
+  if (!options.force && nextKey === currentBoardRenderKey) {
+    updateBoardAgentDurations();
+    return;
+  }
+  currentBoardRenderKey = nextKey;
+  renderBoard(ws, currentBoardTasks, currentBoardLockMap);
+}
+
+function updateBoardAgentDurations() {
+  document.querySelectorAll('.card-agent-duration[data-started-at]').forEach(el => {
+    el.textContent = formatRunDuration(el.dataset.startedAt, el.dataset.endedAt || null);
+  });
+}
+
+function syncBoardAgentTimer() {
+  const hasRunningCardAgents = !!document.querySelector('.card-agent-duration[data-started-at]');
+  if (hasRunningCardAgents && !boardAgentTimer) {
+    boardAgentTimer = setInterval(updateBoardAgentDurations, 1000);
+  } else if (!hasRunningCardAgents && boardAgentTimer) {
+    clearInterval(boardAgentTimer);
+    boardAgentTimer = null;
+  }
+  updateBoardAgentDurations();
 }
 
 // ── Render board columns ────────────────────────────────────────
@@ -2922,7 +3076,16 @@ function renderBoard(ws, tasks, lockMap) {
     });
   });
 
+  board.querySelectorAll('.card-agent-link').forEach(el => {
+    el.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await openAgentRun(el.dataset.agentRunId);
+    });
+  });
+
   setupTaskReorderDnD(board);
+  syncBoardAgentTimer();
 }
 
 function showCreateTaskModal(state) {
@@ -3039,7 +3202,14 @@ function renderCard(task, lock, state) {
   // Meta line (lock, schedule — no tags here)
   let meta = '';
   if (lock && lock.locked) {
-    meta += `<span class="card-lock">${ICON_AGENT} ${esc(lock.agent_id)}</span>`;
+    const run = buildBoardAgentRunMap()[task.id] || null;
+    const agentLabel = lock.agent_id || (run && (run.agent || run.agent_ref)) || 'agent';
+    if (run && run.run_id) {
+      const duration = formatRunDuration(run.started_at, run.ended_at);
+      meta += `<button type="button" class="card-lock card-agent-link" data-agent-run-id="${esc(run.run_id)}" title="Open ${esc(agentLabel)} run">${ICON_AGENT} ${esc(agentLabel)} <span class="card-agent-duration" data-started-at="${esc(run.started_at || '')}" data-ended-at="${esc(run.ended_at || '')}">${esc(duration)}</span></button>`;
+    } else {
+      meta += `<span class="card-lock">${ICON_AGENT} ${esc(agentLabel)}</span>`;
+    }
   }
   if (task.scheduled_at) {
     const scheduleLabel = formatCardScheduleDate(task.scheduled_at);
@@ -3288,10 +3458,13 @@ function buildWorkstreamOptions(workstreams, selectedId) {
 async function showTaskDetail(taskId, opts = {}) {
   const { updateHistory = true, replaceHistory = false } = opts;
   let task, lockData;
+  const boardTask = currentBoardTasks.find(t => String(t.id) === String(taskId)) || null;
+  const detailWorkstreamId = (boardTask && boardTask.workstream_id) || selectedWsId || '';
+  const detailQuery = detailWorkstreamId ? `?workstream_id=${encodeURIComponent(detailWorkstreamId)}` : '';
   try {
     [task, lockData] = await Promise.all([
-      api('task/read/' + taskId),
-      api('lock/status/' + taskId).catch(() => ({ locked: false })),
+      api('task/read/' + taskId + detailQuery),
+      api('lock/status/' + taskId + detailQuery).catch(() => ({ locked: false })),
     ]);
   } catch (err) {
     if (err && err.code === 'CORRUPT_TASK') {
@@ -4378,10 +4551,14 @@ async function openAuditLog(filterType) {
 }
 
 // ── Agent runs modal ──────────────────────────────────────────
-async function openActiveAgentsModal() {
+async function openActiveAgentsModal(initialRunId) {
   const overlay = document.getElementById('active-agents-modal');
   overlay.classList.remove('hidden');
+  if (initialRunId) selectedAgentRunId = initialRunId;
   await refreshActiveAgentsModal();
+  if (initialRunId && activeAgentRuns.some(r => r.run_id === initialRunId)) {
+    await selectActiveAgentRun(initialRunId);
+  }
   if (activeAgentPollTimer) clearInterval(activeAgentPollTimer);
   activeAgentPollTimer = setInterval(refreshActiveAgentsModal, 3000);
 }
@@ -4400,7 +4577,7 @@ function closeActiveAgentsModal() {
   selectedAgentRunId = null;
   selectedAgentArtifacts = null;
   selectedAgentArtifactsError = '';
-  agentRunStatusFilter = '';
+  agentRunStatusFilter = DEFAULT_AGENT_RUN_STATUS_FILTER;
 }
 
 function captureAgentRunsScrollState() {
@@ -4542,10 +4719,16 @@ function setAgentRunStatusFilter(value) {
   renderActiveAgentsModal();
 }
 
+function filteredAgentRunsForModal() {
+  return agentRunStatusFilter
+    ? activeAgentRuns.filter(r => normalizedRunStatus(r) === agentRunStatusFilter)
+    : activeAgentRuns;
+}
+
 async function refreshActiveAgentsModal() {
   const content = document.getElementById('active-agents-content');
   try {
-    activeAgentRuns = sortAgentRunsForDisplay(await api('agent/runs?limit=100', { timeoutMs: 30000 }));
+    activeAgentRuns = sortAgentRunsForDisplay(await api('agent/runs?limit=25', { timeoutMs: 30000 }));
   } catch (e) {
     content.innerHTML = `
       <div class="modal-header">
@@ -4577,8 +4760,16 @@ async function refreshActiveAgentsModal() {
     activeAgentTailTimer = null;
   }
 
-  if (!selectedAgentRunId && activeAgentRuns.length > 0) {
-    await selectActiveAgentRun(activeAgentRuns[0].run_id);
+  const visibleRuns = filteredAgentRunsForModal();
+  if (selectedAgentRunId) {
+    const selectedRun = activeAgentRuns.find(r => r.run_id === selectedAgentRunId);
+    if (selectedRun && agentRunStatusFilter && normalizedRunStatus(selectedRun) !== agentRunStatusFilter) {
+      selectedAgentRunId = null;
+      selectedAgentArtifacts = null;
+    }
+  }
+  if (!selectedAgentRunId && visibleRuns.length > 0) {
+    await selectActiveAgentRun(visibleRuns[0].run_id);
   }
 }
 
@@ -4586,23 +4777,8 @@ function renderActiveAgentsModal() {
   captureAgentRunsScrollState();
   const content = document.getElementById('active-agents-content');
 
-  function formatRunDuration(startIso, endIso) {
-    if (!startIso) return 'unknown';
-    const startMs = Date.parse(startIso);
-    if (!Number.isFinite(startMs)) return 'unknown';
-
-    const endMs = endIso ? Date.parse(endIso) : Date.now();
-    const safeEndMs = Number.isFinite(endMs) ? endMs : Date.now();
-    const totalSec = Math.max(0, Math.floor((safeEndMs - startMs) / 1000));
-    const minutes = Math.floor(totalSec / 60);
-    const seconds = totalSec % 60;
-    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-  }
-
   const totalRunCount = activeAgentRuns.length;
-  const filteredRuns = agentRunStatusFilter
-    ? activeAgentRuns.filter(r => normalizedRunStatus(r) === agentRunStatusFilter)
-    : activeAgentRuns;
+  const filteredRuns = filteredAgentRunsForModal();
   const runCount = filteredRuns.length;
   let listHtml = '';
   if (!runCount) {
@@ -4956,7 +5132,7 @@ async function copyToClipboard(text, btn) {
   }
 }
 
-// ── Polling for live data (single combined request) ─────────────
+// ── Polling for live status ────────────────────────────────────
 let _polling = false;
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
@@ -4964,25 +5140,18 @@ function startPolling() {
     if (_polling) return;  // skip if previous poll still in-flight
     _polling = true;
     try {
-      const boardParam = selectedWsId ? `/${selectedWsId}` : '/all';
-      const data = await api('poll' + boardParam);
-      // Update workstreams
-      allWorkstreams = data.workstreams;
-      taskCounts = data.counts || {};
+      const data = await api('poll/status');
       activeTriggerIds = data.active_triggers || [];
+      boardActiveAgentRuns = data.active_agent_run_summaries || [];
       renderSidebar();
       // Update scheduler
       _applySchedulerStatus(data.scheduler);
       // Update Agent Runs sidebar link
       renderAgentRunsLinkLabel(data.active_agent_runs || 0);
-      // Update board if present
-      if (data.board && selectedWsId && !isBoardDragInProgress) {
-        selectedWs = data.board.workstream;
-        renderBoardHeader(data.board.workstream);
-        renderBoard(data.board.workstream, data.board.tasks, buildLockMap(data.board.tasks));
-        const emptyState = document.getElementById('empty-state');
-        if (emptyState) emptyState.style.display = 'none';
-        hydrateBoardLocks(data.board.workstream, data.board.tasks);
+
+      await refreshSelectedBoardMeta();
+      if (Date.now() - lastSidebarRefreshAt > SIDEBAR_REFRESH_MS) {
+        await loadWorkstreams();
       }
       // Refresh trigger dialog if open
       const triggerModal = document.getElementById('trigger-modal');

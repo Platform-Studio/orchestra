@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from orchestration import agents as agents_module
 from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, get_global_sound_mute, list_agent_runs, retry_agent_run, run_agent, set_global_sound_mute
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
@@ -416,7 +417,6 @@ def test_resolve_agent_file_accepts_frontmatter_name(workspace):
 
     assert resolved == dashboard_agent
 
-
 def test_parse_agent_md_reads_sound_headers(workspace):
     agents_dir = os.path.join(workspace, "Agents")
     sound_agent = os.path.join(agents_dir, "sound_agent.md")
@@ -583,6 +583,29 @@ def test_run_agent_plays_error_sound_on_failure(mock_popen, mock_which, workspac
     assert events == [("start", "intro.wav"), ("error", "fail.wav")]
 
 
+def test_resolve_agent_file_falls_back_to_source_agents_for_mounted_workspace(tmp_path, monkeypatch):
+    workspace_dir = tmp_path / "mounted"
+    workspace_dir.mkdir()
+    source_dir = tmp_path / "source"
+    agents_dir = source_dir / "Agents"
+    agents_dir.mkdir(parents=True)
+    fallback_agent = agents_dir / "fallback_agent.md"
+    fallback_agent.write_text(
+        "---\n"
+        "name: Fallback Agent\n"
+        "description: Agent loaded from source tree\n"
+        "---\n"
+        "You are loaded from the source Agents directory.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(agents_module, "SOURCE_DIR", str(source_dir))
+
+    resolved = agents_module._resolve_agent_file("fallback_agent", str(workspace_dir))
+
+    assert resolved == str(fallback_agent)
+
+
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_injects_workstream_context(mock_popen, mock_which, workspace):
@@ -607,8 +630,9 @@ def test_run_agent_workstream_only_prompt_includes_task_locking_contract(mock_po
     prompt = cmd[cmd.index("-p") + 1]
     assert "Available states for tasks on this workstream:" in prompt
     assert "You may inspect tasks in this workstream and decide which ones to work on." in prompt
-    assert "python -m orchestration.cli lock acquire <task_id> --agent \"<agent_name>\"" in prompt
-    assert "python -m orchestration.cli lock release <task_id> --agent \"<agent_name>\"" in prompt
+    assert " -m orchestration.cli --base-dir " in prompt
+    assert " lock acquire <task_id> --agent \"<agent_name>\"" in prompt
+    assert " lock release <task_id> --agent \"<agent_name>\"" in prompt
     assert "Do not modify a task unless you successfully acquired its lock first." in prompt
 
 
@@ -634,7 +658,7 @@ def test_run_agent_prompt_uses_current_python_executable(mock_popen, mock_which,
     run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
-    expected = f"{sys.executable} -m orchestration.cli"
+    expected = f"{sys.executable} -m orchestration.cli --base-dir {workspace}"
 
     prompt = cmd[cmd.index("-p") + 1]
     assert f"Run: {expected} task read {task.id}" in prompt
@@ -887,8 +911,13 @@ def test_run_agent_does_not_inline_attachments_when_workstream_flag_enabled(mock
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_rejects_invalid_image_attachments_preflight(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Image WS", base_dir=workspace)
-    create_artifact("assets/logo.png", "[binary image file - failed]", base_dir=workspace, workstream_id=ws.id)
-    task = create_task(ws.id, title="Task", attachments=["assets/logo.png"], base_dir=workspace)
+    artifacts_dir = os.path.join(workspace, "artifacts", "assets")
+    os.makedirs(artifacts_dir, exist_ok=True)
+    with open(os.path.join(artifacts_dir, "logo.png"), "wb") as f:
+        f.write(b"not a real image")
+    task = create_task(ws.id, title="Task", base_dir=workspace)
+    task.attachments = ["assets/logo.png"]
+    _save_task(task, workspace)
 
     with pytest.raises(RuntimeError, match="Invalid image attachments"):
         run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)

@@ -83,12 +83,7 @@ def release_lock(task_id: str, agent_id: str, base_dir: str = ".") -> bool:
     return True
 
 
-def lock_status(task_id: str, base_dir: str = "."):
-    """Get the current lock status. Returns Lock if locked and not expired, None otherwise."""
-    lock_path = _lock_path_for_task(task_id, base_dir)
-    if lock_path is None:
-        raise FileNotFoundError(f"Task {task_id} not found")
-
+def _read_lock_path(lock_path: str):
     if not os.path.exists(lock_path):
         return None
 
@@ -99,9 +94,26 @@ def lock_status(task_id: str, base_dir: str = "."):
 
     lock = Lock.from_dict(data)
     if lock.is_expired():
-        return None  # Treat expired as unlocked
+        return None
 
     return lock
+
+
+def lock_status(task_id: str, base_dir: str = "."):
+    """Get the current lock status. Returns Lock if locked and not expired, None otherwise."""
+    lock_path = _lock_path_for_task(task_id, base_dir)
+    if lock_path is None:
+        raise FileNotFoundError(f"Task {task_id} not found")
+
+    return _read_lock_path(lock_path)
+
+
+def lock_status_for_workstream(workstream_id: str, task_id: str, base_dir: str = "."):
+    tasks_dir = _tasks_dir(base_dir, workstream_id)
+    task_path = os.path.join(tasks_dir, f"{task_id}.yaml")
+    if not os.path.exists(task_path):
+        raise FileNotFoundError(f"Task {task_id} not found")
+    return _read_lock_path(task_path + ".lock")
 
 
 def _list_locks_from_tasks_dir(tasks_dir: str, task_ids: list[str] = None) -> dict:

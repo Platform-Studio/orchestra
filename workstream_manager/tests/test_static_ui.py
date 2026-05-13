@@ -250,3 +250,50 @@ def test_tag_editor_does_not_treat_local_task_tags_as_full_board_catalog() -> No
     assert 'syncCatalog(getWorkstreamTagCatalog(wsId));' in html
     assert 'syncCatalog(tags, { updateGlobalCache: true });' in html
     assert "syncCatalog([...(getWorkstreamTagCatalog(wsId) || []), createdTag], { updateGlobalCache: true });" in html
+
+
+def test_board_polling_is_change_driven_and_agent_links_open_runs() -> None:
+    html = _index_html()
+
+    assert 'function boardRenderKey(ws, tasks, lockMap)' in html
+    assert 'if (!options.force && nextKey === currentBoardRenderKey)' in html
+    assert "let currentBoardRevision = '';" in html
+    assert "const data = await api('poll/status');" in html
+    assert "api('board/' + selectedWsId + '?meta=1&locks=1'" in html
+    assert 'const SIDEBAR_REFRESH_MS = 30000;' in html
+    assert "if (nextRevision && nextRevision !== currentBoardRevision)" in html
+    assert 'data-agent-run-id="${esc(run.run_id)}"' in html
+    assert 'await openAgentRun(el.dataset.agentRunId);' in html
+
+
+def test_task_detail_uses_workstream_scoped_reads() -> None:
+    html = _index_html()
+
+    assert 'const detailQuery = detailWorkstreamId ? `?workstream_id=${encodeURIComponent(detailWorkstreamId)}` : \'\';' in html
+    assert "api('task/read/' + taskId + detailQuery)" in html
+    assert "api('lock/status/' + taskId + detailQuery)" in html
+
+
+def test_board_agent_run_timers_update_without_board_rerender() -> None:
+    html = _index_html()
+
+    assert 'function updateBoardAgentDurations()' in html
+    assert "boardAgentTimer = setInterval(updateBoardAgentDurations, 1000);" in html
+    assert "boardActiveAgentRuns = data.active_agent_run_summaries || [];" in html
+
+
+def test_agent_runs_modal_defaults_to_running_filter() -> None:
+    html = _index_html()
+
+    assert "const DEFAULT_AGENT_RUN_STATUS_FILTER = 'running';" in html
+    assert "let agentRunStatusFilter = DEFAULT_AGENT_RUN_STATUS_FILTER;" in html
+    assert "agentRunStatusFilter = DEFAULT_AGENT_RUN_STATUS_FILTER;" in html
+    assert 'function filteredAgentRunsForModal()' in html
+    assert "api('agent/runs?limit=25'" in html
+
+
+def test_sidebar_treats_missing_parent_as_root() -> None:
+    html = _index_html()
+
+    assert 'const workstreamIds = new Set(sorted.map(ws => ws.id));' in html
+    assert 'if (ws.parent_id && workstreamIds.has(ws.parent_id))' in html

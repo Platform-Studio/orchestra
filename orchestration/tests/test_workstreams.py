@@ -112,6 +112,18 @@ class TestListWorkstreams:
         result = list_workstreams(base_dir=workspace)
         assert len(result) == 2
 
+    def test_list_reflects_external_yaml_changes_after_cache_hit(self, workspace):
+        create_workstream(name="WS 1", base_dir=workspace)
+        assert len(list_workstreams(base_dir=workspace)) == 1
+
+        manual_id = "manual-ws"
+        with open(os.path.join(workspace, "workstreams", f"{manual_id}.yaml"), "w") as f:
+            f.write("id: manual-ws\nname: Manual WS\n")
+
+        result = list_workstreams(base_dir=workspace)
+        assert len(result) == 2
+        assert any(ws.id == manual_id for ws in result)
+
 
 class TestReadWorkstream:
     def test_read_existing(self, workspace):
