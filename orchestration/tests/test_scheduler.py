@@ -14,6 +14,7 @@ from orchestration.scheduler import (
     _existing_running_pid,
     _cron_matches_time,
     _cron_matches_between,
+    _select_state_trigger_task_ids,
     _task_matches_filter,
     _lock_invoke_unlock,
     tick,
@@ -84,6 +85,29 @@ class TestTaskFilterMatching:
     def test_empty_filter_matches_all(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         assert _task_matches_filter(task, {}) is True
+
+
+class TestStateTriggerTaskSelection:
+    def test_defaults_to_first_unlocked(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_command",
+            command="echo x",
+            base_dir=workspace,
+        )
+        assert _select_state_trigger_task_ids(trigger, ["a", "b", "c"]) == ["a"]
+
+    def test_all_unlocked_returns_full_batch(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_command",
+            command="echo x",
+            task_selection="all_unlocked",
+            base_dir=workspace,
+        )
+        assert _select_state_trigger_task_ids(trigger, ["a", "b", "c"]) == ["a", "b", "c"]
 
 
 # ── State file ───────────────────────────────────────────────────────

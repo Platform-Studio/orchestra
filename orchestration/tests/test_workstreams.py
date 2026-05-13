@@ -2,21 +2,27 @@
 
 import pytest
 import os
+import shutil
 from orchestration.workstreams import (
     create_workstream,
     list_workstreams,
     read_workstream,
     read_workstream_context,
     find_workstreams,
+    get_workstream_tags,
     save_workstream,
     resolve_workstream_workspace,
     set_workstream_env_key,
     set_workstream_context,
+    upsert_workstream_tag,
     unset_workstream_env_key,
     resolve_workstream_env_key,
     resolve_env_key,
     list_workstream_hierarchy_env,
     list_effective_workstream_env,
+    resolve_workstream_artifact_root,
+    resolve_workstream_child_state_root,
+    resolve_workstream_state_root,
 )
 from orchestration.tasks import create_task
 
@@ -74,6 +80,26 @@ class TestCreateWorkstream:
         assert os.path.exists(os.path.join(workspace, "workstreams", f"{ws.id}.yaml"))
         assert os.path.isdir(os.path.join(workspace, "workstreams", ws.id, "tasks"))
 
+    def test_create_with_explicit_routing_fields(self, workspace, tmp_path):
+        working_root = tmp_path / "code_root"
+        artifact_root = tmp_path / "artifact_root"
+        child_root = tmp_path / "child_root"
+        for path in (working_root, artifact_root, child_root):
+            path.mkdir()
+
+        ws = create_workstream(
+            name="Routed",
+            working_directory=str(working_root),
+            artifact_root=str(artifact_root),
+            child_workstream_root=str(child_root),
+            base_dir=workspace,
+        )
+
+        loaded = read_workstream(ws.id, base_dir=workspace)
+        assert loaded.working_directory == str(working_root)
+        assert loaded.artifact_root == str(artifact_root)
+        assert loaded.child_workstream_root == str(child_root)
+
 
 class TestListWorkstreams:
     def test_list_empty(self, workspace):
@@ -102,6 +128,24 @@ class TestReadWorkstream:
         ws = create_workstream(name="Read Context", context="brief", base_dir=workspace)
         data = read_workstream_context(ws.id, base_dir=workspace)
         assert data["context"] == "brief"
+
+    def test_save_does_not_persist_transient_resolution_fields(self, workspace, tmp_path):
+        mount_root = tmp_path / "mounted_repo"
+        mount_root.mkdir()
+
+        ws = create_workstream(name="Mounted", base_dir=workspace)
+        ws.working_directory = str(mount_root)
+        save_workstream(ws, base_dir=workspace)
+
+        loaded = read_workstream(ws.id, base_dir=workspace)
+        save_workstream(loaded, base_dir=workspace)
+
+        persisted = os.path.join(workspace, "workstreams", f"{ws.id}.yaml")
+        text = open(persisted, encoding="utf-8").read()
+        assert "resolved_workspace_path:" not in text
+        assert "resolved_artifact_root:" not in text
+        assert "resolved_child_workstream_root:" not in text
+        assert "mount_available:" not in text
 
 
 class TestWorkstreamContext:
@@ -142,6 +186,30 @@ class TestFindWorkstreams:
         create_workstream(name="WS1", base_dir=workspace)
         results = find_workstreams("nonexistent", base_dir=workspace)
         assert len(results) == 0
+
+
+class TestWorkstreamTags:
+    def test_gettags_returns_catalog_and_task_tags(self, workspace):
+        ws = create_workstream(name="Tag WS", base_dir=workspace)
+        upsert_workstream_tag(ws.id, "Urgent", "#eb5a46", base_dir=workspace)
+        create_task(ws.id, title="T1", tags=["Urgent", "Needs Review"], base_dir=workspace)
+
+        tags = get_workstream_tags(ws.id, base_dir=workspace)
+
+        assert {tag["name"] for tag in tags} == {"Urgent", "Needs Review"}
+        assert next(tag for tag in tags if tag["name"] == "Urgent")["color"] == "#eb5a46"
+        assert all(tag["color"].startswith("#") for tag in tags)
+
+    def test_upsert_tag_updates_existing_definition(self, workspace):
+        ws = create_workstream(name="Tag WS", base_dir=workspace)
+
+        created = upsert_workstream_tag(ws.id, "Customer", "#0079bf", base_dir=workspace)
+        updated = upsert_workstream_tag(ws.id, "Customer", "#61bd4f", base_dir=workspace)
+
+        assert created["name"] == "Customer"
+        assert updated["color"] == "#61bd4f"
+        reloaded = read_workstream(ws.id, base_dir=workspace)
+        assert reloaded.tag_definitions == [{"name": "Customer", "color": "#61bd4f"}]
 
 
 class TestValidateTransition:
@@ -219,59 +287,56 @@ class TestWorkstreamEnv:
         assert "MODEL" not in env_map
         assert env_map["TEMPERATURE"] == "0.1"
 
-    def test_mounted_root_env_is_included_for_descendants(self, workspace, tmp_path):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
+    def test_working_directory_env_is_included_for_descendants(self, workspace, tmp_path):
+        working_root = tmp_path / "career_pivot_repo"
+        working_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
         set_workstream_env_key(parent.id, "SHARED", "parent", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         save_workstream(parent, base_dir=workspace)
 
-        # Mounted root env should be part of descendant resolution.
-        (mount_root / ".env").write_text("MOUNT_ONLY=from-mount\nSHARED=from-mount\n")
+        (working_root / ".env").write_text("WORKING_ONLY=from-working-dir\nSHARED=from-working-dir\n")
 
         child = create_workstream(name="Programmatic SEO", parent_id=parent.id, base_dir=workspace)
 
-        assert resolve_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace) == "from-mount"
-        assert resolve_workstream_env_key(child.id, "SHARED", base_dir=workspace) == "from-mount"
+        assert resolve_workstream_env_key(child.id, "WORKING_ONLY", base_dir=workspace) == "from-working-dir"
+        assert resolve_workstream_env_key(child.id, "SHARED", base_dir=workspace) == "from-working-dir"
 
-        # Descendant override still wins over mounted root.
         set_workstream_env_key(child.id, "SHARED", "child", base_dir=workspace)
         assert resolve_workstream_env_key(child.id, "SHARED", base_dir=workspace) == "child"
 
-        # Descendant mask still blocks mounted/root/system fallback.
-        unset_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace)
-        assert resolve_workstream_env_key(child.id, "MOUNT_ONLY", base_dir=workspace) is None
+        unset_workstream_env_key(child.id, "WORKING_ONLY", base_dir=workspace)
+        assert resolve_workstream_env_key(child.id, "WORKING_ONLY", base_dir=workspace) is None
 
-    def test_mounted_root_env_is_included_for_selected_mounted_workstream(self, workspace, tmp_path):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
+    def test_working_directory_env_is_included_for_selected_workstream(self, workspace, tmp_path):
+        working_root = tmp_path / "career_pivot_repo"
+        working_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         save_workstream(parent, base_dir=workspace)
 
-        (mount_root / ".env").write_text("MOUNT_ONLY=from-mount\nSHARED=from-mount\n")
+        (working_root / ".env").write_text("WORKING_ONLY=from-working-dir\nSHARED=from-working-dir\n")
 
         hierarchy = list_workstream_hierarchy_env(parent.id, base_dir=workspace)
-        assert any(layer["kind"] == "mounted-root" for layer in hierarchy)
+        assert any(layer["kind"] == "working-directory-root" for layer in hierarchy)
 
         effective = list_effective_workstream_env(parent.id, base_dir=workspace)
-        assert effective["MOUNT_ONLY"] == "from-mount"
-        assert resolve_workstream_env_key(parent.id, "SHARED", base_dir=workspace) == "from-mount"
+        assert effective["WORKING_ONLY"] == "from-working-dir"
+        assert resolve_workstream_env_key(parent.id, "SHARED", base_dir=workspace) == "from-working-dir"
 
 
-class TestMountedWorkspaceDescendants:
-    def test_lists_and_reads_mounted_children(self, workspace, tmp_path):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
+class TestWorkingDirectoryDescendants:
+    def test_lists_and_reads_children_when_parent_has_working_directory(self, workspace, tmp_path):
+        working_root = tmp_path / "career_pivot_repo"
+        working_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         save_workstream(parent, base_dir=workspace)
 
-        mounted_child = create_workstream(
+        child = create_workstream(
             name="Go-to-Market",
             parent_id=parent.id,
             base_dir=workspace,
@@ -280,31 +345,31 @@ class TestMountedWorkspaceDescendants:
         all_ws = list_workstreams(base_dir=workspace)
         ids = {w.id for w in all_ws}
         assert parent.id in ids
-        assert mounted_child.id in ids
+        assert child.id in ids
 
-        loaded = read_workstream(mounted_child.id, base_dir=workspace)
+        loaded = read_workstream(child.id, base_dir=workspace)
         assert loaded.name == "Go-to-Market"
         assert loaded.parent_id == parent.id
 
-    def test_create_child_under_mounted_parent_writes_to_mount(self, workspace, tmp_path):
+    def test_working_directory_parent_keeps_child_state_local(self, workspace, tmp_path):
         mount_root = tmp_path / "career_pivot_repo"
         mount_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(mount_root)
         save_workstream(parent, base_dir=workspace)
 
         child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
 
-        assert os.path.exists(mount_root / "workstreams" / f"{child.id}.yaml")
-        assert not os.path.exists(os.path.join(workspace, "workstreams", f"{child.id}.yaml"))
+        assert os.path.exists(os.path.join(workspace, "workstreams", parent.id, "workstreams", f"{child.id}.yaml"))
+        assert not os.path.exists(mount_root / "workstreams" / f"{child.id}.yaml")
 
-    def test_create_task_on_mounted_child_writes_to_mount(self, workspace, tmp_path):
+    def test_create_task_on_working_directory_child_keeps_state_local(self, workspace, tmp_path):
         mount_root = tmp_path / "career_pivot_repo"
         mount_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(mount_root)
         save_workstream(parent, base_dir=workspace)
 
         mounted_child = create_workstream(
@@ -314,75 +379,107 @@ class TestMountedWorkspaceDescendants:
         )
 
         task = create_task(mounted_child.id, title="Reach out", base_dir=workspace)
-        task_path = mount_root / "workstreams" / mounted_child.id / "tasks" / f"{task.id}.yaml"
-        assert task_path.exists()
+        task_path = os.path.join(workspace, "workstreams", parent.id, "workstreams", mounted_child.id, "tasks", f"{task.id}.yaml")
+        assert os.path.exists(task_path)
+        assert not os.path.exists(mount_root / "workstreams" / mounted_child.id / "tasks" / f"{task.id}.yaml")
 
-    def test_resolve_workspace_for_mounted_child(self, workspace, tmp_path):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
-
-        parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
-        save_workstream(parent, base_dir=workspace)
-
-        mounted_child = create_workstream(
-            name="Operations",
-            parent_id=parent.id,
-            base_dir=workspace,
-        )
-
-        resolved = resolve_workstream_workspace(mounted_child.id, base_dir=workspace)
-        assert resolved == str(mount_root.resolve())
-
-    def test_mounted_subtree_hides_local_descendants(self, workspace, tmp_path):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
-
-        parent = create_workstream(name="career_pivot", base_dir=workspace)
-        local_child = create_workstream(name="local-child", parent_id=parent.id, base_dir=workspace)
-
-        parent.mounted_workspace_path = str(mount_root)
-        save_workstream(parent, base_dir=workspace)
-
-        mounted_child = create_workstream(name="mounted-child", parent_id=parent.id, base_dir=workspace)
-
-        all_ws = list_workstreams(base_dir=workspace)
-        ids = {w.id for w in all_ws}
-        assert parent.id in ids
-        assert mounted_child.id in ids
-        assert local_child.id not in ids
-
-    def test_resolve_workspace_prefers_mounted_ancestor_for_grandchild_even_with_local_stale_file(self, workspace, tmp_path):
-        mount_root = tmp_path / "planetdb_repo"
-        mount_root.mkdir()
+    def test_resolve_workspace_prefers_working_directory_ancestor_even_with_stale_code_workspace_yaml(self, workspace, tmp_path, monkeypatch):
+        working_root = tmp_path / "planetdb_repo"
+        working_root.mkdir()
+        state_root = tmp_path / "shared_state"
+        monkeypatch.setenv("WORKSTREAM_ROOT", f"file:{state_root}")
 
         parent = create_workstream(name="planetdb", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(working_root)
         save_workstream(parent, base_dir=workspace)
 
         child = create_workstream(name="Go-to-Market", parent_id=parent.id, base_dir=workspace)
         grandchild = create_workstream(name="Programmatic SEO", parent_id=child.id, base_dir=workspace)
 
-        # Simulate stale local duplicate YAML for the grandchild under the base workspace.
+        # Simulate stale YAML in the code workspace; state now lives under WORKSTREAM_ROOT.
         stale_local_path = os.path.join(workspace, "workstreams", f"{grandchild.id}.yaml")
+        os.makedirs(os.path.dirname(stale_local_path), exist_ok=True)
         with open(stale_local_path, "w") as f:
             f.write("id: stale\nname: stale\n")
         assert os.path.exists(stale_local_path)
 
         resolved = resolve_workstream_workspace(grandchild.id, base_dir=workspace)
-        assert resolved == str(mount_root.resolve())
+        assert resolved == str(working_root.resolve())
 
-    def test_create_grandchild_under_mounted_ancestor_writes_only_to_mount(self, workspace, tmp_path):
-        mount_root = tmp_path / "career_pivot_repo"
-        mount_root.mkdir()
+    def test_missing_working_directory_keeps_descendants_visible(self, workspace, tmp_path):
+        missing_root = tmp_path / "missing_repo"
+        missing_root.mkdir()
 
         parent = create_workstream(name="career_pivot", base_dir=workspace)
-        parent.mounted_workspace_path = str(mount_root)
+        parent.working_directory = str(missing_root)
         save_workstream(parent, base_dir=workspace)
 
         child = create_workstream(name="Sales", parent_id=parent.id, base_dir=workspace)
-        grandchild = create_workstream(name="Private Equity", parent_id=child.id, base_dir=workspace)
 
-        assert os.path.exists(mount_root / "workstreams" / f"{child.id}.yaml")
-        assert os.path.exists(mount_root / "workstreams" / f"{grandchild.id}.yaml")
-        assert not os.path.exists(os.path.join(workspace, "workstreams", f"{grandchild.id}.yaml"))
+        shutil.rmtree(missing_root)
+
+        visible = {ws.id: ws for ws in list_workstreams(base_dir=workspace)}
+        assert parent.id in visible
+        assert child.id in visible
+        assert visible[parent.id].to_dict()["mount_available"] is False
+
+        loaded_child = read_workstream(child.id, base_dir=workspace)
+        assert loaded_child.id == child.id
+
+
+class TestPersistenceRoots:
+    def test_workstream_root_file_uri_rehomes_state(self, workspace, tmp_path, monkeypatch):
+        state_root = tmp_path / "shared_state"
+        monkeypatch.setenv("WORKSTREAM_ROOT", f"file:{state_root}")
+
+        ws = create_workstream(name="Shared", base_dir=workspace)
+
+        assert os.path.exists(state_root / "workstreams" / f"{ws.id}.yaml")
+        assert not os.path.exists(os.path.join(workspace, "workstreams", f"{ws.id}.yaml"))
+
+    def test_artifact_root_defaults_to_workspace_when_unset(self, workspace, tmp_path, monkeypatch):
+        from orchestration.artifacts import create_artifact
+
+        state_root = tmp_path / "shared_state"
+        monkeypatch.setenv("WORKSTREAM_ROOT", f"file:{state_root}")
+
+        create_artifact("reports/test.md", "ok", base_dir=workspace)
+
+        assert os.path.exists(os.path.join(workspace, "artifacts", "reports", "test.md"))
+        assert not os.path.exists(state_root / "artifacts" / "reports" / "test.md")
+
+    def test_child_workstream_root_routes_descendants_without_changing_code_workspace(self, workspace, tmp_path):
+        child_root = tmp_path / "shared_state"
+        child_root.mkdir()
+
+        parent = create_workstream(name="Parent", base_dir=workspace)
+        parent.child_workstream_root = str(child_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Child", parent_id=parent.id, base_dir=workspace)
+
+        assert os.path.exists(child_root / "workstreams" / f"{child.id}.yaml")
+        assert resolve_workstream_workspace(child.id, base_dir=workspace) == os.path.abspath(workspace)
+
+    def test_default_child_workstream_root_uses_parent_node_directory(self, workspace):
+        parent = create_workstream(name="Parent", base_dir=workspace)
+        child = create_workstream(name="Child", parent_id=parent.id, base_dir=workspace)
+
+        expected_child_root = os.path.join(workspace, "workstreams", parent.id)
+
+        assert resolve_workstream_child_state_root(parent.id, base_dir=workspace) == expected_child_root
+        assert resolve_workstream_state_root(child.id, base_dir=workspace) == expected_child_root
+        assert os.path.exists(os.path.join(expected_child_root, "workstreams", f"{child.id}.yaml"))
+
+    def test_artifact_root_override_is_inherited_by_descendants(self, workspace, tmp_path):
+        artifact_root = tmp_path / "shared_artifacts"
+        artifact_root.mkdir()
+
+        parent = create_workstream(name="Parent", base_dir=workspace)
+        parent.artifact_root = str(artifact_root)
+        save_workstream(parent, base_dir=workspace)
+
+        child = create_workstream(name="Child", parent_id=parent.id, base_dir=workspace)
+
+        assert resolve_workstream_artifact_root(parent.id, base_dir=workspace) == str(artifact_root.resolve())
+        assert resolve_workstream_artifact_root(child.id, base_dir=workspace) == str(artifact_root.resolve())

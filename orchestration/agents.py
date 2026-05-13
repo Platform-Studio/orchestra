@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 import yaml
 from .image_validation import validate_task_image_attachments
+from .persistence import resolve_workstream_root
 
 try:
     from dotenv import load_dotenv
@@ -28,9 +29,14 @@ DEFAULT_LEARNINGS_COMPACTION_THRESHOLD_BYTES = 20_000
 LEARNINGS_COMPACTION_THRESHOLD_ENV_VAR = "ORCHESTRATION_LEARNINGS_COMPACTION_THRESHOLD_BYTES"
 DEFAULT_AGENT_RUNTIME = "claude-code"
 AGENT_RUNTIME_ENV_VAR = "ORCHESTRATION_AGENT_RUNTIME"
+AUDIO_FILE_PATH_ENV_VAR = "AUDIO_FILE_PATH"
+DEFAULT_AGENT_START_SOUND_ENV_VAR = "DEFAULT_AGENT_START_SOUND"
+DEFAULT_AGENT_FINISHED_SOUND_ENV_VAR = "DEFAULT_AGENT_FINISHED_SOUND"
+DEFAULT_AGENT_ERROR_SOUND_ENV_VAR = "DEFAULT_AGENT_ERROR_SOUND"
 CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
 CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
+GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
 
 CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 CLINE_MODEL_LEVEL_DEFAULTS = {
@@ -66,6 +72,92 @@ def _agent_learning_artifact_name(agent_def: dict) -> str:
 def _orchestration_cli_command() -> str:
     """Return the Python command agents should use for the orchestration CLI."""
     return f"{shlex.quote(sys.executable)} -m orchestration.cli"
+
+
+def _audio_file_root(base_dir: str) -> str:
+    """Resolve the root directory for agent sound assets."""
+    override = str(os.getenv(AUDIO_FILE_PATH_ENV_VAR) or "").strip()
+    if override:
+        expanded = os.path.expanduser(override)
+        if os.path.isabs(expanded):
+            return os.path.abspath(expanded)
+        return os.path.abspath(os.path.join(base_dir, expanded))
+    return os.path.abspath(os.path.join(base_dir, "audio"))
+
+
+def _resolve_agent_sound_file(audio_name: str, base_dir: str) -> str | None:
+    """Resolve a configured sound file to an absolute on-disk path."""
+    candidate_name = str(audio_name or "").strip()
+    if not candidate_name:
+        return None
+
+    expanded = os.path.expanduser(candidate_name)
+    if os.path.isabs(expanded):
+        resolved = os.path.abspath(expanded)
+    else:
+        audio_root = _audio_file_root(base_dir)
+        resolved = os.path.abspath(os.path.join(audio_root, expanded))
+        try:
+            if os.path.commonpath([resolved, audio_root]) != audio_root:
+                return None
+        except ValueError:
+            return None
+
+    if not os.path.isfile(resolved):
+        return None
+    return resolved
+
+
+def _resolve_audio_player_command(audio_path: str) -> list[str] | None:
+    """Return a best-effort local audio playback command."""
+    for binary in ("afplay", "paplay", "aplay", "play"):
+        resolved = shutil.which(binary)
+        if resolved:
+            return [resolved, audio_path]
+    return None
+
+
+def _configured_agent_sound_name(agent_def: dict, event: str) -> str | None:
+    """Resolve the configured sound name for an event with header precedence."""
+    env_var_by_event = {
+        "start": DEFAULT_AGENT_START_SOUND_ENV_VAR,
+        "finish": DEFAULT_AGENT_FINISHED_SOUND_ENV_VAR,
+        "error": DEFAULT_AGENT_ERROR_SOUND_ENV_VAR,
+    }
+    sound_key = f"sound_{event}"
+    defined_key = f"{sound_key}_defined"
+    if agent_def.get(defined_key):
+        raw_value = agent_def.get(sound_key)
+    else:
+        raw_value = os.getenv(env_var_by_event[event])
+    candidate_name = str(raw_value or "").strip()
+    return candidate_name or None
+
+
+def _play_agent_sound(agent_def: dict, event: str, base_dir: str) -> str | None:
+    """Play a configured agent sound without blocking the main run lifecycle."""
+    if get_global_sound_mute(base_dir):
+        return None
+
+    audio_path = _resolve_agent_sound_file(_configured_agent_sound_name(agent_def, event), base_dir)
+    if not audio_path:
+        return None
+
+    command = _resolve_audio_player_command(audio_path)
+    if not command:
+        return None
+
+    try:
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        return None
+    return audio_path
 
 
 def _agent_learning_prompt_section(agent_def: dict, workstream_id: str) -> str:
@@ -312,7 +404,7 @@ def _compact_json(value) -> str:
 
 
 def _state_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, ".orchestration")
+    return os.path.join(resolve_workstream_root(base_dir), ".orchestration")
 
 
 def _active_agents_path(base_dir: str) -> str:
@@ -323,6 +415,10 @@ def _agent_runs_dir(base_dir: str) -> str:
     return os.path.join(_state_dir(base_dir), "agent_runs")
 
 
+def _global_sound_mute_path(base_dir: str) -> str:
+    return os.path.join(_state_dir(base_dir), GLOBAL_SOUND_MUTE_FILENAME)
+
+
 def _agent_run_meta_path(base_dir: str, run_id: str) -> str:
     return os.path.join(_agent_runs_dir(base_dir), f"{run_id}.json")
 
@@ -330,6 +426,31 @@ def _agent_run_meta_path(base_dir: str, run_id: str) -> str:
 def _ensure_state_dirs(base_dir: str) -> None:
     os.makedirs(_state_dir(base_dir), exist_ok=True)
     os.makedirs(_agent_runs_dir(base_dir), exist_ok=True)
+
+
+def get_global_sound_mute(base_dir: str) -> bool:
+    path = _global_sound_mute_path(base_dir)
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read().strip().lower()
+    except FileNotFoundError:
+        return False
+    return raw in {"1", "true", "yes", "on", "muted"}
+
+
+def set_global_sound_mute(muted: bool, base_dir: str) -> bool:
+    path = _global_sound_mute_path(base_dir)
+    if muted:
+        _ensure_state_dirs(base_dir)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("1\n")
+        return True
+
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    return False
 
 
 def _write_run_meta(base_dir: str, run_id: str, data: dict) -> None:
@@ -463,7 +584,7 @@ def _agent_identity_keys(agent_ref: str, base_dir: str = ".") -> set:
     return {k for k in keys if k}
 
 
-def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = ".") -> int:
+def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = ".", concurrency_state: str = None) -> int:
     """Count active runs for a specific agent within a workstream."""
     if not workstream_id or not agent_ref:
         return 0
@@ -476,9 +597,14 @@ def count_active_agent_runs(workstream_id: str, agent_ref: str, base_dir: str = 
         runs = _prune_dead_active_runs(base_dir)
 
     count = 0
+    target_state = str(concurrency_state or "").strip().lower()
     for run in runs:
         if str(run.get("workstream_id") or "") != str(workstream_id):
             continue
+        if target_state:
+            run_state = str(run.get("concurrency_state") or "").strip().lower()
+            if run_state != target_state:
+                continue
 
         run_keys = set()
         for candidate in (run.get("agent"), run.get("agent_ref")):
@@ -1419,6 +1545,12 @@ def _parse_agent_md(path: str) -> dict:
         "model_level": header.get("x-model-level"),
         "effort": header.get("x-effort"),
         "runtime": header.get("x-runtime"),
+        "sound_start": header.get("x-sound-start"),
+        "sound_start_defined": "x-sound-start" in header,
+        "sound_finish": header.get("x-sound-finish"),
+        "sound_finish_defined": "x-sound-finish" in header,
+        "sound_error": header.get("x-sound-error"),
+        "sound_error_defined": "x-sound-error" in header,
         "file": path,
         "body": body,
     }
@@ -1502,7 +1634,9 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         "- `task attach <task_id> --path '<artifact_path>'` — attach an artifact to a task (REQUIRED after creating any artifact)\n"
         "- `task detach <task_id> --path '<artifact_path>'` — remove an artifact attachment from a task\n"
         "- `task list <workstream_id>` — list tasks in a workstream\n"
-        "- `artifact create --path '<path>' --content '<content>' --workstream '<workstream_id>'` — save an artifact\n"
+        "- `artifact create --path '<path>' --content '<content>' --workstream '<workstream_id>'` — save a text artifact\n"
+        "- `artifact create --path '<image_path>' --source-file '<local_file>' --workstream '<workstream_id>'` — save a binary image artifact from a local file\n"
+        "- `artifact create --path '<image_path>' --content-base64 '<base64>' --workstream '<workstream_id>'` — save a binary image artifact when you only have base64 bytes\n"
         "- `artifact read '<path>' --workstream '<workstream_id>'` — read an artifact\n"
         "- `artifact list --workstream '<workstream_id>'` — list artifacts in the workstream root\n"
         "- `artifact list --prefix '<prefix>' --workstream '<workstream_id>'` — list artifacts under a path\n"
@@ -1571,7 +1705,7 @@ def _classify_run_outcome(returncode: int, timeout_expired: bool) -> str:
     return "failed"
 
 
-def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None) -> dict:
+def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None, concurrency_state: str = None) -> dict:
     """Run an agent via the configured local runtime against 0-N tasks.
 
     Callers are responsible for locking/unlocking tasks. This function
@@ -1589,6 +1723,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         base_dir: Workspace root.
         allow_paused_workstream: When true, allow manual execution even if the workstream is paused.
         retried_from_run_id: Optional originating run id when this run is a manual retry/replay.
+        concurrency_state: Optional state bucket used for agent concurrency.
     """
     if task_ids is None:
         task_ids = []
@@ -1612,6 +1747,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     if workstream_id:
         ws = read_workstream(workstream_id, base_dir)
         if ws.paused and not allow_paused_workstream:
+            _play_agent_sound(agent_def, "error", base_dir)
             raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
     # Preflight: block obviously invalid image attachments before invoking the runtime.
@@ -1641,6 +1777,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             )
             _save_task(task_obj, base_dir)
 
+        _play_agent_sound(agent_def, "error", base_dir)
         raise RuntimeError(
             "Invalid image attachments detected; refusing to start agent run.\n"
             + "\n".join(details)
@@ -1664,25 +1801,12 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         orchestration_root = os.path.abspath(base_dir)
         workspace_root = orchestration_root
         if ws:
-            # For descendants under a mounted workstream, mounted_workspace_path is
-            # often set on an ancestor. Resolve the workspace that actually stores
-            # this workstream's files first.
             try:
                 workspace_root = os.path.abspath(
                     resolve_workstream_workspace(ws.id, base_dir=base_dir)
                 )
             except Exception:
                 workspace_root = orchestration_root
-
-            # If the current workstream itself is mounted, descendants should be
-            # developed in the mounted target path rather than the YAML storage root.
-            if ws.mounted_workspace_path:
-                _expanded = os.path.expanduser(ws.mounted_workspace_path)
-                workspace_root = (
-                    os.path.abspath(_expanded)
-                    if os.path.isabs(_expanded)
-                    else os.path.abspath(os.path.join(orchestration_root, _expanded))
-                )
         _path_context = (
             f"ORCHESTRATION_ROOT: {orchestration_root} "
             f"(orchestration CLI, artifacts, agent instructions)\n"
@@ -1824,6 +1948,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "effort": effort,
             "workstream_id": workstream_id,
             "workstream_path": _workstream_path(base_dir, workstream_id),
+            "concurrency_state": concurrency_state,
             "task_ids": list(task_ids),
             "tasks": task_titles,
             "prompt": task_prompt,
@@ -1871,6 +1996,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 # in-flight agent runs that should continue independently.
                 start_new_session=True,
             )
+            _play_agent_sound(agent_def, "start", base_dir)
 
             active_run = {
                 "run_id": run_id,
@@ -1880,6 +2006,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "model": model,
                 "effort": effort,
                 "workstream_id": workstream_id,
+                "concurrency_state": concurrency_state,
                 "task_ids": list(task_ids),
                 "pid": proc.pid,
                 "started_at": started_at,
@@ -1997,6 +2124,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 raise RuntimeError(f"Agent '{agent_def['name']}' was killed (exit {returncode}): {output}")
             raise RuntimeError(f"Agent '{agent_def['name']}' failed (exit {returncode}): {output}")
 
+        _play_agent_sound(agent_def, "finish", base_dir)
         response = {
             "agent": agent_def["name"],
             "result": output,
@@ -2009,6 +2137,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         if ws:
             response["workstream_id"] = ws.id
         return response
+
+    except Exception:
+        _play_agent_sound(agent_def, "error", base_dir)
+        raise
 
     finally:
         # Clean up temp file

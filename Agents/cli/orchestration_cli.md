@@ -476,11 +476,17 @@ python -m orchestration.cli artifact create --path "reports/q2_summary.md" --con
 
 # Optional mounted-routing context
 python -m orchestration.cli artifact create --path "ideas/april.md" --content "..." --workstream WORKSTREAM_ID
+
+# Save a raster image from base64 bytes
+python -m orchestration.cli artifact create --path "assets/mockup.png" --content-base64 "iVBORw0KGgoAAA..." --workstream WORKSTREAM_ID
+
+# Prefer source-file for large binary images
+python -m orchestration.cli artifact create --path "assets/mockup.png" --source-file "/tmp/mockup.png" --workstream WORKSTREAM_ID
 ```
 
 Important:
 - `artifact create --content` is for text payloads. It writes string content to disk and is not suitable for arbitrary binary files.
-- Do not use `artifact create --content` to create `.png`, `.jpg`, `.webp`, `.gif`, or other binary image files.
+- Raster image paths (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) reject `--content` and must use `--content-base64` or `--source-file`.
 - For binary outputs produced by external tools, persist the real binary bytes first, then attach the artifact path to the task with `task attach`.
 
 #### artifact read — Read an artifact

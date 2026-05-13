@@ -53,3 +53,200 @@ def test_api_normalizes_fetch_abort_errors() -> None:
     assert "controller.abort(new DOMException(`Request timed out after ${timeoutMs}ms`, 'TimeoutError'))" in html
     assert "message.includes('signal is aborted')" in html
     assert "Request timed out after ${Math.round(timeoutMs / 1000)}s: /api/${path}" in html
+
+
+def test_navigation_routes_sync_browser_url_and_restore_state() -> None:
+    html = _index_html()
+
+    assert 'function buildWorkstreamRoute(wsId)' in html
+    assert 'function buildTaskRoute(taskId)' in html
+    assert 'function parseNavigatorRoute(pathname = window.location.pathname)' in html
+    assert "window.history[method]({}, '', nextPath);" in html
+    assert "window.addEventListener('popstate', () => {" in html
+    assert "await openRouteFromNavigator({ replaceHistory: true });" in html
+
+
+def test_task_modal_close_restores_workstream_route() -> None:
+    html = _index_html()
+
+    assert "if (id === 'task-modal' && opts.updateHistory !== false && selectedWsId)" in html
+    assert "syncNavigatorRoute(buildWorkstreamRoute(selectedWsId), { replace: !!opts.replaceHistory });" in html
+    assert "await selectWorkstream(task.workstream_id, {" in html
+
+
+def test_triggers_modal_labels_state_task_selection_mode() -> None:
+    html = _index_html()
+
+    assert "typeLabel += t.task_selection === 'all_unlocked'" in html
+    assert "(all unlocked tasks)" in html
+    assert "(first unlocked task)" in html
+
+
+def test_workstream_manager_plays_tuning_sound_on_initial_load_and_resume() -> None:
+    html = _index_html()
+
+    assert "const WORKSTREAM_MANAGER_TUNING_SOUND = 'workstream_startup.mp3';" in html
+    assert "async function maybePlayInitialTuningUpSound()" in html
+    assert "void maybePlayInitialTuningUpSound();" in html
+    assert "if (action === 'resume') {" in html
+    assert "await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);" in html
+
+
+def test_agent_runs_footer_includes_global_mute_toggle() -> None:
+    html = _index_html()
+
+    assert 'id="active-agents-label"' in html
+    assert 'id="agent-runs-mute-toggle"' in html
+    assert 'class="sidebar-footer-toggle"' in html
+    assert "renderAgentRunsLinkLabel(data.active_agent_runs || 0);" in html
+
+
+def test_global_mute_toggle_overrides_all_workstream_manager_sound_playback() -> None:
+    html = _index_html()
+
+    assert "const WORKSTREAM_MANAGER_SOUND_MUTE_STORAGE_KEY = 'workstreamManager.soundMuted';" in html
+    assert "let isWorkstreamManagerMuted = loadWorkstreamManagerMutedPreference();" in html
+    assert "function refreshWorkstreamManagerMutedPreference()" in html
+    assert "async function syncWorkstreamManagerMutedPreferenceFromServer()" in html
+    assert "const data = await api('sound/mute');" in html
+    assert "if (!src || refreshWorkstreamManagerMutedPreference()) return false;" in html
+    assert "function stopAllWorkstreamManagerAudio()" in html
+    assert "audio.pause();" in html
+    assert "audio.currentTime = 0;" in html
+    assert "async function toggleWorkstreamManagerMute(nextValue = !isWorkstreamManagerMuted)" in html
+    assert "await api('sound/mute', {" in html
+    assert "body: { muted: isWorkstreamManagerMuted }," in html
+    assert "renderWorkstreamManagerMuteToggle();" in html
+    assert "window.addEventListener('storage', (event) => {" in html
+    assert "await syncWorkstreamManagerMutedPreferenceFromServer();" in html
+
+
+def test_workstream_manager_schedules_interaction_retry_when_initial_autoplay_is_blocked() -> None:
+    html = _index_html()
+
+    assert "function scheduleInitialTuningUpRetry()" in html
+    assert "document.addEventListener('pointerdown', retry, true);" in html
+    assert "document.addEventListener('keydown', retry, true);" in html
+
+
+def test_workstream_info_includes_agent_concurrency_editor() -> None:
+    html = _index_html()
+
+    assert 'id="workstream-concurrency-textarea"' in html
+    assert 'Concurrency Policy' in html
+    assert 'saveWorkstreamConcurrency()' in html
+    assert "api('workstream/concurrency/' + selectedWsId" in html
+    assert 'state_overrides' in html
+
+
+def test_sidebar_uses_separate_data_and_code_mount_badges() -> None:
+    html = _index_html()
+
+    assert 'Artifact root:' in html
+    assert 'Child workstream root:' in html
+    assert 'class="mount-badge"' in html
+    assert "'code-badge code-ready'" in html
+    assert "'code-badge code-missing'" in html
+    assert "api('workstream/code-status'" in html
+    assert 'Working directory missing:' in html
+
+
+def test_workstream_info_shows_explicit_routing_fields() -> None:
+    html = _index_html()
+
+    assert 'Working directory:' in html
+    assert 'Artifact root:' in html
+    assert 'Child workstream root:' in html
+    assert 'Resolved artifact directory:' in html
+    assert 'Resolved child workstream root:' in html
+
+
+def test_create_task_modal_can_be_opened_from_column_header() -> None:
+    html = _index_html()
+
+    assert 'id="create-task-modal"' in html
+    assert 'data-create-state="${encodeURIComponent(state)}"' in html
+    assert "showCreateTaskModal(decodeURIComponent(el.dataset.createState || ''));" in html
+    assert 'function showCreateTaskModal(state) {' in html
+
+
+def test_create_task_modal_posts_title_description_and_state() -> None:
+    html = _index_html()
+
+    assert "await api('task/create/' + selectedWsId, {" in html
+    assert 'status: targetState,' in html
+    assert 'Title is required.' in html
+    assert "closeModal('create-task-modal');" in html
+
+
+def test_reusable_tag_editor_is_shared_between_task_modals() -> None:
+    html = _index_html()
+
+    assert 'function renderTagEditor({' in html
+    assert 'function initTagEditor(editorEl, opts = {}) {' in html
+    assert 'data-tag-editor-id="create-task-tags"' in html
+    assert "editorId: 'task-tags-editor'" in html
+    assert 'data-tag-picker-toggle="true"' in html
+
+
+def test_create_and_task_modals_both_wire_tag_editor_to_api_calls() -> None:
+    html = _index_html()
+
+    assert 'const createTaskTagEditor = initTagEditor(' in html
+    assert 'tags: createTaskTagEditor.getTags(),' in html
+    assert 'const taskTagEditor = initTagEditor(' in html
+    assert 'async function persistTaskTags(nextTags) {' in html
+    assert "await api('task/update/' + task.id, {" in html
+    assert 'persistTaskTags(nextTags);' in html
+
+
+def test_tag_editor_loads_workstream_catalog_and_can_create_colored_tags() -> None:
+    html = _index_html()
+
+    assert "api('workstream/gettags/' + wsId)" in html
+    assert "api('workstream/upsert-tag/' + wsId, {" in html
+    assert 'const syncCatalog = (rawTags, { updateGlobalCache = false } = {}) => {' in html
+    assert ".sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }))" in html
+    assert 'if (updateGlobalCache) {' in html
+    assert 'setWorkstreamTagCatalog(wsId, rawTags || []);' in html
+    assert 'style="background:${option.value};color:${optionTextColor}"' in html
+    assert 'style="background:${state.draftColor};color:${draftTextColor}"' in html
+    assert 'colorSelect.style.background = state.draftColor;' in html
+    assert 'colorSelect.style.color = getTagColorText(state.draftColor);' in html
+    assert '>${esc(option.label)}</option>' in html
+    assert 'data-tag-option-checkbox="${encodeURIComponent(tag.name)}"' in html
+    assert 'data-tag-create-input="true"' in html
+    assert 'data-tag-create-color="true"' in html
+
+
+def test_tag_editor_clicks_do_not_immediately_close_picker() -> None:
+    html = _index_html()
+
+    assert "editorEl.addEventListener('click', async (event) => {" in html
+    assert 'event.stopPropagation();' in html
+    assert "document.addEventListener('click', onDocumentClick);" in html
+
+
+def test_task_tag_editor_autosaves_without_explicit_save_button() -> None:
+    html = _index_html()
+
+    assert 'id="task-tags-status"' in html
+    assert 'Save Tags' not in html
+    assert 'persistTaskTags(nextTags);' in html
+
+
+def test_load_board_retries_transient_not_found_when_workstream_still_exists() -> None:
+    html = _index_html()
+
+    assert "board = await api('board/' + selectedWsId, { timeoutMs: 30000 });" in html
+    assert "if (e && e.code === 'NOT_FOUND') {" in html
+    assert "await api('workstream/read/' + selectedWsId, { timeoutMs: 10000 });" in html
+    assert "board = await api('board/' + selectedWsId, { timeoutMs: 30000 });" in html
+
+
+def test_tag_editor_does_not_treat_local_task_tags_as_full_board_catalog() -> None:
+    html = _index_html()
+
+    assert 'syncCatalog(getWorkstreamTagCatalog(wsId));' in html
+    assert 'syncCatalog(tags, { updateGlobalCache: true });' in html
+    assert "syncCatalog([...(getWorkstreamTagCatalog(wsId) || []), createdTag], { updateGlobalCache: true });" in html

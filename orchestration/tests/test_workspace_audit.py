@@ -38,12 +38,23 @@ class TestLogEvent:
         assert raw[0]["type"] == "ev1"
         assert raw[1]["type"] == "ev2"
 
-    def test_caps_at_max(self, workspace):
-        from orchestration.workspace_audit import MAX_ENTRIES
-        for i in range(MAX_ENTRIES + 10):
+    def test_workstream_root_file_uri_rehomes_audit(self, workspace, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        state_root = tmp_path / "shared_state"
+        monkeypatch.setenv("WORKSTREAM_ROOT", f"file:{state_root}")
+
+        log_event("ev1", "First", workspace)
+
+        audit_path = Path(state_root) / "workspace_audit.yaml"
+        assert audit_path.exists()
+
+    def test_caps_at_max(self, workspace, monkeypatch):
+        monkeypatch.setattr("orchestration.workspace_audit.MAX_ENTRIES", 5)
+        for i in range(15):
             log_event("bulk", f"Entry {i}", workspace)
         raw = _load_audit(workspace)
-        assert len(raw) == MAX_ENTRIES
+        assert len(raw) == 5
         # Oldest entries should have been trimmed
         assert raw[0]["description"] == "Entry 10"
 

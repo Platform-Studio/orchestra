@@ -81,6 +81,7 @@ def _execute_trigger_inner(
                 timeout=trigger.timeout,
                 base_dir=base_dir,
                 allow_paused_workstream=ignore_paused,
+                concurrency_state=trigger.on_state,
             )
             return {"trigger_id": trigger.id, "status": "ok", "result": result}
         except Exception as e:
@@ -125,6 +126,7 @@ def create_trigger(
     action: str,
     on_state: str = None,
     on_schedule: str = None,
+    task_selection: str = None,
     filter: dict = None,
     agent: str = None,
     command: str = None,
@@ -136,6 +138,10 @@ def create_trigger(
         raise ValueError("Either --on-state or --on-schedule must be specified")
     if on_state is not None and on_schedule is not None:
         raise ValueError("Cannot specify both --on-state and --on-schedule")
+    if task_selection is not None and task_selection not in ("first_unlocked", "all_unlocked"):
+        raise ValueError("--task-selection must be either 'first_unlocked' or 'all_unlocked'")
+    if task_selection is not None and on_state is None:
+        raise ValueError("--task-selection is only supported for --on-state triggers")
 
     ws = read_workstream(workstream_id, base_dir)
     trigger = Trigger(
@@ -143,6 +149,7 @@ def create_trigger(
         action=action,
         on_state=on_state,
         on_schedule=on_schedule,
+        task_selection=task_selection,
         filter=filter,
         agent=agent,
         command=command,
@@ -192,7 +199,7 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
 
             def _run():
                 from .tasks import list_tasks
-                from .scheduler import _lock_invoke_unlock, _task_matches_filter, _audit_trigger
+                from .scheduler import _lock_invoke_unlock, _task_matches_filter, _audit_trigger, _select_state_trigger_task_ids
                 from .locks import lock_status
                 try:
                     manual_task_ids = []
@@ -211,7 +218,7 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                                 "message": f"No unlocked tasks currently in state '{_trigger.on_state}'",
                             }
                         else:
-                            manual_task_ids = [manual_task_ids[0]]
+                            manual_task_ids = _select_state_trigger_task_ids(_trigger, manual_task_ids)
                             result = _lock_invoke_unlock(
                                 _trigger,
                                 manual_task_ids,

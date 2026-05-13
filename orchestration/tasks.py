@@ -5,8 +5,10 @@ import re
 import yaml
 from decimal import Decimal, InvalidOperation
 
+from .artifacts import read_artifact, _resolve_artifact_root, _validate_path
+from .image_validation import _is_image_path, validate_image_artifact
 from .models import Task, RetryConfig, new_id, now_iso
-from .workstreams import read_workstream, resolve_workstream_workspace, list_workstreams
+from .workstreams import read_workstream, resolve_workstream_state_root, list_workstreams, workstream_workspace_index
 
 
 RANK_GAP = Decimal("1024")
@@ -62,15 +64,46 @@ def _normalize_attachment_list(paths: list) -> list:
     return normalized
 
 
+def _validate_attachment_list(
+    paths: list,
+    *,
+    workstream_id: str,
+    base_dir: str,
+    validate_non_image: bool = False,
+) -> list:
+    """Validate attachment paths and image payloads before persisting them."""
+    normalized = _normalize_attachment_list(paths)
+
+    for path in normalized:
+        if _is_image_path(path):
+            artifacts_dir, rel_path = _resolve_artifact_root(
+                path,
+                base_dir=base_dir,
+                workstream_id=workstream_id,
+            )
+            full_path = _validate_path(artifacts_dir, rel_path)
+            if not os.path.exists(full_path):
+                raise FileNotFoundError(f"Artifact not found: {path}")
+            reason = validate_image_artifact(full_path)
+            if reason:
+                raise ValueError(f"Invalid image attachment '{path}': {reason}")
+            continue
+
+        if validate_non_image:
+            read_artifact(path, base_dir=base_dir, workstream_id=workstream_id)
+
+    return normalized
+
+
 def _tasks_dir(base_dir: str, ws_id: str) -> str:
-    ws_root = resolve_workstream_workspace(ws_id, base_dir=base_dir)
+    ws_root = resolve_workstream_state_root(ws_id, base_dir=base_dir)
     return os.path.join(ws_root, "workstreams", ws_id, "tasks")
 
 
 def _tasks_dir_for_workstream(ws, base_dir: str = ".") -> str:
     ws_root = getattr(ws, "_workspace_root", None)
     if not ws_root:
-        ws_root = resolve_workstream_workspace(ws.id, base_dir=base_dir)
+        ws_root = resolve_workstream_state_root(ws.id, base_dir=base_dir)
     return os.path.join(ws_root, "workstreams", ws.id, "tasks")
 
 
@@ -147,18 +180,21 @@ def _next_rank_for_state(workstream_id: str, status: str, base_dir: str = ".") -
     return _format_rank(max(parsed) + RANK_GAP)
 
 
+def _first_rank_for_state(workstream_id: str, status: str, base_dir: str = ".") -> str:
+    state_tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    parsed = [_parse_rank(getattr(t, "rank", None)) for t in state_tasks]
+    parsed = [p for p in parsed if p is not None]
+    if not parsed:
+        return _format_rank(RANK_GAP)
+    return _format_rank(min(parsed) - RANK_GAP)
+
+
 def _find_task_file(task_id: str, base_dir: str = "."):
     """Find a task file by ID across all workstreams. Returns (ws_id, file_path) or None."""
-    for ws in list_workstreams(base_dir=base_dir):
-        # Resolve per-workstream root instead of relying on cached _workspace_root,
-        # which can be stale when a mounted ancestor shadows local descendants.
-        try:
-            ws_root = resolve_workstream_workspace(ws.id, base_dir=base_dir)
-        except FileNotFoundError:
-            ws_root = getattr(ws, "_workspace_root", os.path.abspath(base_dir))
-        task_file = os.path.join(ws_root, "workstreams", ws.id, "tasks", f"{task_id}.yaml")
+    for ws_id, ws_root in workstream_workspace_index(base_dir=base_dir).items():
+        task_file = os.path.join(ws_root, "workstreams", ws_id, "tasks", f"{task_id}.yaml")
         if os.path.exists(task_file):
-            return (ws.id, task_file)
+            return (ws_id, task_file)
     return None
 
 
@@ -174,6 +210,7 @@ def create_task(
     workstream_id: str,
     title: str,
     description: str = None,
+    initial_status: str = None,
     tags: list = None,
     retry: dict = None,
     creator: str = None,
@@ -183,7 +220,19 @@ def create_task(
     base_dir: str = ".",
 ) -> Task:
     ws = read_workstream(workstream_id, base_dir)
-    initial_status = ws.initial_status()
+    if initial_status is None:
+        initial_status = ws.initial_status()
+    elif initial_status not in ws.task_states:
+        raise ValueError(
+            f"Unknown task state '{initial_status}'. Available states: {list(ws.task_states)}"
+        )
+
+    validated_attachments = _validate_attachment_list(
+        attachments,
+        workstream_id=workstream_id,
+        base_dir=base_dir,
+        validate_non_image=False,
+    )
 
     task_id = new_id()
     task = Task(
@@ -192,13 +241,13 @@ def create_task(
         title=title,
         description=description,
         status=initial_status,
-        rank=_next_rank_for_state(workstream_id, initial_status, base_dir=base_dir),
+        rank=_first_rank_for_state(workstream_id, initial_status, base_dir=base_dir),
         creator=creator,
         tags=tags or [],
         retry=RetryConfig.from_dict(retry) if retry else None,
         scheduled_at=scheduled_at,
         scheduled_action=scheduled_action,
-        attachments=_normalize_attachment_list(attachments),
+        attachments=validated_attachments,
     )
     task.add_audit("created", f"Task created with status '{initial_status}'")
     if task.attachments:
@@ -314,6 +363,15 @@ def update_task(
 ) -> Task:
     task = read_task(task_id, base_dir)
     ws = read_workstream(task.workstream_id, base_dir)
+    validated_attachments = None
+
+    if attachments is not None:
+        validated_attachments = _validate_attachment_list(
+            attachments,
+            workstream_id=task.workstream_id,
+            base_dir=base_dir,
+            validate_non_image=False,
+        )
 
     status_changed = False
     if status is not None and status != task.status:
@@ -345,7 +403,7 @@ def update_task(
         task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
 
     if attachments is not None:
-        task.attachments = _normalize_attachment_list(attachments)
+        task.attachments = validated_attachments
         task.add_audit("attachments_updated", f"Attachments set to {task.attachments}")
 
     _save_task(task, base_dir)
@@ -627,20 +685,12 @@ def edit_task_comment(
 def attach_to_task(task_id: str, path: str, base_dir: str = ".") -> Task:
     """Attach an artifact path to a task if it is not already attached."""
     task = read_task(task_id, base_dir)
-    normalized_path = _normalize_attachment_path(path)
-
-    # Guardrail: attachments must resolve in the task's workstream artifact root.
-    from .artifacts import read_artifact, _resolve_artifact_root, _validate_path
-    from .image_validation import _is_image_path
-    if _is_image_path(normalized_path):
-        artifacts_dir, rel_path = _resolve_artifact_root(
-            normalized_path, base_dir=base_dir, workstream_id=task.workstream_id
-        )
-        full_path = _validate_path(artifacts_dir, rel_path)
-        if not os.path.exists(full_path):
-            raise FileNotFoundError(f"Artifact not found: {path}")
-    else:
-        read_artifact(normalized_path, base_dir=base_dir, workstream_id=task.workstream_id)
+    normalized_path = _validate_attachment_list(
+        [path],
+        workstream_id=task.workstream_id,
+        base_dir=base_dir,
+        validate_non_image=True,
+    )[0]
 
     if normalized_path not in task.attachments:
         task.attachments.append(normalized_path)

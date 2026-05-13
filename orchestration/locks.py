@@ -5,6 +5,7 @@ import yaml
 from datetime import datetime, timezone, timedelta
 
 from .models import Lock, now_iso
+from .persistence import resolve_workstream_root
 from .tasks import _find_task_file, _tasks_dir, _tasks_dir_for_workstream
 from .workstreams import list_workstreams
 
@@ -310,7 +311,7 @@ _PROCESS_LOCKS_SUBDIR = "process_locks"
 
 
 def _process_locks_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, ".orchestration", _PROCESS_LOCKS_SUBDIR)
+    return os.path.join(resolve_workstream_root(base_dir), ".orchestration", _PROCESS_LOCKS_SUBDIR)
 
 
 def _process_lock_path(run_id: str, base_dir: str) -> str:

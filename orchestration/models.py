@@ -67,6 +67,7 @@ class Trigger:
     action: str  # "run_agent" or "run_command"
     on_state: str = None       # state-based trigger
     on_schedule: str = None    # cron expression for schedule-based trigger
+    task_selection: str = None # for state triggers: first_unlocked | all_unlocked
     filter: dict = None        # filter for schedule-based triggers (state, tags, older_than_days)
     agent: str = None
     command: str = None
@@ -79,6 +80,8 @@ class Trigger:
             d["on_state"] = self.on_state
         if self.on_schedule is not None:
             d["on_schedule"] = self.on_schedule
+        if self.task_selection is not None:
+            d["task_selection"] = self.task_selection
         if self.filter is not None:
             d["filter"] = self.filter
         if self.agent is not None:
@@ -98,6 +101,7 @@ class Trigger:
             action=data["action"],
             on_state=data.get("on_state"),
             on_schedule=data.get("on_schedule"),
+            task_selection=data.get("task_selection"),
             filter=data.get("filter"),
             agent=data.get("agent"),
             command=data.get("command"),
@@ -113,15 +117,18 @@ class Workstream:
     description: str = None
     context: str = None
     parent_id: str = None
-    mounted_workspace_path: str = None
+    working_directory: str = None
+    artifact_root: str = None
+    child_workstream_root: str = None
     inline_attachments: bool = False
     agent_concurrency: dict = field(default_factory=dict)
     task_states: dict = field(default_factory=lambda: dict(DEFAULT_TASK_STATES))
+    tag_definitions: list = field(default_factory=list)
     retry: RetryConfig = None
     triggers: list = field(default_factory=list)
     paused: bool = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self, *, include_transient: bool = True) -> dict:
         d = {
             "id": self.id,
             "name": self.name,
@@ -134,16 +141,31 @@ class Workstream:
             d["context"] = self.context
         if self.parent_id is not None:
             d["parent_id"] = self.parent_id
-        if self.mounted_workspace_path is not None:
-            d["mounted_workspace_path"] = self.mounted_workspace_path
+        if self.working_directory is not None:
+            d["working_directory"] = self.working_directory
+        if self.artifact_root is not None:
+            d["artifact_root"] = self.artifact_root
+        if self.child_workstream_root is not None:
+            d["child_workstream_root"] = self.child_workstream_root
         if self.inline_attachments:
             d["inline_attachments"] = True
         if self.agent_concurrency:
             d["agent_concurrency"] = self.agent_concurrency
+        if self.tag_definitions:
+            d["tag_definitions"] = self.tag_definitions
         if self.retry is not None:
             d["retry"] = self.retry.to_dict()
         if self.paused:
             d["paused"] = True
+        if include_transient:
+            if hasattr(self, "_mount_available"):
+                d["mount_available"] = bool(getattr(self, "_mount_available"))
+            if hasattr(self, "_resolved_workspace_path"):
+                d["resolved_workspace_path"] = getattr(self, "_resolved_workspace_path")
+            if hasattr(self, "_resolved_artifact_root"):
+                d["resolved_artifact_root"] = getattr(self, "_resolved_artifact_root")
+            if hasattr(self, "_resolved_child_workstream_root"):
+                d["resolved_child_workstream_root"] = getattr(self, "_resolved_child_workstream_root")
         return d
 
     @classmethod
@@ -156,10 +178,13 @@ class Workstream:
             description=data.get("description"),
             context=data.get("context"),
             parent_id=data.get("parent_id"),
-            mounted_workspace_path=data.get("mounted_workspace_path"),
+            working_directory=data.get("working_directory"),
+            artifact_root=data.get("artifact_root"),
+            child_workstream_root=data.get("child_workstream_root"),
             inline_attachments=data.get("inline_attachments", False),
             agent_concurrency=data.get("agent_concurrency", {}),
             task_states=data.get("task_states", dict(DEFAULT_TASK_STATES)),
+            tag_definitions=data.get("tag_definitions", []),
             retry=retry,
             triggers=triggers,
             paused=data.get("paused", False),
@@ -173,6 +198,93 @@ class Workstream:
         """Check if a state transition is allowed."""
         allowed = self.task_states.get(from_state, [])
         return to_state in allowed
+
+
+def normalize_agent_concurrency_policy(policy) -> dict:
+    """Validate and normalize workstream agent concurrency policy."""
+    if policy in (None, ""):
+        return {}
+    if not isinstance(policy, dict):
+        raise ValueError("agent_concurrency must be a JSON object")
+
+    normalized = {}
+
+    def _normalize_limit(value, *, field_name: str) -> int:
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field_name} must be an integer") from None
+        if limit < 1:
+            raise ValueError(f"{field_name} must be >= 1")
+        return limit
+
+    def _normalize_overrides(raw_overrides, *, field_name: str) -> dict:
+        if raw_overrides in (None, {}):
+            return {}
+        if not isinstance(raw_overrides, dict):
+            raise ValueError(f"{field_name} must be an object")
+
+        cleaned = {}
+        for key, value in raw_overrides.items():
+            name = str(key or "").strip()
+            if not name:
+                raise ValueError(f"{field_name} cannot contain an empty agent key")
+            cleaned[name] = _normalize_limit(value, field_name=f"{field_name}.{name}")
+        return cleaned
+
+    if "default" in policy:
+        normalized["default"] = _normalize_limit(
+            policy.get("default"),
+            field_name="agent_concurrency.default",
+        )
+
+    overrides = _normalize_overrides(
+        policy.get("overrides"),
+        field_name="agent_concurrency.overrides",
+    )
+    if overrides:
+        normalized["overrides"] = overrides
+
+    raw_state_overrides = policy.get("state_overrides")
+    if raw_state_overrides not in (None, {}):
+        if not isinstance(raw_state_overrides, dict):
+            raise ValueError("agent_concurrency.state_overrides must be an object")
+
+        state_overrides = {}
+        for state_name, state_policy in raw_state_overrides.items():
+            state_key = str(state_name or "").strip()
+            if not state_key:
+                raise ValueError("agent_concurrency.state_overrides cannot contain an empty state key")
+            if not isinstance(state_policy, dict):
+                raise ValueError(
+                    f"agent_concurrency.state_overrides.{state_key} must be an object"
+                )
+
+            normalized_state_policy = {}
+            if "default" in state_policy:
+                normalized_state_policy["default"] = _normalize_limit(
+                    state_policy.get("default"),
+                    field_name=f"agent_concurrency.state_overrides.{state_key}.default",
+                )
+            state_agent_overrides = _normalize_overrides(
+                state_policy.get("overrides"),
+                field_name=f"agent_concurrency.state_overrides.{state_key}.overrides",
+            )
+            if state_agent_overrides:
+                normalized_state_policy["overrides"] = state_agent_overrides
+
+            if normalized_state_policy:
+                state_overrides[state_key] = normalized_state_policy
+
+        if state_overrides:
+            normalized["state_overrides"] = state_overrides
+
+    unknown_keys = set(policy.keys()) - {"default", "overrides", "state_overrides"}
+    if unknown_keys:
+        unknown = ", ".join(sorted(str(k) for k in unknown_keys))
+        raise ValueError(f"Unsupported agent_concurrency keys: {unknown}")
+
+    return normalized
 
 
 @dataclass
