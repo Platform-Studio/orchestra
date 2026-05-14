@@ -32,6 +32,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 AUDIO_FILE_PATH_ENV_VAR = "AUDIO_FILE_PATH"
+API_REQUEST_LOG_ENV_VAR = "WORKSTREAM_MANAGER_LOG_API_REQUESTS"
 
 # Ensure workspace is on the Python path so orchestration imports work
 if WORKSPACE_DIR not in sys.path:
@@ -67,6 +68,15 @@ def _err(msg, code="ERROR"):
 
 def _human_name() -> str:
     return (os.environ.get("HUMAN_NAME") or "").strip() or "Anonymous Human"
+
+
+def _api_request_logging_enabled() -> bool:
+    return (os.environ.get(API_REQUEST_LOG_ENV_VAR) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _serialize_board_tasks(tasks):
@@ -968,7 +978,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
         msg = format % args
-        if "/api/" in msg:
+        if "/api/" in msg and _api_request_logging_enabled():
             sys.stderr.write(f"[API] {msg}\n")
 
 

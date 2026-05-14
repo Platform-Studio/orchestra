@@ -16,9 +16,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from orchestration.persistence import resolve_artifact_root
+
 
 BASE_DIR = Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "artifacts" / "logs"
 
 WATCH_ROOTS = [
     BASE_DIR / "orchestration",
@@ -77,6 +78,17 @@ def _orchestration_cli_json(py_executable: str, args: list[str]) -> dict:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"command failed: {' '.join(cmd)}")
     payload = json.loads(result.stdout)
     return payload.get("data", {})
+
+
+def _log_dir() -> Path:
+    return Path(resolve_artifact_root(str(BASE_DIR))) / "artifacts" / "logs"
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(BASE_DIR))
+    except ValueError:
+        return str(path)
 
 
 def _stop_existing_scheduler(py_executable: str) -> None:
@@ -213,7 +225,7 @@ def start_managed(proc: ManagedProc) -> None:
     if proc.name == "scheduler":
         _stop_existing_scheduler(proc.cmd[0])
 
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    proc.log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(proc.log_path, "a", encoding="utf-8")
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     log_fh.write(f"\n[{stamp}] starting: {' '.join(proc.cmd)}\n")
@@ -243,7 +255,7 @@ def restart_all(processes: list[ManagedProc], reason: str) -> None:
             start_managed(proc)
             started.append(proc)
             pid = proc.popen.pid if proc.popen else "?"
-            print(f"[dev-servers] {proc.name} pid={pid} log={proc.log_path.relative_to(BASE_DIR)}", flush=True)
+            print(f"[dev-servers] {proc.name} pid={pid} log={_display_path(proc.log_path)}", flush=True)
     except Exception:
         for proc in started:
             stop_managed(proc)
@@ -264,16 +276,17 @@ def main() -> int:
         print("[dev-servers] error: .venv Python not found. Create/activate .venv first.", file=sys.stderr)
         return 1
 
+    log_dir = _log_dir()
     processes = [
         ManagedProc(
             name="scheduler",
             cmd=[py, "-m", "orchestration.cli", "scheduler", "run"],
-            log_path=LOG_DIR / "scheduler.log",
+            log_path=log_dir / "scheduler.log",
         ),
         ManagedProc(
             name="web",
             cmd=[py, "-m", "workstream_manager", "--port", "8080"],
-            log_path=LOG_DIR / "workstream_manager.log",
+            log_path=log_dir / "workstream_manager.log",
         ),
     ]
 

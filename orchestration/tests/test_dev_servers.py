@@ -40,3 +40,17 @@ def test_orchestration_cli_json_returns_data(tmp_path):
         result = dev_servers._orchestration_cli_json("/tmp/python", ["scheduler", "status"])
 
     assert result == {"running": False}
+
+
+def test_log_dir_uses_resolved_artifact_root(monkeypatch, tmp_path):
+    artifact_root = tmp_path / "jb_workstreams"
+    monkeypatch.setattr(dev_servers, "BASE_DIR", tmp_path / "foundation")
+    monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
+
+    assert dev_servers._log_dir() == artifact_root / "artifacts" / "logs"
+
+
+def test_display_path_falls_back_to_absolute_for_external_paths(tmp_path):
+    external_path = tmp_path / "jb_workstreams" / "artifacts" / "logs" / "scheduler.log"
+
+    assert dev_servers._display_path(external_path) == str(external_path)

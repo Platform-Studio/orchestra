@@ -121,6 +121,30 @@ def test_send_json_ignores_client_disconnect_during_body_write():
     assert not hasattr(handler, "_json_response")
 
 
+def test_log_message_suppresses_api_logs_by_default(monkeypatch):
+    from workstream_manager.server import Handler
+
+    handler = object.__new__(Handler)
+    monkeypatch.delenv("WORKSTREAM_MANAGER_LOG_API_REQUESTS", raising=False)
+
+    with patch("workstream_manager.server.sys.stderr.write") as write:
+        Handler.log_message(handler, "%s", '"GET /api/poll/ws-1 HTTP/1.1" 200 -')
+
+    write.assert_not_called()
+
+
+def test_log_message_emits_api_logs_when_enabled(monkeypatch):
+    from workstream_manager.server import Handler
+
+    handler = object.__new__(Handler)
+    monkeypatch.setenv("WORKSTREAM_MANAGER_LOG_API_REQUESTS", "1")
+
+    with patch("workstream_manager.server.sys.stderr.write") as write:
+        Handler.log_message(handler, "%s", '"GET /api/poll/ws-1 HTTP/1.1" 200 -')
+
+    write.assert_called_once_with('[API] "GET /api/poll/ws-1 HTTP/1.1" 200 -\n')
+
+
 # ── Patched module names ────────────────────────────────────────
 
 _PATCHES = {
