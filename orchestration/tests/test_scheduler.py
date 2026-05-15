@@ -22,6 +22,13 @@ from orchestration.scheduler import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_persistence_root_env(monkeypatch):
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    monkeypatch.setenv("ARTICACT_ROOT", "")
+
+
 @pytest.fixture
 def ws(workspace):
     states = {

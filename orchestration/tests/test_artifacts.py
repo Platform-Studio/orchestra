@@ -8,6 +8,13 @@ from orchestration.artifacts import create_artifact, create_binary_artifact, rea
 from orchestration.workstreams import create_workstream, save_workstream
 
 
+@pytest.fixture(autouse=True)
+def _clear_persistence_root_env(monkeypatch):
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    monkeypatch.setenv("ARTICACT_ROOT", "")
+
+
 class TestCreateArtifact:
     def test_create_basic(self, workspace):
         result = create_artifact("report.md", "# Report\nDone.", base_dir=workspace)

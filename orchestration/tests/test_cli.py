@@ -12,16 +12,31 @@ from pathlib import Path
 from orchestration.cli import build_parser, main
 
 
+@pytest.fixture(autouse=True)
+def _clear_persistence_root_env(monkeypatch):
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    monkeypatch.setenv("ARTICACT_ROOT", "")
+
+
 def run_cli(*args, base_dir=None):
     """Run the CLI and capture output."""
     cmd_args = list(args)
     if base_dir:
         cmd_args = ["--base-dir", base_dir] + cmd_args
 
+    env = os.environ.copy()
+    # Keep CLI subprocesses pinned to the test workspace instead of reloading
+    # local developer persistence roots from .env during module import.
+    env["WORKSTREAM_ROOT"] = ""
+    env["ARTIFACT_ROOT"] = ""
+    env["ARTICACT_ROOT"] = ""
+
     result = subprocess.run(
         [sys.executable, "-m", "orchestration.cli"] + cmd_args,
         capture_output=True,
         text=True,
+        env=env,
         cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     )
     return result

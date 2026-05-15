@@ -11,16 +11,25 @@ from orchestration.locks import (
     acquire_lock,
     release_lock,
     lock_status,
+    lock_status_for_workstream,
     list_workstream_locks,
     list_workstream_locks_for_workstream,
     acquire_process_lock,
     release_process_lock,
     process_lock_status,
     find_stale_process_locks,
+    _is_process_alive,
     _process_lock_path,
     _process_locks_dir,
 )
 from orchestration.workstreams import list_workstreams, save_workstream
+
+
+@pytest.fixture(autouse=True)
+def _clear_persistence_root_env(monkeypatch):
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    monkeypatch.setenv("ARTICACT_ROOT", "")
 
 
 @pytest.fixture
@@ -50,6 +59,10 @@ class TestAcquireLock:
     def test_acquire_creates_lock_file(self, workspace, task):
         acquire_lock(task.id, agent_id="agent-1", base_dir=workspace)
         ws_dir = os.path.join(workspace, "workstreams")
+        if not os.path.isdir(ws_dir):
+            from orchestration.persistence import resolve_workstream_root
+
+            ws_dir = os.path.join(resolve_workstream_root(workspace), "workstreams")
         # Find the lock file
         found = False
         for ws_name in os.listdir(ws_dir):
@@ -103,6 +116,12 @@ class TestLockStatus:
     def test_status_unlocked(self, workspace, task):
         status = lock_status(task.id, base_dir=workspace)
         assert status is None
+
+    def test_status_for_workstream(self, workspace, ws, task):
+        acquire_lock(task.id, agent_id="agent-1", base_dir=workspace)
+        status = lock_status_for_workstream(ws.id, task.id, base_dir=workspace)
+        assert status is not None
+        assert status.agent_id == "agent-1"
 
     def test_status_expired(self, workspace, task):
         # Create a lock with expired timestamp
@@ -280,3 +299,20 @@ class TestProcessLocks:
         assert not any(s["run_id"] == self.RUN_ID for s in stale)
         # Cleanup
         release_process_lock(self.RUN_ID, base_dir=workspace)
+
+
+class TestProcessAlive:
+    def test_zombie_pid_is_not_alive(self, monkeypatch):
+        import builtins
+        import io
+
+        monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/123/stat":
+                return io.StringIO("123 (python3) Z 1 1 1 0 -1 0 0 0")
+            return builtins.open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+
+        assert _is_process_alive(123) is False

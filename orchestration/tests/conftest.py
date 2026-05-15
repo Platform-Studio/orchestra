@@ -4,6 +4,25 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_test_workspace_env(monkeypatch):
+    # Prevent local developer .env persistence roots and audio defaults from
+    # leaking into tests that should operate entirely inside tmp_path workspaces.
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    monkeypatch.setenv("ARTICACT_ROOT", "")
+    monkeypatch.setenv("AUDIO_FILE_PATH", "")
+    monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "")
+    monkeypatch.setenv("DEFAULT_AGENT_FINISHED_SOUND", "")
+    monkeypatch.setenv("DEFAULT_AGENT_ERROR_SOUND", "")
+
+    from orchestration.workstreams import clear_workstream_cache
+
+    clear_workstream_cache()
+    yield
+    clear_workstream_cache()
+
+
 @pytest.fixture
 def workspace(tmp_path):
     """Create a temporary workspace directory with Agents/ and workstreams/ dirs."""

@@ -37,6 +37,8 @@ CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
 CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
 GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
+AGENTS_DIR_ENV_VAR = "ORCHESTRATION_AGENTS_DIR"
+SOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 CLINE_MODEL_LEVEL_DEFAULTS = {
@@ -69,10 +71,12 @@ def _agent_learning_artifact_name(agent_def: dict) -> str:
     return f"{stem}_learnings.md"
 
 
-def _orchestration_cli_command() -> str:
+def _orchestration_cli_command(base_dir: str = None) -> str:
     """Return the Python command agents should use for the orchestration CLI."""
-    return f"{shlex.quote(sys.executable)} -m orchestration.cli"
-
+    command = f"{shlex.quote(sys.executable)} -m orchestration.cli"
+    if base_dir:
+        command += f" --base-dir {shlex.quote(os.path.abspath(base_dir))}"
+    return command
 
 def _audio_file_root(base_dir: str) -> str:
     """Resolve the root directory for agent sound assets."""
@@ -160,10 +164,10 @@ def _play_agent_sound(agent_def: dict, event: str, base_dir: str) -> str | None:
     return audio_path
 
 
-def _agent_learning_prompt_section(agent_def: dict, workstream_id: str) -> str:
+def _agent_learning_prompt_section(agent_def: dict, workstream_id: str, base_dir: str = None) -> str:
     """Default learning behavior injected into agent task prompts."""
     learning_path = _agent_learning_artifact_name(agent_def)
-    cli = _orchestration_cli_command()
+    cli = _orchestration_cli_command(base_dir)
     return (
         "=== AGENT LEARNING (DEFAULT) ===\n"
         f"Before you start working, review the learnings artifact at '{learning_path}' in the orchestration system, if it exists.\n"
@@ -1455,7 +1459,19 @@ def _build_runtime_command(
 
 
 def _agents_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, "Agents")
+    override = os.getenv(AGENTS_DIR_ENV_VAR)
+    if override:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(override)))
+
+    workspace_agents_dir = os.path.join(base_dir, "Agents")
+    if os.path.isdir(workspace_agents_dir):
+        return workspace_agents_dir
+
+    source_agents_dir = os.path.join(SOURCE_DIR, "Agents")
+    if os.path.isdir(source_agents_dir):
+        return source_agents_dir
+
+    return workspace_agents_dir
 
 
 def _cli_dir(base_dir: str) -> str:
@@ -1605,7 +1621,7 @@ def discover_cli_tools(base_dir: str = ".") -> dict:
 def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
     """Build the system prompt from the agent body and available tools."""
     parts = [agent_def["body"]]
-    cli = _orchestration_cli_command()
+    cli = _orchestration_cli_command(base_dir)
 
     # List available CLI tools so the agent knows what it can run via bash
     requested = agent_def.get("tools", [])
@@ -1795,7 +1811,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     try:
         # Build system prompt from agent definition + tool docs
         system_prompt = _build_system_prompt(agent_def, base_dir)
-        cli = _orchestration_cli_command()
+        cli = _orchestration_cli_command(base_dir)
 
         # Compute path context for prompt injection
         orchestration_root = os.path.abspath(base_dir)
@@ -1885,9 +1901,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 + _path_context +
                 "Execution contract:\n"
                 "1. You may inspect tasks in this workstream and decide which ones to work on.\n"
-                "2. Before you begin work on any specific task, acquire a lock through the orchestration system: python -m orchestration.cli lock acquire <task_id> --agent \"<agent_name>\"\n"
+                f"2. Before you begin work on any specific task, acquire a lock through the orchestration system: {cli} lock acquire <task_id> --agent \"<agent_name>\"\n"
                 "3. If a task is already locked or lock acquisition fails, skip that task.\n"
-                "4. While you hold a task lock, complete the needed work, then release it when finished: python -m orchestration.cli lock release <task_id> --agent \"<agent_name>\"\n"
+                f"4. While you hold a task lock, complete the needed work, then release it when finished: {cli} lock release <task_id> --agent \"<agent_name>\"\n"
                 "5. Do not modify a task unless you successfully acquired its lock first.\n\n"
                 f"Follow your instructions now."
             )
@@ -1936,7 +1952,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         abs_base = os.path.abspath(base_dir)
         if runtime == "cline" and workspace_root != abs_base:
             existing_pythonpath = str(env.get("PYTHONPATH", "") or "")
-            env["PYTHONPATH"] = abs_base if not existing_pythonpath else os.pathsep.join([abs_base, existing_pythonpath])
+            python_paths = [SOURCE_DIR, abs_base]
+            if existing_pythonpath:
+                python_paths.append(existing_pythonpath)
+            env["PYTHONPATH"] = os.pathsep.join(python_paths)
 
         task_titles = [{"id": t.id, "title": t.title} for t in tasks]
         run_meta = {

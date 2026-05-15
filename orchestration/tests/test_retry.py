@@ -21,6 +21,13 @@ from orchestration.retry import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_persistence_root_env(monkeypatch):
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    monkeypatch.setenv("ARTICACT_ROOT", "")
+
+
 @pytest.fixture
 def ws(workspace):
     """Create a workstream with default states (includes pending, in_progress, completed, failed)."""

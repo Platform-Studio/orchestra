@@ -8,6 +8,7 @@ from orchestration.workstreams import create_workstream, list_workstreams, save_
 from orchestration.tasks import (
     create_task,
     read_task,
+    read_task_from_workstream,
     update_task,
     list_tasks,
     list_tasks_for_workstream,
@@ -116,6 +117,12 @@ class TestReadTask:
     def test_read_not_found(self, workspace):
         with pytest.raises(FileNotFoundError):
             read_task("nonexistent-id", base_dir=workspace)
+
+    def test_read_from_workstream(self, workspace, ws):
+        task = create_task(ws.id, title="Direct Read", base_dir=workspace)
+        loaded = read_task_from_workstream(ws.id, task.id, base_dir=workspace)
+        assert loaded.id == task.id
+        assert loaded.title == "Direct Read"
 
 
 class TestUpdateTask:

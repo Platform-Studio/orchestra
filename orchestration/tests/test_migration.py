@@ -13,6 +13,13 @@ from orchestration.tasks import create_task
 from orchestration.workstreams import create_workstream, read_workstream, save_workstream
 
 
+@pytest.fixture(autouse=True)
+def _clear_persistence_root_env(monkeypatch):
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    monkeypatch.setenv("ARTICACT_ROOT", "")
+
+
 def test_migrate_artifact_root_home_dry_run_reports_target_root(workspace, tmp_path):
     mount_root = tmp_path / "mounted_repo"
     mount_root.mkdir()

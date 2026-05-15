@@ -1,7 +1,9 @@
 """Workstream operations."""
 
+import copy
 import os
 import re
+import threading
 import yaml
 
 from .models import Workstream, RetryConfig, new_id, normalize_agent_concurrency_policy
@@ -14,6 +16,8 @@ TAG_COLOR_PALETTE = (
     "#0079bf", "#00c2e0", "#51e898", "#ff78cb", "#344563",
     "#b3bac5", "#055a8c", "#89609e", "#cd8313", "#4bbf6b",
 )
+_WORKSTREAM_CACHE = {}
+_WORKSTREAM_CACHE_LOCK = threading.RLock()
 
 
 def _abs_base_dir(base_dir: str) -> str:
@@ -108,6 +112,34 @@ def _configured_child_workstream_root(ws: Workstream) -> str | None:
     return ws.child_workstream_root
 
 
+def clear_workstream_cache(base_dir: str = None) -> None:
+    with _WORKSTREAM_CACHE_LOCK:
+        if base_dir is None:
+            _WORKSTREAM_CACHE.clear()
+        else:
+            _WORKSTREAM_CACHE.pop(_abs_base_dir(base_dir), None)
+
+
+def _workstream_dir_signature(workspace_root: str) -> tuple:
+    ws_dir = _ws_dir(workspace_root)
+    entries = []
+    try:
+        with os.scandir(ws_dir) as scan:
+            for entry in scan:
+                if not entry.name.endswith(".yaml"):
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                    stat = entry.stat()
+                except FileNotFoundError:
+                    continue
+                entries.append((entry.name, stat.st_mtime_ns, stat.st_size))
+    except (FileNotFoundError, NotADirectoryError):
+        return ()
+    return tuple(sorted(entries))
+
+
 def _list_local_workstreams(workspace_root: str) -> list:
     ws_dir = _local_ws_dir(workspace_root)
     if not os.path.exists(ws_dir):
@@ -124,23 +156,25 @@ def _list_local_workstreams(workspace_root: str) -> list:
             result.append(_set_workspace_root(ws, workspace_root))
     return result
 
-
 def _write_workstream_to_root(ws: Workstream, state_root: str) -> None:
     os.makedirs(_local_ws_dir(state_root), exist_ok=True)
     with open(_ws_path(state_root, ws.id), "w") as f:
         yaml.dump(ws.to_dict(include_transient=False), f, default_flow_style=False, sort_keys=False)
+    clear_workstream_cache()
 
 
-def _collect_effective_workstreams(base_dir: str, *, include_mount_status: bool = True) -> dict:
+def _collect_effective_workstreams_uncached(base_dir: str, *, include_mount_status: bool = True) -> tuple[dict, set]:
     state_root = _state_base_dir(base_dir)
     default_working_directory = _abs_base_dir(base_dir)
     default_artifact_root = resolve_artifact_root(base_dir)
     cache = {}
     visible = {}
     active = set()
+    visited_roots = set()
 
     def _index_for_root(root: str) -> dict:
         normalized_root = _abs_base_dir(root)
+        visited_roots.add(normalized_root)
         if normalized_root in cache:
             return cache[normalized_root]
 
@@ -176,7 +210,6 @@ def _collect_effective_workstreams(base_dir: str, *, include_mount_status: bool 
         configured_artifact_root = _configured_artifact_root(ws)
         if configured_artifact_root is not None:
             artifact_root = _resolve_root_path(configured_artifact_root, ws_state_root)
-
         child_state_root = _workstream_home_dir(ws_state_root, ws.id)
         configured_child_root = _configured_child_workstream_root(ws)
         if configured_child_root is not None:
@@ -197,7 +230,36 @@ def _collect_effective_workstreams(base_dir: str, *, include_mount_status: bool 
     for root_ws in root_index["by_parent"].get(None, []):
         _visit(root_ws, default_working_directory, default_artifact_root)
 
-    return visible
+    return visible, visited_roots
+
+
+def _collect_effective_workstreams(base_dir: str, *, include_mount_status: bool = True) -> dict:
+    if include_mount_status:
+        by_id, _visited_roots = _collect_effective_workstreams_uncached(base_dir, include_mount_status=True)
+        return by_id
+
+    base_root = _abs_base_dir(base_dir)
+    with _WORKSTREAM_CACHE_LOCK:
+        cached = _WORKSTREAM_CACHE.get(base_root)
+        if cached is not None:
+            current_signatures = {
+                root: _workstream_dir_signature(root)
+                for root in cached["signatures"]
+            }
+            if current_signatures == cached["signatures"]:
+                return copy.deepcopy(cached["by_id"])
+
+    by_id, workspace_roots = _collect_effective_workstreams_uncached(base_root, include_mount_status=False)
+    signatures = {
+        root: _workstream_dir_signature(root)
+        for root in workspace_roots
+    }
+    with _WORKSTREAM_CACHE_LOCK:
+        _WORKSTREAM_CACHE[base_root] = {
+            "by_id": copy.deepcopy(by_id),
+            "signatures": signatures,
+        }
+    return copy.deepcopy(by_id)
 
 
 def workstream_workspace_index(base_dir: str = ".") -> dict:

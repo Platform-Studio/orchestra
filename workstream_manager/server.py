@@ -7,6 +7,7 @@ modules directly (no subprocess overhead).
 Usage:
     python -m workstream_manager              # default port 8080
     python -m workstream_manager --port 9000  # custom port
+    python -m workstream_manager --base-dir /path/to/orchestration-workspace
 """
 
 import json
@@ -29,14 +30,15 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
 
 # Resolve paths
-WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+SOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+WORKSPACE_DIR = os.path.abspath(os.environ.get("WORKSTREAM_MANAGER_BASE_DIR", SOURCE_DIR))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 AUDIO_FILE_PATH_ENV_VAR = "AUDIO_FILE_PATH"
 API_REQUEST_LOG_ENV_VAR = "WORKSTREAM_MANAGER_LOG_API_REQUESTS"
 
 # Ensure workspace is on the Python path so orchestration imports work
-if WORKSPACE_DIR not in sys.path:
-    sys.path.insert(0, WORKSPACE_DIR)
+if SOURCE_DIR not in sys.path:
+    sys.path.insert(0, SOURCE_DIR)
 
 from orchestration.workstreams import (
     list_workstreams, read_workstream, create_workstream,
@@ -47,15 +49,31 @@ from orchestration.workstreams import (
     get_workstream_tags, upsert_workstream_tag, get_workstream_code_mount_statuses,
 )
 from orchestration.tasks import (
-    CorruptTaskError, create_task, read_task, update_task, list_tasks,
+    CorruptTaskError, create_task, read_task, read_task_from_workstream, update_task, list_tasks,
     comment_task, delete_task_comment, edit_task_comment, archive_task, get_audit, clear_schedule,
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
+)
+from orchestration.locks import (
+    acquire_lock, release_lock, lock_status, lock_status_for_workstream,
+    list_workstream_locks_for_workstream,
 )
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
 from orchestration.agents import get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, retry_agent_run, set_global_sound_mute, tail_active_agent
+
+
+def set_workspace_dir(base_dir: str) -> None:
+    global WORKSPACE_DIR
+    WORKSPACE_DIR = os.path.abspath(base_dir)
+
+
+def _subprocess_env() -> dict:
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = SOURCE_DIR if not existing else SOURCE_DIR + os.pathsep + existing
+    return env
 
 
 def _ok(data):
@@ -78,11 +96,36 @@ def _api_request_logging_enabled() -> bool:
         "on",
     }
 
+_TASK_COUNT_CACHE = {}
+_TASK_COUNT_CACHE_LOCK = threading.RLock()
+
+
+def _truthy_param(raw) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _serialize_board_tasks(tasks):
     task_dicts = []
     for task in tasks:
-        task_dict = task.to_dict()
+        task_dict = {
+            "id": task.id,
+            "workstream_id": task.workstream_id,
+            "title": task.title,
+            "status": task.status,
+            "tags": task.tags or [],
+        }
+        if getattr(task, "scheduled_at", None) is not None:
+            task_dict["scheduled_at"] = task.scheduled_at
+        if getattr(task, "retry_count", 0):
+            task_dict["retry_count"] = task.retry_count
+        if getattr(task, "last_failure_at", None) is not None:
+            task_dict["last_failure_at"] = task.last_failure_at
+        if hasattr(task, "_parse_error"):
+            task_dict["_error"] = task._parse_error
         task_dict["lock"] = {"locked": False}
         task_dicts.append(task_dict)
     return task_dicts
@@ -105,11 +148,17 @@ def _invalidate_poll_sidebar_cache() -> None:
 def _build_poll_sidebar_snapshot() -> dict:
     wss = list_workstreams(base_dir=WORKSPACE_DIR, include_mount_status=False)
     counts = _task_counts_by_workstream(wss)
+    active_run_summaries = []
     try:
         # Count only currently live runs from the active registry. This avoids
         # inflating the sidebar badge with stale historical metadata entries.
         _active_runs = list_active_agents(base_dir=WORKSPACE_DIR)
-        active_run_count = sum(1 for r in _active_runs if r.get("pid") is not None)
+        active_run_summaries = [
+            _serialize_agent_run_summary(run)
+            for run in _active_runs
+            if run.get("pid") is not None
+        ]
+        active_run_count = len(active_run_summaries)
     except Exception:
         active_run_count = 0
     return {
@@ -118,6 +167,7 @@ def _build_poll_sidebar_snapshot() -> dict:
         "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
         "active_triggers": get_active_triggers(),
         "active_agent_runs": active_run_count,
+        "active_agent_run_summaries": active_run_summaries,
     }
 
 
@@ -137,16 +187,94 @@ def _get_poll_sidebar_snapshot() -> dict:
 def _task_storage_dir(workstream) -> str:
     ws_root = getattr(workstream, "_workspace_root", None)
     if not ws_root:
-        ws_root = resolve_workstream_state_root(workstream.id, base_dir=WORKSPACE_DIR)
+        try:
+            ws_root = resolve_workstream_state_root(workstream.id, base_dir=WORKSPACE_DIR)
+        except FileNotFoundError:
+            ws_root = resolve_workstream_workspace(workstream.id, base_dir=WORKSPACE_DIR)
     return os.path.join(ws_root, "workstreams", workstream.id, "tasks")
 
 
-def _count_task_files(tasks_dir: str) -> int:
+def _workstream_storage_path(workstream) -> str:
+    ws_root = getattr(workstream, "_workspace_root", None)
+    if not ws_root:
+        try:
+            ws_root = resolve_workstream_state_root(workstream.id, base_dir=WORKSPACE_DIR)
+        except FileNotFoundError:
+            ws_root = resolve_workstream_workspace(workstream.id, base_dir=WORKSPACE_DIR)
+    return os.path.join(ws_root, "workstreams", f"{workstream.id}.yaml")
+
+
+def _file_fingerprint(path: str) -> tuple[int, int]:
+    try:
+        stat = os.stat(path)
+        return stat.st_mtime_ns, stat.st_size
+    except FileNotFoundError:
+        return 0, 0
+
+
+def _task_yaml_dir_fingerprint(tasks_dir: str) -> dict:
+    count = 0
+    latest_mtime_ns = 0
+    total_size = 0
     try:
         with os.scandir(tasks_dir) as entries:
-            return sum(1 for entry in entries if entry.is_file() and entry.name.endswith(".yaml"))
+            for entry in entries:
+                if not entry.name.endswith(".yaml"):
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                    stat = entry.stat()
+                except FileNotFoundError:
+                    continue
+                count += 1
+                total_size += stat.st_size
+                latest_mtime_ns = max(latest_mtime_ns, stat.st_mtime_ns)
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    return {"count": count, "latest_mtime_ns": latest_mtime_ns, "total_size": total_size}
+
+
+def _board_meta(workstream, task_count: int = None) -> dict:
+    tasks_dir = _task_storage_dir(workstream)
+    task_fp = _task_yaml_dir_fingerprint(tasks_dir)
+    ws_mtime_ns, ws_size = _file_fingerprint(_workstream_storage_path(workstream))
+    revision = ":".join(str(part) for part in (
+        ws_mtime_ns,
+        ws_size,
+        task_fp["count"],
+        task_fp["latest_mtime_ns"],
+        task_fp["total_size"],
+    ))
+    return {
+        "workstream": workstream.to_dict(),
+        "revision": revision,
+        "task_count": task_fp["count"] if task_count is None else task_count,
+    }
+
+
+def _count_task_files(tasks_dir: str) -> int:
+    cache_key = os.path.abspath(tasks_dir)
+    try:
+        dir_stat = os.stat(tasks_dir)
     except FileNotFoundError:
+        with _TASK_COUNT_CACHE_LOCK:
+            _TASK_COUNT_CACHE.pop(cache_key, None)
         return 0
+
+    with _TASK_COUNT_CACHE_LOCK:
+        cached = _TASK_COUNT_CACHE.get(cache_key)
+        if cached and cached["mtime_ns"] == dir_stat.st_mtime_ns:
+            return cached["count"]
+
+    try:
+        with os.scandir(tasks_dir) as entries:
+            count = sum(1 for entry in entries if entry.is_file() and entry.name.endswith(".yaml"))
+    except FileNotFoundError:
+        count = 0
+    with _TASK_COUNT_CACHE_LOCK:
+        _TASK_COUNT_CACHE[cache_key] = {"mtime_ns": dir_stat.st_mtime_ns, "count": count}
+    return count
 
 
 def _task_counts_by_workstream(workstreams) -> dict:
@@ -154,6 +282,13 @@ def _task_counts_by_workstream(workstreams) -> dict:
         workstream.id: _count_task_files(_task_storage_dir(workstream))
         for workstream in workstreams
     }
+
+
+def _find_loaded_workstream(workstreams, ws_id: str):
+    for workstream in workstreams:
+        if workstream.id == ws_id:
+            return workstream
+    return read_workstream(ws_id, base_dir=WORKSPACE_DIR)
 
 
 def _agent_run_status(run: dict) -> str:
@@ -176,6 +311,7 @@ def _serialize_agent_run_summary(run: dict) -> dict:
         "agent_ref": run.get("agent_ref"),
         "workstream_id": run.get("workstream_id"),
         "workstream_path": run.get("workstream_path"),
+        "task_ids": run.get("task_ids", []) or [],
         "tasks": run.get("tasks") or [],
         "started_at": run.get("started_at"),
         "ended_at": run.get("ended_at"),
@@ -201,7 +337,8 @@ def _run_orchestration_cli(args: list[str]) -> dict:
         cmd,
         capture_output=True,
         text=True,
-        cwd=WORKSPACE_DIR,
+        cwd=SOURCE_DIR,
+        env=_subprocess_env(),
     )
     if result.returncode != 0:
         message = result.stderr.strip() or "Orchestration CLI command failed"
@@ -325,8 +462,19 @@ def handle_board(parts, params):
         return _err("Missing workstream ID")
     ws_id = parts[0]
     ws = read_workstream(ws_id, base_dir=WORKSPACE_DIR)
+    if _truthy_param(params.get("meta")):
+        meta = _board_meta(ws)
+        if _truthy_param(params.get("locks")):
+            meta["locks"] = list_workstream_locks_for_workstream(ws, base_dir=WORKSPACE_DIR)
+        return _ok(meta)
     tasks = list_tasks(ws_id, base_dir=WORKSPACE_DIR)
-    return _ok({"workstream": ws.to_dict(), "tasks": _serialize_board_tasks(tasks)})
+    meta = _board_meta(ws, task_count=len(tasks))
+    return _ok({
+        "workstream": ws.to_dict(),
+        "tasks": _serialize_board_tasks(tasks),
+        "revision": meta["revision"],
+        "task_count": meta["task_count"],
+    })
 
 
 def handle_workstream(method, parts, params):
@@ -479,7 +627,10 @@ def handle_task(method, parts, params):
         tasks = list_tasks(**kwargs)
         return _ok([t.to_dict() for t in tasks])
     elif m == "read" and parts:
-        task = read_task(parts[0], base_dir=WORKSPACE_DIR)
+        if params.get("workstream_id"):
+            task = read_task_from_workstream(params["workstream_id"], parts[0], base_dir=WORKSPACE_DIR)
+        else:
+            task = read_task(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(task.to_dict())
     elif m == "create" and parts:
         kwargs = {"workstream_id": parts[0], "title": params["title"], "base_dir": WORKSPACE_DIR}
@@ -609,16 +760,28 @@ def handle_task(method, parts, params):
 def handle_lock(method, parts, params):
     m = method
     if m == "status" and parts:
-        return _ok(_run_orchestration_cli(["lock", "status", parts[0]]))
+        if params.get("workstream_id"):
+            lock = lock_status_for_workstream(params["workstream_id"], parts[0], base_dir=WORKSPACE_DIR)
+        else:
+            lock = lock_status(parts[0], base_dir=WORKSPACE_DIR)
+        if lock is None:
+            return _ok({"locked": False})
+        data = lock.to_dict()
+        data["locked"] = True
+        return _ok(data)
     elif m == "list" and parts:
-        return _ok(_run_orchestration_cli(["lock", "list", parts[0]]))
+        ws = read_workstream(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(list_workstream_locks_for_workstream(ws, base_dir=WORKSPACE_DIR))
     elif m == "acquire" and parts:
-        cmd = ["lock", "acquire", parts[0], "--agent", params["agent"]]
-        if "ttl" in params:
-            cmd.extend(["--ttl", str(params["ttl"])])
-        return _ok(_run_orchestration_cli(cmd))
+        ttl = int(params["ttl"]) if "ttl" in params else None
+        kwargs = {"task_id": parts[0], "agent_id": params["agent"], "base_dir": WORKSPACE_DIR}
+        if ttl is not None:
+            kwargs["ttl_seconds"] = ttl
+        lock = acquire_lock(**kwargs)
+        return _ok(lock.to_dict())
     elif m == "release" and parts:
-        return _ok(_run_orchestration_cli(["lock", "release", parts[0], "--agent", params["agent"]]))
+        released = release_lock(parts[0], params["agent"], base_dir=WORKSPACE_DIR)
+        return _ok({"released": released})
     return _err(f"Unknown lock method: {m}")
 
 
@@ -679,7 +842,7 @@ def handle_agent(method, parts, params):
         runs = list_active_agents(base_dir=WORKSPACE_DIR)
         return _ok(runs)
     if method == "runs":
-        limit = int(params.get("limit", "100"))
+        limit = min(int(params.get("limit", "25")), 100)
         runs = list_agent_runs(limit=limit, base_dir=WORKSPACE_DIR)
         summaries = [_serialize_agent_run_summary(run) for run in runs]
         return _ok(_sort_agent_runs_for_display(summaries))
@@ -699,14 +862,46 @@ def handle_agent(method, parts, params):
 
 def handle_poll(method, parts, params):
     """Combined polling endpoint — returns workstreams, counts, scheduler, and optionally board metadata."""
+    if method == "status":
+        active_run_summaries = []
+        try:
+            _active_runs = list_active_agents(base_dir=WORKSPACE_DIR)
+            active_run_summaries = [
+                _serialize_agent_run_summary(run)
+                for run in _active_runs
+                if run.get("pid") is not None
+            ]
+            active_run_count = len(active_run_summaries)
+        except Exception:
+            active_run_count = 0
+        return _ok({
+            "scheduler": scheduler_status(base_dir=WORKSPACE_DIR),
+            "active_triggers": get_active_triggers(),
+            "active_agent_runs": active_run_count,
+            "active_agent_run_summaries": active_run_summaries,
+        })
+
     result = dict(_get_poll_sidebar_snapshot())
     # If a board ID is requested, include it
     ws_id = params.get("board") or (method if method != "all" else None)
     if ws_id:
         try:
-            ws = read_workstream(ws_id, base_dir=WORKSPACE_DIR)
-            tasks = list_tasks(ws_id, base_dir=WORKSPACE_DIR)
-            result["board"] = {"workstream": ws.to_dict(), "tasks": _serialize_board_tasks(tasks)}
+            wss = list_workstreams(base_dir=WORKSPACE_DIR, include_mount_status=False)
+            counts = result.get("counts", {})
+            ws = _find_loaded_workstream(wss, ws_id)
+            if _truthy_param(params.get("board_meta")):
+                result["board_meta"] = _board_meta(ws, task_count=counts.get(ws.id))
+                if not _truthy_param(params.get("skip_locks")):
+                    result["board_locks"] = list_workstream_locks_for_workstream(ws, base_dir=WORKSPACE_DIR)
+            else:
+                tasks = list_tasks(ws_id, base_dir=WORKSPACE_DIR)
+                meta = _board_meta(ws, task_count=len(tasks))
+                result["board"] = {
+                    "workstream": ws.to_dict(),
+                    "tasks": _serialize_board_tasks(tasks),
+                    "revision": meta["revision"],
+                    "task_count": meta["task_count"],
+                }
         except FileNotFoundError:
             pass
     return _ok(result)
@@ -750,7 +945,6 @@ def handle_artifact(method, parts, params):
         workstream_id = params.get("workstream_id") or None
         artifacts_root, relative_path = _resolve_artifact_root(
             path,
-            base_dir=WORKSPACE_DIR,
             workstream_id=workstream_id,
         )
         resolved_path = _validate_path(artifacts_root, relative_path)
@@ -986,10 +1180,17 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Workstream Manager server")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument(
+        "--base-dir",
+        default=os.environ.get("WORKSTREAM_MANAGER_BASE_DIR", WORKSPACE_DIR),
+        help="Orchestration workspace to manage (default: repository root or WORKSTREAM_MANAGER_BASE_DIR)",
+    )
     args = parser.parse_args()
+    set_workspace_dir(args.base_dir)
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Workstream Manager running at http://localhost:{args.port}")
+    print(f"Managing orchestration workspace: {WORKSPACE_DIR}")
     print("Note: Start the scheduler separately via: python -m orchestration.cli scheduler run")
     try:
         server.serve_forever()
