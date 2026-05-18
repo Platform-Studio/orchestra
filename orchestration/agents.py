@@ -1,8 +1,11 @@
 """Agent operations."""
 
+import codecs
+import errno
 import json
 import os
 import glob
+import pty
 import shlex
 import signal
 import shutil
@@ -1398,6 +1401,55 @@ def _terminate_process_group(proc, grace_seconds: float = 10.0) -> None:
         pass
 
 
+def _should_stream_output_via_pty(runtime: str) -> bool:
+    """Use a PTY for runtimes whose incremental output is otherwise buffered."""
+    return _normalize_agent_runtime(runtime) == "claude-code"
+
+
+def _start_pty_output_pump(master_fd: int, log_file, stats: dict) -> threading.Thread:
+    """Mirror PTY output into the run log while tracking first/last output timing."""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def _pump() -> None:
+        try:
+            while True:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError as exc:
+                    if exc.errno == errno.EIO:
+                        break
+                    stats["output_capture_error"] = str(exc)
+                    break
+
+                if not chunk:
+                    break
+
+                now = datetime.now(timezone.utc).isoformat()
+                if not stats.get("first_output_at"):
+                    stats["first_output_at"] = now
+                stats["last_output_at"] = now
+                stats["output_bytes"] = int(stats.get("output_bytes") or 0) + len(chunk)
+
+                text = decoder.decode(chunk)
+                if text:
+                    log_file.write(text)
+                    log_file.flush()
+
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                log_file.write(tail)
+                log_file.flush()
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=_pump, daemon=True)
+    thread.start()
+    return thread
+
+
 def _runtime_reported_timeout(runtime: str, output: str, returncode: int) -> bool:
     """Detect runtime-native timeout failures that exit before our parent timeout."""
     if returncode == 0 or _normalize_agent_runtime(runtime) != "cline":
@@ -2002,19 +2054,45 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Use a file-backed log so the Workspace Manager can live-tail active agent output.
         timeout_expired = False
+        use_pty_output = _should_stream_output_via_pty(runtime)
+        stream_stats = {
+            "output_bytes": 0,
+            "first_output_at": None,
+            "last_output_at": None,
+            "output_capture_error": None,
+        }
+        pty_master_fd = None
+        pty_pump_thread = None
         with open(log_path, "w", encoding="utf-8") as log_file:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=abs_base,
-                env=env,
+            pty_slave_fd = None
+            popen_kwargs = {
+                "stderr": subprocess.STDOUT,
+                "cwd": abs_base,
+                "env": env,
                 # Detach the agent process from the scheduler's process group.
                 # This prevents scheduler restarts/stops from accidentally terminating
                 # in-flight agent runs that should continue independently.
-                start_new_session=True,
-            )
+                "start_new_session": True,
+            }
+            if use_pty_output:
+                pty_master_fd, pty_slave_fd = pty.openpty()
+                popen_kwargs["stdout"] = pty_slave_fd
+            else:
+                popen_kwargs["stdout"] = log_file
+                popen_kwargs["text"] = True
+
+            try:
+                proc = subprocess.Popen(cmd, **popen_kwargs)
+            finally:
+                if pty_slave_fd is not None:
+                    try:
+                        os.close(pty_slave_fd)
+                    except OSError:
+                        pass
+
+            if use_pty_output and pty_master_fd is not None:
+                pty_pump_thread = _start_pty_output_pump(pty_master_fd, log_file, stream_stats)
+
             _play_agent_sound(agent_def, "start", base_dir)
 
             active_run = {
@@ -2069,6 +2147,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     release_process_lock(run_id, base_dir=base_dir)
                 except Exception:
                     pass
+                if pty_pump_thread is not None:
+                    pty_pump_thread.join(timeout=5)
+                    if pty_pump_thread.is_alive() and pty_master_fd is not None:
+                        try:
+                            os.close(pty_master_fd)
+                        except OSError:
+                            pass
+                        pty_pump_thread.join(timeout=1)
 
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             output = f.read().strip()
@@ -2097,6 +2183,13 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             returncode,
             timeout_expired or _runtime_reported_timeout(runtime, output, returncode),
         )
+        run_meta["output_bytes"] = int(stream_stats.get("output_bytes") or 0)
+        run_meta["first_output_at"] = stream_stats.get("first_output_at")
+        run_meta["last_output_at"] = stream_stats.get("last_output_at")
+        if stream_stats.get("output_capture_error"):
+            run_meta["output_capture_error"] = stream_stats.get("output_capture_error")
+        else:
+            run_meta.pop("output_capture_error", None)
         run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = final_status
         run_meta["exit_code"] = returncode

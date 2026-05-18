@@ -1328,6 +1328,31 @@ def test_run_agent_marks_sigterm_exit_as_killed(mock_popen, mock_which, workspac
     assert latest["exit_code"] == 143
 
 
+def test_run_agent_timeout_preserves_partial_claude_output(workspace):
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    cmd = [
+        sys.executable,
+        "-c",
+        "import sys, time; print('partial timeout output', flush=True); time.sleep(5)",
+    ]
+
+    with patch("orchestration.agents._resolve_runtime_executable", return_value="/usr/bin/claude"), \
+         patch("orchestration.agents._build_runtime_command", return_value=(cmd, "prompt")):
+        with pytest.raises(RuntimeError, match="timed out"):
+            run_agent("test_agent", workstream_id=ws.id, timeout=1, base_dir=workspace)
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    details = get_agent_run(latest["run_id"], base_dir=workspace)
+
+    assert latest["status"] == "timeout"
+    assert latest["output_bytes"] > 0
+    assert latest["first_output_at"] is not None
+    assert latest["last_output_at"] is not None
+    assert "partial timeout output" in details["output"]
+
+
 def test_runtime_reported_timeout_detects_cline_timeout():
     assert _runtime_reported_timeout("cline", "Error: Timeout\n", 1) is True
     assert _runtime_reported_timeout("cline", '{"type": "error", "message": "Timeout"}', 1) is True

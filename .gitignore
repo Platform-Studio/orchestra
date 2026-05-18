@@ -16,6 +16,11 @@
 # Allow .env.example for onboarding new devs
 !.env.example
 
+# Ignore repo-local pytest/temp runtime data used to keep test state away from
+# live jb_workstreams persistence roots, but keep the directory anchor checked in.
+.test/*
+!.test/.gitkeep
+
 # Allow workstreams data (source of truth for task/board state)
 !workstreams/**
 
