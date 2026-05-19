@@ -4809,10 +4809,16 @@ function renderActiveAgentsModal() {
   const selectedCommandLine = selectedDetails && selectedDetails.run ? String(selectedDetails.run.command_line || '') : '';
   const selectedRuntime = selected && selected.runtime
     ? String(selected.runtime)
-    : (selectedCommandLine.includes('cline ') ? 'cline' : 'claude-code');
+    : (selectedCommandLine.includes('cline ')
+      ? 'cline'
+      : ((selectedCommandLine.includes(' copilot ') || selectedCommandLine.includes('/copilot '))
+        ? 'copilot'
+        : 'claude-code'));
   const selectedRuntimeLabel = selectedRuntime === 'cline'
     ? 'Cline'
-    : (selectedRuntime === 'claude-code' ? 'Claude Code' : 'Agent');
+    : (selectedRuntime === 'copilot'
+      ? 'Copilot'
+      : (selectedRuntime === 'claude-code' ? 'Claude Code' : 'Agent'));
   const selectedModel = selected && selected.model ? esc(selected.model.replace(/^anthropic\//, '')) : 'unknown';
   const selectedEffort = selected && selected.effort ? esc(selected.effort) : 'default';
   const selectedModelEffort = `Runtime: ${selectedRuntimeLabel} | Model: ${selectedModel} | Effort: ${selectedEffort}`;

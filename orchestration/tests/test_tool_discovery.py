@@ -87,6 +87,14 @@ class TestGetModel:
         monkeypatch.setenv("CLINE_DEFAULT_LLM", "google/gemini-2.5-flash")
         assert _get_model("cline") == "google/gemini-2.5-flash"
 
+    def test_copilot_default_uses_runtime_specific_fallback(self, monkeypatch):
+        monkeypatch.delenv("COPILOT_MODEL", raising=False)
+        assert _get_model("copilot") == "auto"
+
+    def test_copilot_default_can_be_overridden(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_MODEL", "gpt-5")
+        assert _get_model("copilot") == "gpt-5"
+
 
 class TestModelAndEffortResolution:
     def test_resolve_agent_model_prefers_x_model(self, monkeypatch):
@@ -115,6 +123,16 @@ class TestModelAndEffortResolution:
         agent_def = {"model_level": "high"}
         assert _resolve_agent_model(agent_def, runtime="cline") == "qwen/qwen3-coder-next"
 
+    def test_resolve_agent_model_from_copilot_level_default(self, monkeypatch):
+        monkeypatch.delenv("COPILOT_HIGH_LLM", raising=False)
+        agent_def = {"model_level": "high"}
+        assert _resolve_agent_model(agent_def, runtime="copilot") == "auto"
+
+    def test_resolve_agent_model_from_copilot_level_override(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_HIGH_LLM", "gpt-5")
+        agent_def = {"model_level": "high"}
+        assert _resolve_agent_model(agent_def, runtime="copilot") == "gpt-5"
+
     def test_resolve_agent_model_invalid_level_raises(self):
         with pytest.raises(ValueError, match="Invalid x-model-level"):
             _resolve_agent_model({"model_level": "urgent"})
@@ -136,6 +154,13 @@ class TestModelAndEffortResolution:
 
     def test_resolve_agent_runtime_uses_header(self):
         assert _resolve_agent_runtime({"runtime": "cline"}) == "cline"
+
+    def test_resolve_agent_runtime_uses_copilot_header(self):
+        assert _resolve_agent_runtime({"runtime": "copilot"}) == "copilot"
+
+    def test_resolve_agent_runtime_uses_env_default(self, monkeypatch):
+        monkeypatch.setenv("ORCHESTRATION_AGENT_RUNTIME", "copilot")
+        assert _resolve_agent_runtime({}) == "copilot"
 
     def test_resolve_agent_runtime_invalid_raises(self):
         with pytest.raises(ValueError, match="Invalid x-runtime"):

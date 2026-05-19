@@ -121,6 +121,14 @@ def test_global_mute_toggle_overrides_all_workstream_manager_sound_playback() ->
     assert "await syncWorkstreamManagerMutedPreferenceFromServer();" in html
 
 
+def test_agent_run_details_recognize_copilot_runtime() -> None:
+    html = _index_html()
+
+    assert "selectedCommandLine.includes(' copilot ') || selectedCommandLine.includes('/copilot ')" in html
+    assert "selectedRuntime === 'copilot'" in html
+    assert "? 'Copilot'" in html
+
+
 def test_workstream_manager_schedules_interaction_retry_when_initial_autoplay_is_blocked() -> None:
     html = _index_html()
 

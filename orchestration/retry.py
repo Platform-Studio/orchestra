@@ -47,7 +47,7 @@ def _is_our_process(pid: int) -> bool:
             capture_output=True, text=True, timeout=5,
         )
         cmd = result.stdout.strip().lower()
-        return "claude" in cmd or "anthropic" in cmd or "cline" in cmd
+        return "claude" in cmd or "anthropic" in cmd or "cline" in cmd or "copilot" in cmd
     except Exception:
         return False
 

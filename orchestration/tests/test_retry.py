@@ -116,6 +116,12 @@ class TestProcessDetection:
         assert _is_our_process(12345) is True
 
     @patch("subprocess.run")
+    def test_is_our_process_accepts_copilot_cli_process(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="/opt/homebrew/bin/gh copilot -p task")
+
+        assert _is_our_process(12345) is True
+
+    @patch("subprocess.run")
     def test_is_our_process_rejects_unrelated_node_process(self, mock_run):
         mock_run.return_value = MagicMock(stdout="node server.js")
 

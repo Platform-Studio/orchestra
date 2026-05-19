@@ -26,6 +26,10 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
     monkeypatch.delenv("CLINE_LOW_LLM", raising=False)
     monkeypatch.delenv("ORCHESTRATION_CLINE_VERBOSE", raising=False)
+    monkeypatch.delenv("COPILOT_MODEL", raising=False)
+    monkeypatch.delenv("COPILOT_HIGH_LLM", raising=False)
+    monkeypatch.delenv("COPILOT_MEDIUM_LLM", raising=False)
+    monkeypatch.delenv("COPILOT_LOW_LLM", raising=False)
     monkeypatch.setenv("WORKSTREAM_ROOT", "")
     monkeypatch.setenv("ARTIFACT_ROOT", "")
     monkeypatch.setenv("ARTICACT_ROOT", "")
@@ -1107,6 +1111,93 @@ def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
     latest = runs[0]
     assert latest["runtime"] == "cline"
     assert latest["command_line"].startswith("/usr/bin/cline ")
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_can_use_copilot_runtime(mock_popen, mock_which, workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "copilot_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Copilot Agent\n"
+            "description: Runs with Copilot\n"
+            "x-runtime: copilot\n"
+            "x-effort: max\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Copilot Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[0] == "/usr/bin/copilot"
+    assert "-p" in cmd
+    effective_prompt = cmd[cmd.index("-p") + 1]
+    assert "=== SYSTEM INSTRUCTIONS ===" in effective_prompt
+    assert "=== TASK ===" in effective_prompt
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "auto"
+    assert "--output-format" in cmd
+    assert cmd[cmd.index("--output-format") + 1] == "text"
+    assert "--silent" in cmd
+    assert "--allow-all" in cmd
+    assert "--no-ask-user" in cmd
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "high"
+    assert "--append-system-prompt" not in cmd
+    assert "--dangerously-skip-permissions" not in cmd
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["runtime"] == "copilot"
+    assert latest["command_line"].startswith("/usr/bin/copilot ")
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_copilot_runtime_strips_openai_key_from_child_env(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATION_AGENT_RUNTIME", "copilot")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("GH_TOKEN", "test-github-token")
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
+
+    child_env = mock_popen.call_args.kwargs["env"]
+    assert "OPENAI_API_KEY" not in child_env
+    assert child_env["GH_TOKEN"] == "test-github-token"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_can_use_copilot_runtime_from_env_default(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATION_AGENT_RUNTIME", "copilot")
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[0] == "/usr/bin/copilot"
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["runtime"] == "copilot"
+
+
+def test_resolve_runtime_executable_falls_back_to_gh_for_copilot():
+    with patch("orchestration.agents.shutil.which") as mock_which:
+        mock_which.side_effect = lambda command: {
+            "copilot": None,
+            "gh": "/usr/bin/gh",
+        }.get(command)
+
+        resolved = agents_module._resolve_runtime_executable("copilot")
+
+    assert resolved == "/usr/bin/gh"
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")

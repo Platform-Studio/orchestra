@@ -39,15 +39,22 @@ DEFAULT_AGENT_ERROR_SOUND_ENV_VAR = "DEFAULT_AGENT_ERROR_SOUND"
 CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
 CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
+COPILOT_DEFAULT_MODEL_ENV_VAR = "COPILOT_MODEL"
 GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
 AGENTS_DIR_ENV_VAR = "ORCHESTRATION_AGENTS_DIR"
 SOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+COPILOT_DEFAULT_MODEL = "auto"
 CLINE_MODEL_LEVEL_DEFAULTS = {
     "high": "deepseek/deepseek-v4-pro",
     "medium": "deepseek/deepseek-v4-flash",
     "low": "deepseek/deepseek-v4-flash",
+}
+COPILOT_MODEL_LEVEL_DEFAULTS = {
+    "high": COPILOT_DEFAULT_MODEL,
+    "medium": COPILOT_DEFAULT_MODEL,
+    "low": COPILOT_DEFAULT_MODEL,
 }
 
 _ACTIVE_AGENTS_LOCK = threading.Lock()
@@ -1163,6 +1170,8 @@ def _get_model(runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
     runtime_norm = _normalize_agent_runtime(runtime)
     if runtime_norm == "cline":
         return _normalize_model_name(os.getenv(CLINE_DEFAULT_MODEL_ENV_VAR, CLINE_DEFAULT_MODEL))
+    if runtime_norm == "copilot":
+        return _normalize_model_name(os.getenv(COPILOT_DEFAULT_MODEL_ENV_VAR, COPILOT_DEFAULT_MODEL))
 
     return _normalize_model_name(os.getenv("DEFAULT_LLM", "sonnet"))
 
@@ -1182,6 +1191,12 @@ def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
             "medium": "CLINE_MEDIUM_LLM",
             "low": "CLINE_LOW_LLM",
         }
+    elif runtime_norm == "copilot":
+        env_key_by_level = {
+            "high": "COPILOT_HIGH_LLM",
+            "medium": "COPILOT_MEDIUM_LLM",
+            "low": "COPILOT_LOW_LLM",
+        }
 
     env_key = env_key_by_level.get(level_norm)
     if not env_key:
@@ -1191,6 +1206,10 @@ def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
     if not env_value:
         if runtime_norm == "cline":
             default_model = _normalize_model_name(CLINE_MODEL_LEVEL_DEFAULTS[level_norm])
+            if default_model:
+                return default_model
+        if runtime_norm == "copilot":
+            default_model = _normalize_model_name(COPILOT_MODEL_LEVEL_DEFAULTS[level_norm])
             if default_model:
                 return default_model
         raise ValueError(f"x-model-level '{level_norm}' requires env var {env_key} to be set")
@@ -1239,13 +1258,14 @@ def _normalize_agent_runtime(raw: str) -> str:
         "claude": "claude-code",
         "claude-code": "claude-code",
         "cline": "cline",
+        "copilot": "copilot",
     }
     normalized = aliases.get(runtime)
     if normalized:
         return normalized
 
     raise ValueError(
-        f"Invalid x-runtime '{raw}'. Expected one of: claude-code, claude, cline"
+        f"Invalid x-runtime '{raw}'. Expected one of: claude-code, claude, cline, copilot"
     )
 
 
@@ -1265,15 +1285,30 @@ def _resolve_agent_runtime(agent_def: dict) -> str:
 def _resolve_runtime_executable(runtime: str) -> str:
     """Resolve the executable path for the selected agent runtime."""
     runtime_norm = _normalize_agent_runtime(runtime)
-    command = "cline" if runtime_norm == "cline" else "claude"
-    runtime_path = shutil.which(command)
-    if runtime_path:
-        return runtime_path
-
     if runtime_norm == "cline":
+        runtime_path = shutil.which("cline")
+        if runtime_path:
+            return runtime_path
         raise RuntimeError(
             "Cline CLI not found. Install it with `npm install -g cline` and authenticate via `cline auth`."
         )
+
+    if runtime_norm == "copilot":
+        runtime_path = shutil.which("copilot")
+        if runtime_path:
+            return runtime_path
+
+        gh_path = shutil.which("gh")
+        if gh_path:
+            return gh_path
+
+        raise RuntimeError(
+            "GitHub Copilot CLI not found. Install the `copilot` CLI or ensure `gh` with the `gh copilot` extension is available and authenticated."
+        )
+
+    runtime_path = shutil.which("claude")
+    if runtime_path:
+        return runtime_path
 
     raise RuntimeError(
         "Claude Code CLI not found. Install it from https://docs.anthropic.com/en/docs/claude-code"
@@ -1288,6 +1323,28 @@ def _build_cline_prompt(task_prompt: str, system_prompt: str) -> str:
         "=== TASK ===\n"
         f"{task_prompt}"
     )
+
+
+def _build_copilot_prompt(task_prompt: str, system_prompt: str) -> str:
+    """Compose a single prompt for Copilot CLI prompt mode."""
+    return (
+        "=== SYSTEM INSTRUCTIONS ===\n"
+        f"{system_prompt}\n\n"
+        "=== TASK ===\n"
+        f"{task_prompt}"
+    )
+
+
+def _copilot_effort_value(effort: str | None) -> str | None:
+    """Map orchestration effort hints onto Copilot's supported values."""
+    normalized = str(effort or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"low", "medium", "high"}:
+        return normalized
+    if normalized in {"xhigh", "max"}:
+        return "high"
+    return None
 
 
 def _resolve_cline_config_dir() -> str | None:
@@ -1494,6 +1551,26 @@ def _build_runtime_command(
         if effort and effort not in {"low", "medium"}:
             cmd.append("--thinking")
         cmd.append(effective_prompt)
+        return cmd, effective_prompt
+
+    if runtime_norm == "copilot":
+        effective_prompt = _build_copilot_prompt(task_prompt, system_prompt)
+        cmd = [runtime_path]
+        if os.path.basename(runtime_path) == "gh":
+            cmd.append("copilot")
+        cmd.extend(
+            [
+                "-p", effective_prompt,
+                "--model", model,
+                "--output-format", "text",
+                "--silent",
+                "--allow-all",
+                "--no-ask-user",
+            ]
+        )
+        copilot_effort = _copilot_effort_value(effort)
+        if copilot_effort:
+            cmd.extend(["--effort", copilot_effort])
         return cmd, effective_prompt
 
     cmd = [
@@ -2001,6 +2078,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         env["WORKSPACE_ROOT"] = workspace_root
         if workstream_id:
             env["ORCHESTRATION_AGENT_WORKSTREAM_ID"] = str(workstream_id)
+        if runtime == "copilot":
+            # Copilot CLI authenticates with GitHub tokens/session state. Do not
+            # forward an ambient OpenAI key into the child process.
+            env.pop("OPENAI_API_KEY", None)
         abs_base = os.path.abspath(base_dir)
         if runtime == "cline" and workspace_root != abs_base:
             existing_pythonpath = str(env.get("PYTHONPATH", "") or "")

@@ -16,6 +16,12 @@ import json
 import os
 import sys
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 def _output(data):
     """Print JSON success response to stdout."""

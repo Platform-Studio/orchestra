@@ -1,5 +1,6 @@
 """Tests for the CLI interface."""
 
+import importlib
 import json
 import shutil
 import subprocess
@@ -7,6 +8,7 @@ import sys
 import os
 import pytest
 import yaml
+import types
 from pathlib import Path
 
 from orchestration.cli import build_parser, main
@@ -40,6 +42,18 @@ def run_cli(*args, base_dir=None):
         cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     )
     return result
+
+
+def test_cli_loads_dotenv_on_import(monkeypatch):
+    calls = []
+
+    fake_dotenv = types.SimpleNamespace(load_dotenv=lambda: calls.append(True))
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    import orchestration.cli as cli_module
+    importlib.reload(cli_module)
+
+    assert calls
 
 
 class TestCLIWorkstream:
