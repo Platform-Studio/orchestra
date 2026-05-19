@@ -526,7 +526,10 @@ class TestCLIArtifact:
         # Read
         result = run_cli("artifact", "read", "test.md", base_dir=workspace)
         assert result.returncode == 0
-        assert json.loads(result.stdout)["data"]["content"] == "# Hello"
+        data = json.loads(result.stdout)["data"]
+        assert data["mode"] == "text"
+        assert data["content"] == "# Hello"
+        assert data["resolved_path"].endswith("/artifacts/test.md")
 
         # List
         result = run_cli("artifact", "list", base_dir=workspace)
@@ -548,6 +551,28 @@ class TestCLIArtifact:
         assert data["mode"] == "binary"
         assert data["bytes_written"] > 0
         assert (Path(workspace) / "artifacts" / "assets" / "pixel.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_artifact_read_returns_metadata_for_binary_files(self, workspace):
+        payload_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6p8n8AAAAASUVORK5CYII="
+
+        create_result = run_cli(
+            "artifact", "create",
+            "--path", "assets/pixel.png",
+            "--content-base64", payload_base64,
+            base_dir=workspace,
+        )
+        assert create_result.returncode == 0
+
+        result = run_cli("artifact", "read", "assets/pixel.png", base_dir=workspace)
+
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["path"] == "assets/pixel.png"
+        assert data["mode"] == "binary"
+        assert data["content_type"] == "image/png"
+        assert data["bytes"] > 0
+        assert data["resolved_path"].endswith("/artifacts/assets/pixel.png")
+        assert "content" not in data
 
     def test_artifact_create_rejects_text_mode_for_raster_images(self, workspace):
         result = run_cli(

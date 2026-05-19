@@ -498,6 +498,11 @@ python -m orchestration.cli artifact read "reports/q2_summary.md"
 python -m orchestration.cli artifact read "ideas/april.md" --workstream WORKSTREAM_ID
 ```
 
+Behavior:
+- Text artifacts return `mode: "text"`, UTF-8 `content`, and `resolved_path`.
+- Binary artifacts return `mode: "binary"`, `resolved_path`, byte count, and inferred `content_type`.
+- Use `resolved_path` when a downstream tool needs to upload or otherwise open the binary file directly.
+
 #### artifact list — List all artifacts
 
 ```bash

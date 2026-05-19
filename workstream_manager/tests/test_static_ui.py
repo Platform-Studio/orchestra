@@ -129,6 +129,17 @@ def test_agent_run_details_recognize_copilot_runtime() -> None:
     assert "? 'Copilot'" in html
 
 
+def test_agent_run_details_show_cli_flags_separately_from_prompt() -> None:
+    html = _index_html()
+
+    assert 'function parseShellWords(commandLine)' in html
+    assert 'function maskPromptArgs(args)' in html
+    assert "masked.push(arg, '<prompt omitted>');" in html
+    assert "masked.push(arg, '<system prompt omitted>');" in html
+    assert 'const selectedCommandArgs = parsedCommandLine && parsedCommandLine.length > 1' in html
+    assert "CLI Flags" in html
+
+
 def test_workstream_manager_schedules_interaction_retry_when_initial_autoplay_is_blocked() -> None:
     html = _index_html()
 

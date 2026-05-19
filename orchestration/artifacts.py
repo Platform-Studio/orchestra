@@ -3,6 +3,7 @@
 import base64
 import binascii
 import filecmp
+import mimetypes
 import os
 import shutil
 
@@ -102,12 +103,42 @@ def create_binary_artifact(
 
 
 def read_artifact(path: str, base_dir: str = ".", workstream_id: str = None) -> str:
+    full_path = resolve_artifact_path(path, base_dir=base_dir, workstream_id=workstream_id)
+    with open(full_path, encoding="utf-8") as f:
+        return f.read()
+
+
+def resolve_artifact_path(path: str, base_dir: str = ".", workstream_id: str = None) -> str:
     artifacts_dir, rel_path = _resolve_artifact_root(path, base_dir=base_dir, workstream_id=workstream_id)
     full_path = _validate_path(artifacts_dir, rel_path)
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"Artifact not found: {path}")
-    with open(full_path) as f:
-        return f.read()
+    return full_path
+
+
+def read_artifact_for_cli(path: str, base_dir: str = ".", workstream_id: str = None) -> dict:
+    full_path = resolve_artifact_path(path, base_dir=base_dir, workstream_id=workstream_id)
+    payload = {
+        "path": path,
+        "resolved_path": full_path,
+        "bytes": os.path.getsize(full_path),
+    }
+
+    if _is_raster_image_path(path):
+        payload["mode"] = "binary"
+        payload["content_type"] = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+        return payload
+
+    try:
+        with open(full_path, encoding="utf-8") as f:
+            payload["content"] = f.read()
+    except UnicodeDecodeError:
+        payload["mode"] = "binary"
+        payload["content_type"] = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+        return payload
+
+    payload["mode"] = "text"
+    return payload
 
 
 def list_artifacts(prefix: str = None, base_dir: str = ".", workstream_id: str = None) -> list:

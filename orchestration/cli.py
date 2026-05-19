@@ -632,12 +632,12 @@ def cmd_artifact_create(args):
 
 
 def cmd_artifact_read(args):
-    from .artifacts import read_artifact
+    from .artifacts import read_artifact_for_cli
     from .workspace_audit import log_event
     import os
     import json as _json
     workstream_id = _artifact_workstream_context(args)
-    content = read_artifact(args.path, base_dir=args.base_dir, workstream_id=workstream_id)
+    artifact = read_artifact_for_cli(args.path, base_dir=args.base_dir, workstream_id=workstream_id)
 
     # If an agent invocation is active, record which artifact it accessed.
     run_id = os.getenv("ORCHESTRATION_AGENT_RUN_ID")
@@ -672,7 +672,7 @@ def cmd_artifact_read(args):
             **extra,
         )
 
-    _output({"path": args.path, "content": content})
+    _output(artifact)
 
 
 def cmd_artifact_list(args):

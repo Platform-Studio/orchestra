@@ -4643,6 +4643,98 @@ function isRetryableStatus(status) {
   return status === 'failed' || status === 'timeout' || status === 'killed';
 }
 
+function parseShellWords(commandLine) {
+  const input = String(commandLine || '');
+  const words = [];
+  let current = '';
+  let quote = null;
+
+  for (let index = 0; index < input.length; index++) {
+    const ch = input[index];
+
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+        continue;
+      }
+      if (ch === '\\' && index + 1 < input.length) {
+        const next = input[index + 1];
+        if (next === '\\' || next === '"' || next === '$' || next === '`' || next === '\n') {
+          current += next;
+          index += 1;
+          continue;
+        }
+      }
+      current += ch;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (current) {
+        words.push(current);
+        current = '';
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+
+    if (ch === '\\' && index + 1 < input.length) {
+      current += input[index + 1];
+      index += 1;
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (quote) return null;
+  if (current) words.push(current);
+  return words;
+}
+
+function shellQuoteArg(arg) {
+  const value = String(arg == null ? '' : arg);
+  if (!value) return "''";
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function maskPromptArgs(args) {
+  const masked = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if ((arg === '-p' || arg === '--prompt') && index + 1 < args.length) {
+      masked.push(arg, '<prompt omitted>');
+      index += 1;
+      continue;
+    }
+    if (arg === '--append-system-prompt' && index + 1 < args.length) {
+      masked.push(arg, '<system prompt omitted>');
+      index += 1;
+      continue;
+    }
+    masked.push(arg);
+  }
+  return masked;
+}
+
+function formatShellArgs(args) {
+  return (Array.isArray(args) ? args : []).map(shellQuoteArg).join(' ');
+}
+
 async function killSelectedAgentRun() {
   if (!selectedAgentRunId) return;
   const run = activeAgentRuns.find(r => r.run_id === selectedAgentRunId);
@@ -4807,6 +4899,10 @@ function renderActiveAgentsModal() {
   const selected = activeAgentRuns.find(r => r.run_id === selectedAgentRunId) || null;
   const selectedDetails = selectedAgentArtifacts || null;
   const selectedCommandLine = selectedDetails && selectedDetails.run ? String(selectedDetails.run.command_line || '') : '';
+  const parsedCommandLine = parseShellWords(selectedCommandLine);
+  const selectedCommandArgs = parsedCommandLine && parsedCommandLine.length > 1
+    ? formatShellArgs(maskPromptArgs(parsedCommandLine.slice(1)))
+    : '';
   const selectedRuntime = selected && selected.runtime
     ? String(selected.runtime)
     : (selectedCommandLine.includes('cline ')
@@ -4923,6 +5019,10 @@ function renderActiveAgentsModal() {
         <div class="agent-section">
           <h4>TASK RETRY POLICY</h4>
           <div class="agent-cli-calls">${retryHtml}</div>
+        </div>
+        <div class="agent-section">
+          <h4>${selected ? `${selectedRuntimeLabel} CLI Flags` : 'Agent CLI Flags'}</h4>
+          <pre class="agent-tail-pre">${selected ? esc(selectedCommandArgs || 'No flags or args recorded for this run.') : 'Select an agent run from the list.'}</pre>
         </div>
         <div class="agent-section">
           <h4>${selected ? `${selectedRuntimeLabel} Command` : 'Agent Command'}</h4>
