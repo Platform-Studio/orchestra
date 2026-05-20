@@ -1,8 +1,11 @@
 """Tests for workstream operations."""
 
+import json
 import pytest
 import os
 import shutil
+import subprocess
+import sys
 from orchestration.workstreams import (
     create_workstream,
     list_workstreams,
@@ -482,6 +485,43 @@ class TestPersistenceRoots:
         assert resolve_workstream_child_state_root(parent.id, base_dir=workspace) == expected_child_root
         assert resolve_workstream_state_root(child.id, base_dir=workspace) == expected_child_root
         assert os.path.exists(os.path.join(expected_child_root, "workstreams", f"{child.id}.yaml"))
+
+    def test_list_workstreams_cache_detects_external_nested_child_addition(self, workspace, tmp_path, monkeypatch):
+        state_root = tmp_path / "shared_state"
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        monkeypatch.setenv("WORKSTREAM_ROOT", f"file:{state_root}")
+
+        parent = create_workstream(name="Parent", base_dir=workspace)
+
+        warmed = {ws.id for ws in list_workstreams(base_dir=workspace)}
+        assert parent.id in warmed
+
+        child_json = subprocess.check_output(
+            [
+                sys.executable,
+                "-m",
+                "orchestration.cli",
+                "--base-dir",
+                workspace,
+                "workstream",
+                "create",
+                "--name",
+                "Child",
+                "--parent",
+                parent.id,
+            ],
+            cwd=workspace,
+            text=True,
+            env={
+                **os.environ,
+                "WORKSTREAM_ROOT": f"file:{state_root}",
+                "PYTHONPATH": repo_root if not os.environ.get("PYTHONPATH") else repo_root + os.pathsep + os.environ["PYTHONPATH"],
+            },
+        )
+        child_id = json.loads(child_json)["data"]["id"]
+
+        visible = {ws.id for ws in list_workstreams(base_dir=workspace)}
+        assert child_id in visible
 
     def test_artifact_root_override_is_inherited_by_descendants(self, workspace, tmp_path):
         artifact_root = tmp_path / "shared_artifacts"

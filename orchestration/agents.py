@@ -50,11 +50,13 @@ CLINE_MODEL_LEVEL_DEFAULTS = {
     "high": "deepseek/deepseek-v4-pro",
     "medium": "deepseek/deepseek-v4-flash",
     "low": "deepseek/deepseek-v4-flash",
+    "coding": None,
 }
 COPILOT_MODEL_LEVEL_DEFAULTS = {
     "high": COPILOT_DEFAULT_MODEL,
     "medium": COPILOT_DEFAULT_MODEL,
     "low": COPILOT_DEFAULT_MODEL,
+    "coding": None,
 }
 
 _ACTIVE_AGENTS_LOCK = threading.Lock()
@@ -1176,6 +1178,28 @@ def _get_model(runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
     return _normalize_model_name(os.getenv("DEFAULT_LLM", "sonnet"))
 
 
+def _normalize_agent_role(raw: str) -> str:
+    """Normalize canonical agent role names while preserving legacy aliases."""
+    role = str(raw or "").strip().lower().replace("_", "-")
+    if not role:
+        return "worker"
+
+    aliases = {
+        "exec": "executive",
+        "executive": "executive",
+        "director": "director",
+        "manager": "manager",
+        "worker": "worker",
+    }
+    normalized = aliases.get(role)
+    if normalized:
+        return normalized
+
+    raise ValueError(
+        f"Invalid x-role '{raw}'. Expected one of: executive, exec, director, manager, worker"
+    )
+
+
 def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
     """Map x-model-level to runtime-aware model aliases."""
     level_norm = str(level or "").strip().lower()
@@ -1184,32 +1208,35 @@ def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
         "high": "HIGH_LLM",
         "medium": "MEDIUM_LLM",
         "low": "LOW_LLM",
+        "coding": "CODING_LLM",
     }
     if runtime_norm == "cline":
         env_key_by_level = {
             "high": "CLINE_HIGH_LLM",
             "medium": "CLINE_MEDIUM_LLM",
             "low": "CLINE_LOW_LLM",
+            "coding": "CLINE_CODING_LLM",
         }
     elif runtime_norm == "copilot":
         env_key_by_level = {
             "high": "COPILOT_HIGH_LLM",
             "medium": "COPILOT_MEDIUM_LLM",
             "low": "COPILOT_LOW_LLM",
+            "coding": "COPILOT_CODING_LLM",
         }
 
     env_key = env_key_by_level.get(level_norm)
     if not env_key:
-        raise ValueError(f"Invalid x-model-level '{level}'. Expected one of: high, medium, low")
+        raise ValueError(f"Invalid x-model-level '{level}'. Expected one of: high, medium, low, coding")
 
     env_value = os.getenv(env_key)
     if not env_value:
         if runtime_norm == "cline":
-            default_model = _normalize_model_name(CLINE_MODEL_LEVEL_DEFAULTS[level_norm])
+            default_model = _normalize_model_name(CLINE_MODEL_LEVEL_DEFAULTS.get(level_norm))
             if default_model:
                 return default_model
         if runtime_norm == "copilot":
-            default_model = _normalize_model_name(COPILOT_MODEL_LEVEL_DEFAULTS[level_norm])
+            default_model = _normalize_model_name(COPILOT_MODEL_LEVEL_DEFAULTS.get(level_norm))
             if default_model:
                 return default_model
         raise ValueError(f"x-model-level '{level_norm}' requires env var {env_key} to be set")
@@ -1682,7 +1709,7 @@ def _parse_agent_md(path: str) -> dict:
     return {
         "name": header.get("name", os.path.splitext(os.path.basename(path))[0]),
         "description": header.get("description", ""),
-        "agent_type": header.get("x-agent-type", "worker"),
+        "agent_type": _normalize_agent_role(header.get("x-role", header.get("x-agent-type", "worker"))),
         "tools": header.get("x-tools", []),
         "learning_enabled": _coerce_bool(header.get("x-learning", True), default=True),
         "timeout": header.get("x-timeout"),

@@ -533,6 +533,12 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-size: 13px; transition: background 0.15s;
 }
 .board-header .context-btn:hover { background: rgba(255,255,255,0.14); }
+.board-header .settings-btn {
+  background: rgba(255,255,255,0.06); border: none; color: #c9d1d9;
+  padding: 6px 14px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; transition: background 0.15s;
+}
+.board-header .settings-btn:hover { background: rgba(255,255,255,0.14); }
 .board-header .trigger-btn-active {
   background: rgba(35,134,54,0.25); color: #3fb950; font-weight: 600;
   animation: trigger-pulse 2s ease-in-out infinite;
@@ -1612,6 +1618,11 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 <!-- Workstream context modal -->
 <div class="modal-overlay hidden" id="workstream-context-modal">
   <div class="modal" id="workstream-context-content"></div>
+</div>
+
+<!-- Workstream settings modal -->
+<div class="modal-overlay hidden" id="workstream-settings-modal">
+  <div class="modal" id="workstream-settings-content"></div>
 </div>
 
 <!-- Audit log modal -->
@@ -2904,12 +2915,14 @@ function renderBoardHeader(ws) {
     : '';
   const infoBtn = `<button class="info-btn" onclick="showWorkstreamInfo()">Info</button>`;
   const contextBtn = `<button class="context-btn" onclick="showWorkstreamContext()">Context</button>`;
+  const settingsBtn = `<button class="settings-btn" onclick="showWorkstreamSettings()">Settings</button>`;
   header.innerHTML = `
     <h2>${esc(ws.name)}</h2>
     <span class="ws-status ${statusCls}">${statusLabel}</span>
     ${triggerBtn}
     ${infoBtn}
     ${contextBtn}
+    ${settingsBtn}
     <button class="pause-btn" onclick="togglePause()">${btnLabel}</button>
   `;
 }
@@ -4300,6 +4313,15 @@ async function showWorkstreamInfo() {
     return lines.join('\n');
   }
 
+  const mountingLines = [
+    `Working directory: ${info.working_directory || '(none set at this level)'}`,
+    `Artifact root: ${info.artifact_root || '(none set at this level)'}`,
+    `Child workstream root: ${info.child_workstream_root || '(none set at this level)'}`,
+    `Resolved working directory: ${info.resolved_workspace_path || '(unknown)'}`,
+    `Resolved artifact directory: ${info.resolved_artifact_directory || '(unknown)'}`,
+    `Resolved child workstream root: ${info.resolved_child_workstream_root || '(unknown)'}`,
+  ].join('\n');
+
   let html = `
     <div class="modal-header">
       <div class="modal-header-left"><h3>Workstream Info</h3></div>
@@ -4308,12 +4330,10 @@ async function showWorkstreamInfo() {
       </div>
     </div>
     <div class="ws-info-uid">Workstream UID: ${esc(info.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(info.id)}', this)">Copy</button></div>
-    <div class="ws-info-path">Working directory: ${info.working_directory ? esc(info.working_directory) : '<em>none set at this level</em>'}</div>
-    <div class="ws-info-path">Artifact root: ${info.artifact_root ? esc(info.artifact_root) : '<em>none set at this level</em>'}</div>
-    <div class="ws-info-path">Child workstream root: ${info.child_workstream_root ? esc(info.child_workstream_root) : '<em>none set at this level</em>'}</div>
-    <div class="ws-info-path">Resolved working directory: ${info.resolved_workspace_path ? esc(info.resolved_workspace_path) : '<em>unknown</em>'}</div>
-    <div class="ws-info-path">Resolved artifact directory: ${info.resolved_artifact_directory ? esc(info.resolved_artifact_directory) : '<em>unknown</em>'}</div>
-    <div class="ws-info-path">Resolved child workstream root: ${info.resolved_child_workstream_root ? esc(info.resolved_child_workstream_root) : '<em>unknown</em>'}</div>
+    <div class="detail-section" style="margin-top:0;">
+      <h4>MOUNTING</h4>
+      <pre class="ws-env-pre">${esc(mountingLines)}</pre>
+    </div>
     <div class="detail-section">
       <h4>Environment Variables</h4>
   `;
@@ -4359,12 +4379,39 @@ async function showWorkstreamInfo() {
     </div>
   `;
 
-  const concurrencyPolicy = JSON.stringify(info.agent_concurrency || {}, null, 2);
-  html += `
-    <div class="ws-sm-section">
+  html += `</div>`;
+  content.innerHTML = html;
+  modal.classList.remove('hidden');
+}
+
+async function showWorkstreamSettings() {
+  if (!selectedWsId) return;
+  const modal = document.getElementById('workstream-settings-modal');
+  const content = document.getElementById('workstream-settings-content');
+  const data = await api('workstream/concurrency/' + selectedWsId);
+  const concurrencyPolicy = JSON.stringify(data.agent_concurrency || {}, null, 2);
+  const concurrencyExample = JSON.stringify({
+    default: 1,
+    overrides: {
+      'Coder': 2,
+    },
+  }, null, 2);
+  const workstreamName = selectedWs && selectedWs.id === selectedWsId ? selectedWs.name : selectedWsId;
+
+  content.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-header-left"><h3>Workstream Settings</h3></div>
+      <div class="modal-header-actions">
+        <button class="modal-close" onclick="closeModal('workstream-settings-modal')">&times;</button>
+      </div>
+    </div>
+    <div class="ws-info-uid">${esc(workstreamName)} (${esc(selectedWsId)})</div>
+    <div class="ws-sm-section" style="margin-top:0;">
       <h4>Concurrency Policy</h4>
       <div class="ws-sm-note">Optional JSON policy for per-agent limits. Use <code>state_overrides</code> when the same agent should have separate slots in different states.</div>
       <textarea id="workstream-concurrency-textarea" class="ws-context-textarea" placeholder='{"default":1,"state_overrides":{"Staging Deploy":{"overrides":{"DevOps Engineer":1}},"Production Deploy":{"overrides":{"DevOps Engineer":1}}}}'>${esc(concurrencyPolicy)}</textarea>
+      <div class="ws-sm-note" style="margin-top:10px; margin-bottom:6px;">Simple example</div>
+      <pre class="ws-sm-pre">${esc(concurrencyExample)}</pre>
       <div class="ws-context-actions">
         <button class="ws-context-save" onclick="saveWorkstreamConcurrency()">Save Concurrency Policy</button>
       </div>
@@ -4372,8 +4419,6 @@ async function showWorkstreamInfo() {
     </div>
   `;
 
-  html += `</div>`;
-  content.innerHTML = html;
   modal.classList.remove('hidden');
 }
 

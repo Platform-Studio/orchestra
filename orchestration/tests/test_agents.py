@@ -25,11 +25,14 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
     monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
     monkeypatch.delenv("CLINE_LOW_LLM", raising=False)
+    monkeypatch.delenv("CLINE_CODING_LLM", raising=False)
     monkeypatch.delenv("ORCHESTRATION_CLINE_VERBOSE", raising=False)
+    monkeypatch.delenv("CODING_LLM", raising=False)
     monkeypatch.delenv("COPILOT_MODEL", raising=False)
     monkeypatch.delenv("COPILOT_HIGH_LLM", raising=False)
     monkeypatch.delenv("COPILOT_MEDIUM_LLM", raising=False)
     monkeypatch.delenv("COPILOT_LOW_LLM", raising=False)
+    monkeypatch.delenv("COPILOT_CODING_LLM", raising=False)
     monkeypatch.setenv("WORKSTREAM_ROOT", "")
     monkeypatch.setenv("ARTIFACT_ROOT", "")
     monkeypatch.setenv("ARTICACT_ROOT", "")
@@ -460,6 +463,23 @@ def test_parse_agent_md_reads_sound_headers(workspace):
     assert parsed["sound_error_defined"] is True
 
 
+def test_parse_agent_md_reads_x_role_header(workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    role_agent = os.path.join(agents_dir, "role_agent.md")
+    with open(role_agent, "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Role Agent\n"
+            "x-role: exec\n"
+            "---\n"
+            "You are role aware.\n"
+        )
+
+    parsed = _parse_agent_md(role_agent)
+
+    assert parsed["agent_type"] == "executive"
+
+
 def test_configured_agent_sound_name_uses_default_env_when_header_missing(monkeypatch):
     monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "start.mp3")
 
@@ -833,6 +853,32 @@ def test_run_agent_uses_x_model_level_env_mapping(mock_popen, mock_which, worksp
     cmd = mock_popen.call_args.args[0]
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "claude-opus-4-6"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/gh")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_coding_model_level_for_copilot(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("COPILOT_CODING_LLM", "gpt-5.3-codex")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "coding_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Coding Agent\n"
+            "description: Uses coding level\n"
+            "x-runtime: copilot\n"
+            "x-model-level: coding\n"
+            "---\n"
+            "You are coding aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Coding Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "gpt-5.3-codex"
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

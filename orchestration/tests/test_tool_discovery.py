@@ -133,6 +133,11 @@ class TestModelAndEffortResolution:
         agent_def = {"model_level": "high"}
         assert _resolve_agent_model(agent_def, runtime="copilot") == "gpt-5"
 
+    def test_resolve_agent_model_from_copilot_coding_level_override(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_CODING_LLM", "gpt-5.3-codex")
+        agent_def = {"model_level": "coding"}
+        assert _resolve_agent_model(agent_def, runtime="copilot") == "gpt-5.3-codex"
+
     def test_resolve_agent_model_invalid_level_raises(self):
         with pytest.raises(ValueError, match="Invalid x-model-level"):
             _resolve_agent_model({"model_level": "urgent"})
@@ -233,6 +238,20 @@ class TestAgentToolDeclaration:
         assert agent_def["model_level"] == "high"
         assert agent_def["effort"] == "medium"
         assert agent_def["runtime"] == "cline"
+
+    def test_x_role_parsed_from_frontmatter(self, workspace):
+        agent_path = os.path.join(workspace, "Agents", "role_agent.md")
+        with open(agent_path, "w") as f:
+            f.write(
+                "---\n"
+                "name: Role Agent\n"
+                "description: Role header\n"
+                "x-role: manager\n"
+                "---\n"
+                "Do role-aware work.\n"
+            )
+        agent_def = _parse_agent_md(agent_path)
+        assert agent_def["agent_type"] == "manager"
 
     def test_x_learning_defaults_true(self, workspace):
         agent_path = os.path.join(workspace, "Agents", "learning_default_agent.md")

@@ -121,7 +121,11 @@ def clear_workstream_cache(base_dir: str = None) -> None:
 
 
 def _workstream_dir_signature(workspace_root: str) -> tuple:
-    ws_dir = _ws_dir(workspace_root)
+    # `workspace_root` here is already a concrete state root that may point to a
+    # nested child-workstream storage directory. Re-resolving it through
+    # `_state_base_dir()` collapses nested roots back to the global
+    # WORKSTREAM_ROOT and breaks cache invalidation for newly added children.
+    ws_dir = _local_ws_dir(workspace_root)
     entries = []
     try:
         with os.scandir(ws_dir) as scan:

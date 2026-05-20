@@ -153,6 +153,7 @@ def test_workstream_info_includes_agent_concurrency_editor() -> None:
 
     assert 'id="workstream-concurrency-textarea"' in html
     assert 'Concurrency Policy' in html
+    assert 'Simple example' in html
     assert 'saveWorkstreamConcurrency()' in html
     assert "api('workstream/concurrency/' + selectedWsId" in html
     assert 'state_overrides' in html
