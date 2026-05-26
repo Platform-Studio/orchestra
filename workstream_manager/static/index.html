@@ -4213,6 +4213,10 @@ function showTriggers() {
       } else if (t.on_schedule) {
         typeLabel = `Schedule: ${esc(cronToHuman(t.on_schedule))}`;
         if (t.filter) typeLabel += ` (filter: ${esc(JSON.stringify(t.filter))})`;
+      } else if (t.on_email) {
+        const recipient = t.on_email.recipient || '?';
+        const eventType = t.on_email.event || 'new_thread';
+        typeLabel = `Email: ${esc(eventType)} → ${esc(recipient)}`;
       }
       if (isRunning) typeLabel += ` <span class="trigger-running-badge">Running</span>`;
 

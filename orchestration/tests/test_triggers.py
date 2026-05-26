@@ -2,9 +2,10 @@
 
 import os
 import pytest
+import yaml
 from datetime import datetime, timezone, timedelta
-from orchestration.workstreams import create_workstream, read_workstream, save_workstream
-from orchestration.tasks import create_task, read_task, update_task
+from orchestration.workstreams import create_workstream, read_workstream, resolve_workstream_state_root, save_workstream
+from orchestration.tasks import create_task, list_tasks, read_task, update_task
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, execute_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import tick, _save_state
 
@@ -44,6 +45,20 @@ class TestCreateTrigger:
         assert trigger.action == "run_agent"
         assert trigger.agent == "test_agent"
 
+    def test_create_email_trigger(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id,
+            on_email={"recipient": "Build@Guild.PlatformStud.io", "event": "new_thread"},
+            action="run_agent",
+            agent="startup_vendor",
+            base_dir=workspace,
+        )
+        assert trigger.on_email == {
+            "recipient": "build@guild.platformstud.io",
+            "event": "new_thread",
+        }
+        assert trigger.agent == "startup_vendor"
+
     def test_trigger_persisted_in_workstream(self, workspace, ws):
         create_trigger(ws.id, on_state="Done", action="run_command", command="echo x", base_dir=workspace)
         reloaded = read_workstream(ws.id, base_dir=workspace)
@@ -69,6 +84,17 @@ class TestCreateTrigger:
                 action="run_command",
                 command="echo x",
                 task_selection="all_unlocked",
+                base_dir=workspace,
+            )
+
+    def test_trigger_requires_exactly_one_condition(self, workspace, ws):
+        with pytest.raises(ValueError, match="Exactly one trigger condition"):
+            create_trigger(
+                ws.id,
+                on_state="To Do",
+                on_email={"recipient": "build@guild.platformstud.io", "event": "new_thread"},
+                action="run_command",
+                command="echo x",
                 base_dir=workspace,
             )
 
@@ -471,6 +497,123 @@ class TestStateTriggerViaTick:
         # is selected first for same-state triggers.
         assert calls == [[t2.id], [t1.id]]
         assert len(result["state_triggers_fired"]) == 2
+
+
+class TestEmailTriggerViaTick:
+    def test_tick_dispatches_email_trigger_as_standalone_run(self, workspace, ws, monkeypatch):
+        trigger = create_trigger(
+            ws.id,
+            on_email={"recipient": "build@guild.platformstud.io", "event": "new_thread"},
+            action="run_agent",
+            agent="startup_vendor",
+            base_dir=workspace,
+        )
+
+        def _fake_list_new_thread_messages(recipient):
+            assert recipient == "build@guild.platformstud.io"
+            return [{
+                "storage_key": "msg-1",
+                "from": "Jeremy Burton <jb@platformstud.io>",
+                "to": "build@guild.platformstud.io",
+                "subject": "Need a feature",
+                "date": "Mon, 26 May 2026 10:00:00 +0000",
+                "body": "Please add the new workflow.",
+                "attachments": [
+                    {
+                        "name": "brief.pdf",
+                        "content_type": "application/pdf",
+                        "size": 12345,
+                    }
+                ],
+            }]
+
+        dispatched = []
+
+        def _fake_run_without_lock(_trigger, _ws, _base_dir, task_ids=None, **_kwargs):
+            dispatched.append({
+                "task_ids": list(task_ids or []),
+                "prompt": _trigger.prompt,
+                "event_context": getattr(_trigger, "event_context", None),
+            })
+
+        monkeypatch.setattr("orchestration.email_inbox.list_new_thread_messages", _fake_list_new_thread_messages)
+        monkeypatch.setattr("orchestration.scheduler._run_without_lock", _fake_run_without_lock)
+
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+        result = tick(workspace)
+
+        tasks = list_tasks(ws.id, base_dir=workspace)
+        assert len(tasks) == 0
+        assert len(dispatched) == 1
+        assert dispatched[0]["task_ids"] == []
+        assert "Inbound email event:" in dispatched[0]["prompt"]
+        assert "Need a feature" in dispatched[0]["prompt"]
+        assert "Attachments (1):" in dispatched[0]["prompt"]
+        assert "brief.pdf (application/pdf, 12345 bytes)" in dispatched[0]["prompt"]
+        assert dispatched[0]["event_context"] == {
+            "email_from": "Jeremy Burton <jb@platformstud.io>",
+            "email_to": "build@guild.platformstud.io",
+            "email_subject": "Need a feature",
+            "email_date": "Mon, 26 May 2026 10:00:00 +0000",
+            "email_body": "Please add the new workflow.",
+            "email_storage_key": "msg-1",
+            "email_attachment_count": 1,
+            "email_attachments_json": '[{"content_type": "application/pdf", "name": "brief.pdf", "size": 12345}]',
+        }
+        assert len(result["email_triggers_fired"]) == 1
+        assert result["email_triggers_fired"][0]["trigger_id"] == trigger.id
+
+        state_path = os.path.join(
+            resolve_workstream_state_root(ws.id, base_dir=workspace),
+            ".orchestration",
+            "triggers",
+            f"{trigger.id}.yaml",
+        )
+        with open(state_path) as f:
+            trigger_state = yaml.safe_load(f) or {}
+        assert trigger_state["processed_keys"] == ["msg-1"]
+
+    def test_tick_dedupes_processed_email_threads(self, workspace, ws, monkeypatch):
+        trigger = create_trigger(
+            ws.id,
+            on_email={"recipient": "build@guild.platformstud.io", "event": "new_thread"},
+            action="run_command",
+            command="echo {email_subject}",
+            base_dir=workspace,
+        )
+
+        def _fake_list_new_thread_messages(_recipient):
+            return [{
+                "storage_key": "msg-1",
+                "from": "Jeremy Burton <jb@platformstud.io>",
+                "to": "build@guild.platformstud.io",
+                "subject": "Need a feature",
+                "body": "Please add the new workflow.",
+                "attachments": [],
+            }]
+
+        dispatched = []
+
+        def _fake_run_without_lock(_trigger, _ws, _base_dir, task_ids=None, **_kwargs):
+            dispatched.append({
+                "task_ids": list(task_ids or []),
+                "command": _trigger.command,
+                "event_context": getattr(_trigger, "event_context", None),
+            })
+
+        monkeypatch.setattr("orchestration.email_inbox.list_new_thread_messages", _fake_list_new_thread_messages)
+        monkeypatch.setattr("orchestration.scheduler._run_without_lock", _fake_run_without_lock)
+
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+        tick(workspace)
+        tick(workspace)
+
+        tasks = list_tasks(ws.id, base_dir=workspace)
+        assert len(tasks) == 0
+        assert len(dispatched) == 1
+        assert dispatched[0]["task_ids"] == []
+        assert dispatched[0]["event_context"]["email_subject"] == "Need a feature"
+        assert dispatched[0]["event_context"]["email_attachment_count"] == 0
 
 
 class TestAgentConcurrency:

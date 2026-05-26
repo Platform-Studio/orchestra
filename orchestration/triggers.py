@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import copy
 
 from .models import Trigger, Workstream, new_id
 from .workstreams import read_workstream, save_workstream
@@ -93,6 +94,8 @@ def _execute_trigger_inner(
         # Template variable substitution — join task IDs for command templates
         task_id_str = task_ids[0] if len(task_ids) == 1 else ",".join(task_ids)
         cmd = trigger.command.replace("{task_id}", task_id_str).replace("{workstream_id}", workstream_id)
+        for key, value in (getattr(trigger, "event_context", None) or {}).items():
+            cmd = cmd.replace("{" + str(key) + "}", str(value or ""))
 
         try:
             # Ensure the same Python that runs the scheduler is available to subprocesses
@@ -126,6 +129,7 @@ def create_trigger(
     action: str,
     on_state: str = None,
     on_schedule: str = None,
+    on_email: dict = None,
     task_selection: str = None,
     filter: dict = None,
     agent: str = None,
@@ -134,14 +138,27 @@ def create_trigger(
     timeout: int = None,
     base_dir: str = ".",
 ) -> Trigger:
-    if on_state is None and on_schedule is None:
-        raise ValueError("Either --on-state or --on-schedule must be specified")
-    if on_state is not None and on_schedule is not None:
-        raise ValueError("Cannot specify both --on-state and --on-schedule")
+    trigger_conditions = [
+        on_state is not None,
+        on_schedule is not None,
+        on_email is not None,
+    ]
+    if sum(1 for item in trigger_conditions if item) != 1:
+        raise ValueError("Exactly one trigger condition must be specified")
     if task_selection is not None and task_selection not in ("first_unlocked", "all_unlocked"):
         raise ValueError("--task-selection must be either 'first_unlocked' or 'all_unlocked'")
     if task_selection is not None and on_state is None:
         raise ValueError("--task-selection is only supported for --on-state triggers")
+    if on_email is not None:
+        if not isinstance(on_email, dict):
+            raise ValueError("--on-email must be an object")
+        recipient = str(on_email.get("recipient") or "").strip().lower()
+        event = str(on_email.get("event") or "new_thread").strip().lower()
+        if not recipient:
+            raise ValueError("Email triggers require a recipient")
+        if event != "new_thread":
+            raise ValueError("Email trigger event must be 'new_thread'")
+        on_email = {"recipient": recipient, "event": event}
 
     ws = read_workstream(workstream_id, base_dir)
     trigger = Trigger(
@@ -149,6 +166,7 @@ def create_trigger(
         action=action,
         on_state=on_state,
         on_schedule=on_schedule,
+        on_email=on_email,
         task_selection=task_selection,
         filter=filter,
         agent=agent,

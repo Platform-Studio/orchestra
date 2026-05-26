@@ -80,6 +80,7 @@ def test_triggers_modal_labels_state_task_selection_mode() -> None:
     assert "typeLabel += t.task_selection === 'all_unlocked'" in html
     assert "(all unlocked tasks)" in html
     assert "(first unlocked task)" in html
+    assert "Email: ${esc(eventType)} → ${esc(recipient)}" in html
 
 
 def test_workstream_manager_plays_tuning_sound_on_initial_load_and_resume() -> None:

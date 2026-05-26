@@ -3,7 +3,7 @@
 
 Wraps the Mailgun v3 API for sending and receiving email:
 - Send email (plain text, HTML, attachments, multiple recipients, CC/BCC).
-- List the most recent inbound messages for a domain (sender + subject summary).
+- List the most recent inbound messages for a domain or a specific recipient (sender + subject summary).
 - Read full details of a specific inbound message.
 - List all configured Mailgun domains (validates domain is registered).
 
@@ -40,20 +40,24 @@ Usage examples:
     # List 25 most recent inbound messages for a domain
     python Agents/cli/mailgun_cli.py list --domain mg.hirescout.us
 
+    # List recent inbound messages for a specific email address
+    python Agents/cli/mailgun_cli.py list --to build@guild.platformstud.io
+
     # Read full details of a specific message (storage key from list output)
     python Agents/cli/mailgun_cli.py read \\
         --domain mg.hirescout.us \\
         --key BAABAQU3_nLx9y4Rxt5HqpOTir_jXKomaQ
 
     # Output as JSON
-    python Agents/cli/mailgun_cli.py list --domain mg.hirescout.us --json
-    python Agents/cli/mailgun_cli.py read --domain mg.hirescout.us --key <KEY> --json
+    python Agents/cli/mailgun_cli.py --json list --domain mg.hirescout.us
+    python Agents/cli/mailgun_cli.py --json read --domain mg.hirescout.us --key <KEY>
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+from email.utils import getaddresses
 import json
 import mimetypes
 import os
@@ -190,6 +194,44 @@ def _mailgun_request(
     return parsed_body
 
 
+def _mailgun_request_bytes(method: str, url: str, api_key: str) -> tuple[bytes, dict[str, str]]:
+    """Make an authenticated Mailgun API request and return raw bytes + headers."""
+    import http.client
+    import urllib.parse
+    from base64 import b64encode
+
+    auth_header = "Basic " + b64encode(f"api:{api_key}".encode()).decode()
+
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+    if parsed.query:
+        path += "?" + parsed.query
+
+    conn = http.client.HTTPSConnection(parsed.netloc)
+    conn.request(method, path, headers={"Authorization": auth_header})
+    resp = conn.getresponse()
+    raw = resp.read()
+    headers = {k.lower(): v for k, v in resp.getheaders()}
+    conn.close()
+
+    if resp.status >= 400:
+        message = raw.decode("utf-8", errors="replace")
+        print(f"ERROR: Mailgun API returned {resp.status}: {message}", file=sys.stderr)
+        sys.exit(1)
+
+    return raw, headers
+
+
+def _fetch_message(domain: str, key: str, api_key: str) -> dict[str, Any]:
+    url = f"https://storage-us-west1.api.mailgun.net/v3/domains/{domain}/messages/{key}"
+    return _mailgun_request("GET", url, api_key)
+
+
+def _safe_attachment_name(raw_name: str | None, fallback: str) -> str:
+    candidate = Path(str(raw_name or fallback)).name.strip()
+    return candidate or fallback
+
+
 # ---------------------------------------------------------------------------
 # Domain validation
 # ---------------------------------------------------------------------------
@@ -208,6 +250,31 @@ def assert_domain_registered(domain: str, api_key: str) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def _recipient_domain(recipient: str | None) -> str:
+    if not recipient or "@" not in recipient:
+        return ""
+    return recipient.rsplit("@", 1)[1].strip().lower()
+
+
+def _item_has_recipient(item: dict[str, Any], recipient: str | None) -> bool:
+    if not recipient:
+        return True
+
+    wanted = recipient.strip().lower()
+    headers = item.get("message", {}).get("headers", {})
+    values: list[str] = []
+    for key in ("to", "cc", "bcc"):
+        value = headers.get(key)
+        if value:
+            values.append(value)
+
+    if not values:
+        return False
+
+    addresses = [addr.lower() for _, addr in getaddresses(values) if addr]
+    return wanted in addresses
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +345,10 @@ def cmd_send(args: argparse.Namespace, env: dict[str, str]) -> None:
         data["cc"] = args.cc
     if args.bcc:
         data["bcc"] = args.bcc
+    if args.in_reply_to:
+        data["h:In-Reply-To"] = args.in_reply_to
+    if args.references:
+        data["h:References"] = " ".join(args.references)
     if args.text:
         data["text"] = args.text
     if args.html:
@@ -313,9 +384,12 @@ def cmd_send(args: argparse.Namespace, env: dict[str, str]) -> None:
 def cmd_list(args: argparse.Namespace, env: dict[str, str]) -> None:
     api_key = get_api_key(env)
 
-    domain = args.domain or env.get("MAILGUN_DOMAIN")
+    domain = args.domain or _recipient_domain(args.to) or env.get("MAILGUN_DOMAIN")
     if not domain:
-        print("ERROR: --domain is required (or set MAILGUN_DOMAIN in .env)", file=sys.stderr)
+        print(
+            "ERROR: --domain is required unless it can be inferred from --to (or set MAILGUN_DOMAIN in .env)",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     assert_domain_registered(domain, api_key)
@@ -334,9 +408,11 @@ def cmd_list(args: argparse.Namespace, env: dict[str, str]) -> None:
             seen.add(key)
             unique.append(item)
 
+    filtered = [item for item in unique if _item_has_recipient(item, args.to)]
+
     if args.json:
         output = []
-        for item in unique:
+        for item in filtered:
             h = item.get("message", {}).get("headers", {})
             output.append({
                 "storage_key": item.get("storage", {}).get("key"),
@@ -348,10 +424,14 @@ def cmd_list(args: argparse.Namespace, env: dict[str, str]) -> None:
         print(json.dumps(output, indent=2))
         return
 
-    print(f"\nRecent inbound messages for {domain} (up to {args.limit}):")
+    heading = f"\nRecent inbound messages for {domain}"
+    if args.to:
+        heading += f" to {args.to}"
+    heading += f" (up to {args.limit}):"
+    print(heading)
     print(f"{'#':<4} {'From':<40} {'Subject':<50} {'Storage Key'}")
     print("-" * 130)
-    for i, item in enumerate(unique, 1):
+    for i, item in enumerate(filtered, 1):
         h = item.get("message", {}).get("headers", {})
         from_ = h.get("from", "?")[:38]
         subject = h.get("subject", "?")[:48]
@@ -369,8 +449,7 @@ def cmd_read(args: argparse.Namespace, env: dict[str, str]) -> None:
 
     assert_domain_registered(domain, api_key)
 
-    url = f"https://storage-us-west1.api.mailgun.net/v3/domains/{domain}/messages/{args.key}"
-    msg = _mailgun_request("GET", url, api_key)
+    msg = _fetch_message(domain, args.key, api_key)
 
     if args.json:
         print(json.dumps(msg, indent=2))
@@ -404,6 +483,50 @@ def cmd_read(args: argparse.Namespace, env: dict[str, str]) -> None:
             print("(no body content found)")
 
 
+def cmd_download_attachments(args: argparse.Namespace, env: dict[str, str]) -> None:
+    api_key = get_api_key(env)
+
+    domain = args.domain or env.get("MAILGUN_DOMAIN")
+    if not domain:
+        print("ERROR: --domain is required (or set MAILGUN_DOMAIN in .env)", file=sys.stderr)
+        sys.exit(1)
+
+    assert_domain_registered(domain, api_key)
+
+    msg = _fetch_message(domain, args.key, api_key)
+    attachments = list(msg.get("attachments", []) or [])
+    output_dir = Path(args.out_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+    for idx, attachment in enumerate(attachments, 1):
+        url = str(attachment.get("url") or "").strip()
+        if not url:
+            continue
+        filename = _safe_attachment_name(attachment.get("name"), f"attachment-{idx}")
+        destination = output_dir / filename
+        content, _headers = _mailgun_request_bytes("GET", url, api_key)
+        destination.write_bytes(content)
+        saved.append({
+            "name": filename,
+            "path": str(destination),
+            "size": len(content),
+            "content_type": attachment.get("content-type") or attachment.get("content_type"),
+        })
+
+    if args.json:
+        print(json.dumps(saved, indent=2))
+        return
+
+    if not saved:
+        print(f"No downloadable attachments found for message {args.key}.")
+        return
+
+    print(f"Downloaded {len(saved)} attachment(s) to {output_dir}:")
+    for item in saved:
+        print(f"- {item['name']} -> {item['path']}")
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -428,6 +551,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Recipient(s), repeatable")
     p_send.add_argument("--cc", action="append", metavar="CC", help="CC recipient(s), repeatable")
     p_send.add_argument("--bcc", action="append", metavar="BCC", help="BCC recipient(s), repeatable")
+    p_send.add_argument("--in-reply-to", metavar="MESSAGE_ID",
+                        help="Optional Message-ID to send this email as a reply to")
+    p_send.add_argument("--references", action="append", metavar="MESSAGE_ID",
+                        help="Optional References header value(s); repeat to build a thread chain")
     p_send.add_argument("--subject", help="Email subject")
     p_send.add_argument("--text", help="Plain text body")
     p_send.add_argument("--html", help="HTML body")
@@ -435,8 +562,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Path to attachment file, repeatable")
 
     # list
-    p_list = sub.add_parser("list", help="List most recent inbound messages for a domain")
+    p_list = sub.add_parser("list", help="List most recent inbound messages for a domain or recipient")
     p_list.add_argument("--domain", help="Inbound domain (or MAILGUN_DOMAIN in .env)")
+    p_list.add_argument("--to", metavar="EMAIL",
+                        help="Filter to a specific recipient email; if --domain is omitted, infer it from this address")
     p_list.add_argument("--limit", type=int, default=25,
                         help="Max messages to show (default: 25)")
 
@@ -444,6 +573,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_read = sub.add_parser("read", help="Read full content of a specific message")
     p_read.add_argument("--domain", required=True, help="Domain the message was received on")
     p_read.add_argument("--key", required=True, help="Storage key from 'list' output")
+
+    # download-attachments
+    p_download = sub.add_parser("download-attachments", help="Download attachments for a specific inbound message")
+    p_download.add_argument("--domain", required=True, help="Domain the message was received on")
+    p_download.add_argument("--key", required=True, help="Storage key from 'list' output")
+    p_download.add_argument("--out-dir", required=True, help="Directory to write downloaded attachments into")
 
     return parser
 
@@ -461,6 +596,8 @@ def main() -> None:
         cmd_list(args, env)
     elif args.command == "read":
         cmd_read(args, env)
+    elif args.command == "download-attachments":
+        cmd_download_attachments(args, env)
     else:
         parser.print_help()
 
