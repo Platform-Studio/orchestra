@@ -532,6 +532,21 @@ def cmd_agent_tail(args):
     _output(result)
 
 
+def cmd_agent_details(args):
+    from .agents import get_agent_run
+    result = get_agent_run(args.run_id, base_dir=args.base_dir)
+    _output(result)
+
+
+def cmd_agent_context(args):
+    from .agents import get_agent_run_context, read_agent_run_context_file
+    if args.path:
+        result = read_agent_run_context_file(args.run_id, args.path, base_dir=args.base_dir)
+    else:
+        result = get_agent_run_context(args.run_id, base_dir=args.base_dir)
+    _output(result)
+
+
 def cmd_agent_kill(args):
     from .agents import kill_agent_run
     result = kill_agent_run(args.run_id, base_dir=args.base_dir)
@@ -988,6 +1003,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("run_id")
     p.add_argument("--lines", type=int, default=200)
     p.set_defaults(func=cmd_agent_tail)
+
+    p = agent_sub.add_parser("details")
+    p.add_argument("run_id")
+    p.set_defaults(func=cmd_agent_details)
+
+    p = agent_sub.add_parser("context")
+    p.add_argument("run_id")
+    p.add_argument("--path", default=None, help="Read one copied raw context file by manifest copied_path")
+    p.set_defaults(func=cmd_agent_context)
 
     p = agent_sub.add_parser("kill")
     p.add_argument("run_id")

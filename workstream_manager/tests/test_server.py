@@ -193,6 +193,7 @@ _PATCHES = {
     "list_active_agents": "workstream_manager.server.list_active_agents",
     "list_agent_runs": "workstream_manager.server.list_agent_runs",
     "get_agent_run": "workstream_manager.server.get_agent_run",
+    "read_agent_run_context_file": "workstream_manager.server.read_agent_run_context_file",
     "tail_active_agent": "workstream_manager.server.tail_active_agent",
     "kill_agent_run": "workstream_manager.server.kill_agent_run",
     "retry_agent_run":   "workstream_manager.server.retry_agent_run",
@@ -225,6 +226,7 @@ def api(tmp_path):
     mocks["list_active_agents"].return_value = []
     mocks["list_agent_runs"].return_value = []
     mocks["get_agent_run"].return_value = {"run": {"run_id": "run-1"}, "output": "", "cli_calls": [], "retry": {}, "interruption_reason": None}
+    mocks["read_agent_run_context_file"].return_value = {"run_id": "run-1", "path": "source_0/file.json", "content": "{}", "bytes": 2}
     mocks["tail_active_agent"].return_value = {"run": {"run_id": "run-1", "status": "running"}, "tail": "live output", "line_count": 1}
     mocks["kill_agent_run"].return_value = {"run_id": "run-1", "status": "killed"}
     mocks["list_workstream_hierarchy_env"].return_value = []
@@ -1060,6 +1062,19 @@ class TestAgent:
         assert code == 200
         assert body["data"]["tail"] == "hello\nworld\n"
         api.mocks["tail_active_agent"].assert_called_with("run-1", lines=400, base_dir=WORKSPACE_DIR)
+
+    def test_context_file(self, api):
+        from workstream_manager.server import WORKSPACE_DIR
+
+        code, body = api.get("/api/agent/context/run-1?path=source_0%2Ffile.json")
+
+        assert code == 200
+        assert body["data"]["content"] == "{}"
+        api.mocks["read_agent_run_context_file"].assert_called_with(
+            "run-1",
+            "source_0/file.json",
+            base_dir=WORKSPACE_DIR,
+        )
 
 
 # ── Poll endpoint ───────────────────────────────────────────────

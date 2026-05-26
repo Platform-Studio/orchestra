@@ -37,6 +37,8 @@ DEFAULT_AGENT_START_SOUND_ENV_VAR = "DEFAULT_AGENT_START_SOUND"
 DEFAULT_AGENT_FINISHED_SOUND_ENV_VAR = "DEFAULT_AGENT_FINISHED_SOUND"
 DEFAULT_AGENT_ERROR_SOUND_ENV_VAR = "DEFAULT_AGENT_ERROR_SOUND"
 CLINE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLINE_CONFIG_DIR"
+CLAUDE_CONFIG_DIR_ENV_VAR = "ORCHESTRATION_CLAUDE_CONFIG_DIR"
+COPILOT_CONTEXT_DIRS_ENV_VAR = "ORCHESTRATION_COPILOT_CONTEXT_DIRS"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
 CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
 COPILOT_DEFAULT_MODEL_ENV_VAR = "COPILOT_MODEL"
@@ -431,6 +433,14 @@ def _agent_runs_dir(base_dir: str) -> str:
     return os.path.join(_state_dir(base_dir), "agent_runs")
 
 
+def _agent_run_context_dir(base_dir: str, run_id: str) -> str:
+    return os.path.join(_agent_runs_dir(base_dir), run_id, "context")
+
+
+def _agent_run_context_manifest_path(base_dir: str, run_id: str) -> str:
+    return os.path.join(_agent_run_context_dir(base_dir, run_id), "context_manifest.json")
+
+
 def _global_sound_mute_path(base_dir: str) -> str:
     return os.path.join(_state_dir(base_dir), GLOBAL_SOUND_MUTE_FILENAME)
 
@@ -486,6 +496,435 @@ def _read_run_meta_by_id(base_dir: str, run_id: str) -> dict:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Agent run '{run_id}' not found")
     return _read_run_meta(path)
+
+
+def _candidate_context_roots(runtime: str) -> list[dict]:
+    """Return provider-local roots to snapshot before and after a run."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+    roots = []
+
+    if runtime_norm == "cline":
+        cline_home = _resolve_cline_config_dir() or os.path.expanduser("~/.cline")
+        roots.append({
+            "provider": "cline",
+            "kind": "cline_tasks",
+            "root": os.path.abspath(os.path.join(cline_home, "data", "tasks")),
+        })
+        return roots
+
+    if runtime_norm == "claude-code":
+        claude_home = os.getenv(CLAUDE_CONFIG_DIR_ENV_VAR) or os.path.expanduser("~/.claude")
+        claude_home = os.path.abspath(os.path.expanduser(claude_home))
+        roots.extend([
+            {"provider": "claude-code", "kind": "claude_projects", "root": os.path.join(claude_home, "projects")},
+            {"provider": "claude-code", "kind": "claude_home", "root": claude_home},
+        ])
+        return roots
+
+    if runtime_norm == "copilot":
+        raw_dirs = str(os.getenv(COPILOT_CONTEXT_DIRS_ENV_VAR) or "").strip()
+        if raw_dirs:
+            parts = []
+            for chunk in raw_dirs.split(os.pathsep):
+                parts.extend(chunk.split(","))
+            for idx, raw in enumerate(parts):
+                candidate = str(raw or "").strip()
+                if candidate:
+                    roots.append({
+                        "provider": "copilot",
+                        "kind": f"configured_{idx + 1}",
+                        "root": os.path.abspath(os.path.expanduser(candidate)),
+                    })
+        return roots
+
+    return roots
+
+
+def _context_file_snapshot(root: str) -> dict:
+    """Return a lightweight file snapshot for a provider context root."""
+    snapshot = {}
+    if not root or not os.path.isdir(root):
+        return snapshot
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in {"node_modules", ".git", "__pycache__"}]
+        for filename in filenames:
+            path = os.path.join(dirpath, filename)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                stat = os.stat(path)
+            except OSError:
+                continue
+            snapshot[os.path.abspath(path)] = {
+                "mtime_ns": int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))),
+                "size": int(stat.st_size),
+            }
+    return snapshot
+
+
+def _snapshot_provider_context(runtime: str) -> dict:
+    """Snapshot candidate provider files before the subprocess starts."""
+    sources = []
+    for source in _candidate_context_roots(runtime):
+        root = source["root"]
+        exists = os.path.isdir(root)
+        sources.append({
+            **source,
+            "exists": exists,
+            "files": _context_file_snapshot(root) if exists else {},
+        })
+    return {
+        "runtime": _normalize_agent_runtime(runtime),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "sources": sources,
+    }
+
+
+def _changed_context_files(source: dict) -> list[str]:
+    """Return files that appeared or changed after the pre-run snapshot."""
+    root = source.get("root")
+    before = source.get("files") or {}
+    after = _context_file_snapshot(root)
+    changed = []
+    for path, stat in after.items():
+        previous = before.get(path)
+        if previous is None or previous.get("mtime_ns") != stat.get("mtime_ns") or previous.get("size") != stat.get("size"):
+            changed.append(path)
+    return changed
+
+
+def _expand_cline_task_files(root: str, changed_files: list[str]) -> list[str]:
+    """When any Cline task file changes, copy the whole task folder."""
+    task_dirs = set()
+    root_abs = os.path.abspath(root)
+    for path in changed_files:
+        try:
+            rel = os.path.relpath(path, root_abs)
+        except ValueError:
+            continue
+        parts = rel.split(os.sep)
+        if parts and parts[0] not in {"", ".", ".."}:
+            task_dirs.add(os.path.join(root_abs, parts[0]))
+
+    expanded = set(changed_files)
+    for task_dir in task_dirs:
+        if not os.path.isdir(task_dir):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(task_dir):
+            for filename in filenames:
+                path = os.path.join(dirpath, filename)
+                if os.path.isfile(path):
+                    expanded.add(os.path.abspath(path))
+    return sorted(expanded)
+
+
+def _copy_context_file(source_root: str, source_path: str, dest_root: str, source_index: int) -> dict:
+    source_root_abs = os.path.abspath(source_root)
+    source_path_abs = os.path.abspath(source_path)
+    rel = os.path.relpath(source_path_abs, source_root_abs)
+    if rel.startswith(".."):
+        raise ValueError("context file is outside source root")
+
+    copied_rel = os.path.join(f"source_{source_index}", rel)
+    dest_path = os.path.join(dest_root, copied_rel)
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    shutil.copy2(source_path_abs, dest_path)
+    stat = os.stat(dest_path)
+    return {
+        "original_path": source_path_abs,
+        "copied_path": copied_rel,
+        "bytes": int(stat.st_size),
+        "mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+    }
+
+
+def _write_context_manifest(base_dir: str, run_id: str, manifest: dict) -> str:
+    context_dir = _agent_run_context_dir(base_dir, run_id)
+    os.makedirs(context_dir, exist_ok=True)
+    path = _agent_run_context_manifest_path(base_dir, run_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    return os.path.relpath(path, base_dir)
+
+
+def _capture_provider_context(
+    base_dir: str,
+    run_id: str,
+    runtime: str,
+    pre_snapshot: dict | None,
+) -> dict:
+    """Copy provider-native context artifacts into the central run store."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+    context_dir = _agent_run_context_dir(base_dir, run_id)
+    manifest = {
+        "version": 1,
+        "run_id": run_id,
+        "runtime": runtime_norm,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "storage": {
+            "context_dir": os.path.relpath(context_dir, base_dir),
+            "central": True,
+        },
+        "sources": [],
+        "files": [],
+        "warnings": [],
+        "foundation_context": {
+            "prompt_in_run_metadata": True,
+            "system_prompt_in_run_metadata": True,
+            "command_line_in_run_metadata": True,
+            "stdout_log_in_run_metadata": True,
+            "cli_calls_in_workspace_audit": True,
+        },
+    }
+
+    sources = (pre_snapshot or {}).get("sources") or _snapshot_provider_context(runtime_norm).get("sources", [])
+    os.makedirs(context_dir, exist_ok=True)
+
+    for idx, source in enumerate(sources):
+        root = source.get("root")
+        source_summary = {
+            "provider": source.get("provider") or runtime_norm,
+            "kind": source.get("kind"),
+            "root": root,
+            "exists": bool(root and os.path.isdir(root)),
+            "status": "ok",
+            "file_count": 0,
+            "confidence": "best_effort",
+        }
+        if not source_summary["exists"]:
+            source_summary["status"] = "missing"
+            warning = f"Provider context root not found: {root}"
+            source_summary["warning"] = warning
+            manifest["warnings"].append(warning)
+            manifest["sources"].append(source_summary)
+            continue
+
+        try:
+            changed = _changed_context_files(source)
+            if runtime_norm == "cline" and source.get("kind") == "cline_tasks":
+                changed = _expand_cline_task_files(root, changed)
+            for path in sorted(set(changed)):
+                try:
+                    copied = _copy_context_file(root, path, context_dir, idx)
+                except Exception as exc:
+                    manifest["warnings"].append(f"Failed to copy context file {path}: {exc}")
+                    continue
+                entry = {
+                    "provider": source_summary["provider"],
+                    "kind": source_summary["kind"],
+                    **copied,
+                }
+                manifest["files"].append(entry)
+            source_summary["file_count"] = len([
+                f for f in manifest["files"]
+                if f.get("provider") == source_summary["provider"] and f.get("kind") == source_summary["kind"]
+            ])
+            if source_summary["file_count"] == 0:
+                source_summary["status"] = "no_changed_files"
+        except Exception as exc:
+            source_summary["status"] = "error"
+            source_summary["warning"] = str(exc)
+            manifest["warnings"].append(f"Provider context capture failed for {root}: {exc}")
+        manifest["sources"].append(source_summary)
+
+    manifest_rel = _write_context_manifest(base_dir, run_id, manifest)
+    return {
+        "manifest_path": manifest_rel,
+        "context_dir": manifest["storage"]["context_dir"],
+        "file_count": len(manifest["files"]),
+        "warnings": list(manifest["warnings"]),
+        "sources": [
+            {
+                "provider": s.get("provider"),
+                "kind": s.get("kind"),
+                "status": s.get("status"),
+                "file_count": s.get("file_count", 0),
+            }
+            for s in manifest["sources"]
+        ],
+    }
+
+
+def _load_context_manifest(base_dir: str, run_id: str) -> dict:
+    path = _agent_run_context_manifest_path(base_dir, run_id)
+    if not os.path.exists(path):
+        return {
+            "version": 1,
+            "run_id": run_id,
+            "runtime": None,
+            "storage": {
+                "context_dir": os.path.relpath(_agent_run_context_dir(base_dir, run_id), base_dir),
+                "central": True,
+            },
+            "sources": [],
+            "files": [],
+            "warnings": ["No provider context manifest was captured for this run."],
+        }
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _stringify_context_content(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                if "text" in item:
+                    parts.append(str(item.get("text") or ""))
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False))
+            else:
+                parts.append(str(item))
+        return "\n".join(p for p in parts if p)
+    if isinstance(value, dict):
+        for key in ("text", "content", "message"):
+            if key in value:
+                return _stringify_context_content(value.get(key))
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _normalize_cline_json(payload, *, source_file: str) -> tuple[list[dict], list[dict]]:
+    messages = []
+    events = []
+    if not isinstance(payload, list):
+        return messages, events
+
+    basename = os.path.basename(source_file)
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role") or item.get("say") or item.get("type") or "event"
+        text = _stringify_context_content(item.get("content", item.get("text", item.get("message"))))
+        ts = item.get("ts") or item.get("timestamp")
+        common = {
+            "provider": "cline",
+            "source_file": source_file,
+            "index": index,
+            "timestamp": ts,
+            "type": item.get("type") or item.get("say") or basename,
+            "text": text,
+            "raw": item,
+        }
+        if basename == "api_conversation_history.json" and (item.get("role") or text):
+            messages.append({**common, "role": str(role)})
+        else:
+            events.append(common)
+            if text and (item.get("say") in {"user_feedback", "text", "reasoning", "thinking"}):
+                messages.append({**common, "role": str(role)})
+    return messages, events
+
+
+def _normalize_jsonl(path: str, *, provider: str, source_file: str) -> tuple[list[dict], list[dict]]:
+    messages = []
+    events = []
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for index, line in enumerate(f):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                item = json.loads(stripped)
+            except json.JSONDecodeError:
+                events.append({
+                    "provider": provider,
+                    "source_file": source_file,
+                    "index": index,
+                    "type": "text",
+                    "text": stripped,
+                    "raw": stripped,
+                })
+                continue
+            role = item.get("role") or item.get("type") or "event"
+            text = _stringify_context_content(item.get("content", item.get("text", item.get("message"))))
+            row = {
+                "provider": provider,
+                "source_file": source_file,
+                "index": index,
+                "timestamp": item.get("timestamp") or item.get("ts"),
+                "type": item.get("type") or "jsonl",
+                "text": text,
+                "raw": item,
+            }
+            if item.get("role") or text:
+                messages.append({**row, "role": str(role)})
+            else:
+                events.append(row)
+    return messages, events
+
+
+def _normalize_provider_context(base_dir: str, run_id: str, manifest: dict) -> dict:
+    context_dir = _agent_run_context_dir(base_dir, run_id)
+    messages = []
+    events = []
+    warnings = []
+    for file_entry in manifest.get("files") or []:
+        rel = file_entry.get("copied_path")
+        provider = file_entry.get("provider") or manifest.get("runtime") or "unknown"
+        if not rel:
+            continue
+        path = os.path.abspath(os.path.join(context_dir, rel))
+        try:
+            if os.path.commonpath([path, os.path.abspath(context_dir)]) != os.path.abspath(context_dir):
+                continue
+        except ValueError:
+            continue
+        if not os.path.exists(path):
+            continue
+        try:
+            basename = os.path.basename(path)
+            if provider == "cline" and basename.endswith(".json"):
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    payload = json.load(f)
+                new_messages, new_events = _normalize_cline_json(payload, source_file=rel)
+                messages.extend(new_messages)
+                events.extend(new_events)
+            elif path.endswith(".jsonl"):
+                new_messages, new_events = _normalize_jsonl(path, provider=provider, source_file=rel)
+                messages.extend(new_messages)
+                events.extend(new_events)
+        except Exception as exc:
+            warnings.append(f"Failed to normalize {rel}: {exc}")
+    return {
+        "manifest": manifest,
+        "messages": messages,
+        "events": events,
+        "files": list(manifest.get("files") or []),
+        "warnings": list(manifest.get("warnings") or []) + warnings,
+    }
+
+
+def get_agent_run_context(run_id: str, base_dir: str = ".") -> dict:
+    manifest = _load_context_manifest(base_dir, run_id)
+    return _normalize_provider_context(base_dir, run_id, manifest)
+
+
+def read_agent_run_context_file(run_id: str, relative_path: str, base_dir: str = ".") -> dict:
+    rel = str(relative_path or "").strip()
+    if not rel:
+        raise ValueError("Missing context file path")
+    context_dir = os.path.abspath(_agent_run_context_dir(base_dir, run_id))
+    candidate = os.path.abspath(os.path.join(context_dir, rel))
+    try:
+        if os.path.commonpath([candidate, context_dir]) != context_dir:
+            raise ValueError("Context file path escapes run context directory")
+    except ValueError:
+        raise ValueError("Context file path escapes run context directory") from None
+    if not os.path.isfile(candidate):
+        raise FileNotFoundError(f"Context file not found: {relative_path}")
+    with open(candidate, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    return {
+        "run_id": run_id,
+        "path": rel,
+        "content": content,
+        "bytes": os.path.getsize(candidate),
+    }
 
 
 def _append_retry_child(base_dir: str, run_id: str, child_run_id: str) -> None:
@@ -781,6 +1220,7 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
 
     retry_info = _get_run_retry_info(run, base_dir)
     interruption_reason = _get_run_interruption_reason(run, base_dir)
+    context_capture = get_agent_run_context(run_id, base_dir=base_dir)
 
     return {
         "run": run,
@@ -788,6 +1228,7 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
         "cli_calls": cli_calls,
         "retry": retry_info,
         "interruption_reason": interruption_reason,
+        "context_capture": context_capture,
     }
 
 
@@ -1960,6 +2401,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     run_id = None
     log_path_rel = None
     run_meta = None
+    provider_context_snapshot = None
     fd, task_file_path = tempfile.mkstemp(suffix=".json", prefix="agent_tasks_")
     with os.fdopen(fd, "w") as f:
         json.dump({"task_ids": task_ids, "workstream_id": workstream_id}, f)
@@ -2159,6 +2601,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         run_meta["command_line"] = command_line
         run_meta["effective_prompt"] = effective_prompt
         _write_run_meta(base_dir, run_id, run_meta)
+        provider_context_snapshot = _snapshot_provider_context(runtime)
 
         # Use a file-backed log so the Workspace Manager can live-tail active agent output.
         timeout_expired = False
@@ -2301,6 +2744,21 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = final_status
         run_meta["exit_code"] = returncode
+        try:
+            run_meta["context_capture"] = _capture_provider_context(
+                base_dir,
+                run_id,
+                runtime,
+                provider_context_snapshot,
+            )
+        except Exception as exc:
+            run_meta["context_capture"] = {
+                "manifest_path": None,
+                "context_dir": os.path.relpath(_agent_run_context_dir(base_dir, run_id), base_dir),
+                "file_count": 0,
+                "warnings": [f"Provider context capture failed: {exc}"],
+                "sources": [],
+            }
         _write_run_meta(base_dir, run_id, run_meta)
 
         # Log agent output to audit trail for each task

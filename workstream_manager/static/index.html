@@ -5030,6 +5030,39 @@ function renderActiveAgentsModal() {
         </div>`;
       }).join('')
     : '<div style="font-size:12px;color:#8b949e;">No orchestration CLI calls recorded.</div>';
+  const providerContext = selectedDetails && selectedDetails.context_capture ? selectedDetails.context_capture : null;
+  const providerManifest = providerContext && providerContext.manifest ? providerContext.manifest : null;
+  const providerFiles = providerContext && Array.isArray(providerContext.files) ? providerContext.files : [];
+  const providerMessages = providerContext && Array.isArray(providerContext.messages) ? providerContext.messages : [];
+  const providerEvents = providerContext && Array.isArray(providerContext.events) ? providerContext.events : [];
+  const providerWarnings = providerContext && Array.isArray(providerContext.warnings) ? providerContext.warnings : [];
+  const providerSourceRows = providerManifest && Array.isArray(providerManifest.sources) && providerManifest.sources.length
+    ? providerManifest.sources.map(s => `<div class="agent-cli-call-row">
+        <div class="agent-cli-call-meta">${esc(s.provider || 'provider')} · ${esc(s.kind || 'context')} · ${esc(s.status || 'unknown')}</div>
+        <div>${esc(String(s.file_count || 0))} captured files${s.warning ? ` · ${esc(s.warning)}` : ''}</div>
+      </div>`).join('')
+    : '<div style="font-size:12px;color:#8b949e;">No provider context sources recorded.</div>';
+  const providerFileRows = providerFiles.length
+    ? providerFiles.slice(0, 60).map(f => `<div class="agent-cli-call-row">
+        <div class="agent-cli-call-meta">${esc(f.provider || 'provider')} · ${esc(String(f.bytes || 0))} bytes</div>
+        <div>${esc(f.copied_path || '')}</div>
+      </div>`).join('') + (providerFiles.length > 60 ? `<div style="font-size:12px;color:#8b949e;">${providerFiles.length - 60} more files captured.</div>` : '')
+    : '<div style="font-size:12px;color:#8b949e;">No raw provider files captured for this run.</div>';
+  const providerMessageRows = providerMessages.length
+    ? providerMessages.slice(0, 80).map(m => `<div class="agent-cli-call-row">
+        <div class="agent-cli-call-meta">${esc(m.provider || 'provider')} · ${esc(m.role || m.type || 'message')} · ${esc(m.source_file || '')}</div>
+        <div>${esc(m.text || '')}</div>
+      </div>`).join('') + (providerMessages.length > 80 ? `<div style="font-size:12px;color:#8b949e;">${providerMessages.length - 80} more normalized messages captured.</div>` : '')
+    : '<div style="font-size:12px;color:#8b949e;">No normalized provider messages found.</div>';
+  const providerEventRows = providerEvents.length
+    ? providerEvents.slice(0, 80).map(e => `<div class="agent-cli-call-row">
+        <div class="agent-cli-call-meta">${esc(e.provider || 'provider')} · ${esc(e.type || 'event')} · ${esc(e.source_file || '')}</div>
+        <div>${esc(e.text || '')}</div>
+      </div>`).join('') + (providerEvents.length > 80 ? `<div style="font-size:12px;color:#8b949e;">${providerEvents.length - 80} more normalized events captured.</div>` : '')
+    : '<div style="font-size:12px;color:#8b949e;">No normalized provider events found.</div>';
+  const providerWarningRows = providerWarnings.length
+    ? providerWarnings.map(w => `<div style="font-size:12px;color:#f0b72f;">${esc(w)}</div>`).join('')
+    : '<div style="font-size:12px;color:#8b949e;">No provider context capture warnings.</div>';
 
   content.innerHTML = `
     <div class="modal-header">
@@ -5080,6 +5113,27 @@ function renderActiveAgentsModal() {
         <div class="agent-section">
           <h4>Output</h4>
           <pre class="agent-tail-pre" id="active-agent-tail-output">${esc(outputFallback)}</pre>
+        </div>
+        <div class="agent-section">
+          <h4>Provider Context</h4>
+          <div class="agent-cli-calls">
+            <div style="font-size:12px;line-height:1.55;color:#c9d1d9;margin-bottom:8px;">
+              <div><strong>Central Store:</strong> ${providerManifest && providerManifest.storage ? esc(providerManifest.storage.context_dir || 'not captured') : 'not captured'}</div>
+              <div><strong>Raw Files:</strong> ${esc(String(providerFiles.length))}</div>
+              <div><strong>Messages:</strong> ${esc(String(providerMessages.length))}</div>
+              <div><strong>Events:</strong> ${esc(String(providerEvents.length))}</div>
+            </div>
+            <h4>Capture Sources</h4>
+            ${selected ? providerSourceRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+            <h4>Intermediate Messages</h4>
+            ${selected ? providerMessageRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+            <h4>Progress / Reasoning Events</h4>
+            ${selected ? providerEventRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+            <h4>Raw Captured Files</h4>
+            ${selected ? providerFileRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+            <h4>Warnings</h4>
+            ${selected ? providerWarningRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+          </div>
         </div>
         <div class="agent-section">
           <h4>Orchestration CLI Calls</h4>

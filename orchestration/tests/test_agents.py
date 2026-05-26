@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from orchestration import agents as agents_module
-from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, get_global_sound_mute, list_agent_runs, retry_agent_run, run_agent, set_global_sound_mute
+from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, get_agent_run_context, get_global_sound_mute, list_agent_runs, read_agent_run_context_file, retry_agent_run, run_agent, set_global_sound_mute
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
@@ -21,6 +21,8 @@ from orchestration.models import RetryConfig
 def _clear_runtime_model_env(monkeypatch):
     monkeypatch.delenv("ORCHESTRATION_AGENT_RUNTIME", raising=False)
     monkeypatch.delenv("ORCHESTRATION_CLINE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("ORCHESTRATION_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("ORCHESTRATION_COPILOT_CONTEXT_DIRS", raising=False)
     monkeypatch.delenv("CLINE_DEFAULT_LLM", raising=False)
     monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
     monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
@@ -421,6 +423,75 @@ class _FakeFailedProc(_FakeProc):
     def __init__(self):
         super().__init__()
         self.returncode = 1
+
+
+def test_capture_provider_context_copies_cline_task_files_to_central_store(workspace, tmp_path, monkeypatch):
+    cline_home = tmp_path / ".cline"
+    tasks_dir = cline_home / "data" / "tasks"
+    tasks_dir.mkdir(parents=True)
+    monkeypatch.setenv("ORCHESTRATION_CLINE_CONFIG_DIR", str(cline_home))
+
+    snapshot = agents_module._snapshot_provider_context("cline")
+
+    task_dir = tasks_dir / "1778000000000"
+    task_dir.mkdir()
+    (task_dir / "api_conversation_history.json").write_text(
+        json.dumps([
+            {"role": "user", "content": "build the thing", "ts": 1},
+            {"role": "assistant", "content": [{"type": "text", "text": "working on it"}], "ts": 2},
+        ]),
+        encoding="utf-8",
+    )
+    (task_dir / "ui_messages.json").write_text(
+        json.dumps([
+            {"type": "say", "say": "thinking", "text": "checking files", "ts": 3},
+            {"type": "ask", "text": "need input?", "ts": 4},
+        ]),
+        encoding="utf-8",
+    )
+    (task_dir / "context_history.json").write_text(
+        json.dumps([{"type": "context", "text": "file context snapshot"}]),
+        encoding="utf-8",
+    )
+    (task_dir / "focus_chain_taskid_1778000000000.md").write_text("visible reasoning notes\n", encoding="utf-8")
+
+    capture = agents_module._capture_provider_context(workspace, "run-context", "cline", snapshot)
+
+    assert capture["file_count"] == 4
+    context_dir = agents_module._agent_run_context_dir(workspace, "run-context")
+    manifest_path = agents_module._agent_run_context_manifest_path(workspace, "run-context")
+    assert os.path.exists(manifest_path)
+    assert os.path.commonpath([context_dir, manifest_path]) == context_dir
+
+    details = get_agent_run_context("run-context", base_dir=workspace)
+    copied_paths = [f["copied_path"] for f in details["files"]]
+    assert any(path.endswith("api_conversation_history.json") for path in copied_paths)
+    assert all(not os.path.isabs(path) for path in copied_paths)
+    assert any(m["role"] == "user" and "build the thing" in m["text"] for m in details["messages"])
+    assert any("checking files" in e["text"] for e in details["events"])
+
+
+def test_capture_provider_context_missing_roots_warns_without_failure(workspace, tmp_path, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATION_CLAUDE_CONFIG_DIR", str(tmp_path / "missing-claude"))
+
+    snapshot = agents_module._snapshot_provider_context("claude-code")
+    capture = agents_module._capture_provider_context(workspace, "run-missing-context", "claude-code", snapshot)
+
+    assert capture["file_count"] == 0
+    assert capture["warnings"]
+    details = get_agent_run_context("run-missing-context", base_dir=workspace)
+    assert details["manifest"]["storage"]["central"] is True
+
+
+def test_read_agent_run_context_file_blocks_path_traversal(workspace):
+    context_dir = agents_module._agent_run_context_dir(workspace, "run-traversal")
+    os.makedirs(context_dir, exist_ok=True)
+    with open(os.path.join(context_dir, "safe.txt"), "w", encoding="utf-8") as f:
+        f.write("safe")
+
+    assert read_agent_run_context_file("run-traversal", "safe.txt", base_dir=workspace)["content"] == "safe"
+    with pytest.raises(ValueError):
+        read_agent_run_context_file("run-traversal", "../safe.txt", base_dir=workspace)
 
 
 def test_resolve_agent_file_accepts_frontmatter_name(workspace):
