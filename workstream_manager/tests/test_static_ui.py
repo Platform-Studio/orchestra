@@ -167,6 +167,14 @@ def test_agent_run_details_group_content_into_tabs_with_outputs_default() -> Non
     assert "CLI Flags" in html
 
 
+def test_agent_run_details_include_provider_context_section() -> None:
+    html = _index_html()
+
+    assert "Provider Context" in html
+    assert "providerContext.messages" in html
+    assert "Raw Captured Files" in html
+
+
 def test_workstream_manager_schedules_interaction_retry_when_initial_autoplay_is_blocked() -> None:
     html = _index_html()
 

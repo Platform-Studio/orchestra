@@ -67,7 +67,7 @@ from orchestration.locks import (
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
-from orchestration.agents import get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, retry_agent_run, set_global_sound_mute, tail_active_agent
+from orchestration.agents import get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, read_agent_run_context_file, retry_agent_run, set_global_sound_mute, tail_active_agent
 
 
 def set_workspace_dir(base_dir: str) -> None:
@@ -854,6 +854,9 @@ def handle_agent(method, parts, params):
         return _ok(_sort_agent_runs_for_display(summaries))
     if method == "run" and parts:
         details = get_agent_run(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(details)
+    if method == "context" and parts:
+        details = read_agent_run_context_file(parts[0], params.get("path"), base_dir=WORKSPACE_DIR)
         return _ok(details)
     if method == "tail" and parts:
         run_id = parts[0]

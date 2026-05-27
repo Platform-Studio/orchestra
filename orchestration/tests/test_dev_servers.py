@@ -50,7 +50,9 @@ def test_log_dir_uses_resolved_artifact_root(monkeypatch, tmp_path):
     assert dev_servers._log_dir() == artifact_root / "artifacts" / "logs"
 
 
-def test_display_path_falls_back_to_absolute_for_external_paths(tmp_path):
+def test_display_path_falls_back_to_absolute_for_external_paths(tmp_path, monkeypatch):
+    monkeypatch_base_dir = tmp_path / "foundation"
     external_path = tmp_path / "jb_workstreams" / "artifacts" / "logs" / "scheduler.log"
+    monkeypatch.setattr(dev_servers, "BASE_DIR", monkeypatch_base_dir)
 
     assert dev_servers._display_path(external_path) == str(external_path)
