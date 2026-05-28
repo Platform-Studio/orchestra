@@ -6,6 +6,7 @@ import json
 import os
 import glob
 import pty
+import re
 import shlex
 import signal
 import shutil
@@ -62,6 +63,28 @@ COPILOT_MODEL_LEVEL_DEFAULTS = {
 }
 
 _ACTIVE_AGENTS_LOCK = threading.Lock()
+
+# Compile once for efficiency — matches complete and bare ANSI escape sequences.
+_ANSI_ESCAPE_RE = re.compile(
+    r'\x1b\[[0-9;]*[a-zA-Z]'       # CSI sequences: \x1b[0m, \x1b[1;32m, etc.
+    r'|\x1b\][^\x07]*\x07'         # OSC sequences: \x1b]0;title\x07
+    r'|\x1b[PX^_][^\x1b]*\x1b\\'   # DCS/SOS/PM/APC sequences
+    r'|\x1b[()][AB012]'            # Character set sequences
+    r'|\[[0-9;]+m'                 # Bare SGR fragments (when \x1b already stripped)
+)
+
+
+def _strip_ansi_escape_codes(text: str) -> str:
+    """Remove ANSI terminal escape sequences and bare SGR fragments from output.
+
+    Cline and other runtimes may output ANSI-styled text.  When stdout is not a
+    TTY the leading ``\\x1b`` byte is sometimes stripped, leaving bare fragments
+    like ``[0m``, ``[2m`` in the output.  This helper removes both complete and
+    partial sequences so the output is clean for UI display and audit storage.
+    """
+    if not text:
+        return text
+    return _ANSI_ESCAPE_RE.sub('', text)
 
 
 def _coerce_bool(value, default: bool = True) -> bool:
@@ -1211,7 +1234,7 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
         abs_log_path = log_path if os.path.isabs(log_path) else os.path.join(base_dir, log_path)
         if os.path.exists(abs_log_path):
             with open(abs_log_path, "r", encoding="utf-8", errors="replace") as f:
-                output = f.read()
+                output = _strip_ansi_escape_codes(f.read())
 
     from .workspace_audit import get_audit_log
     cli_calls = get_audit_log(base_dir=base_dir, limit=2000, event_type="orchestration_cli_call")
@@ -1473,7 +1496,7 @@ def tail_active_agent(run_id: str, lines: int = 200, base_dir: str = ".") -> dic
     with open(abs_log_path, "r", encoding="utf-8", errors="replace") as f:
         all_lines = f.readlines()
 
-    tail_text = "".join(all_lines[-lines:])
+    tail_text = _strip_ansi_escape_codes("".join(all_lines[-lines:]))
     return {
         "run": run,
         "tail": tail_text,
@@ -2837,18 +2860,19 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         _write_run_meta(base_dir, run_id, run_meta)
 
         # Log agent output to audit trail for each task
+        stripped_output = _strip_ansi_escape_codes(output)
         for tid in task_ids:
             t = read_task(tid, base_dir)  # Re-read in case agent modified it
             if final_status == "completed":
-                audit_output = output[:MAX_AUDIT_OUTPUT]
-                if len(output) > MAX_AUDIT_OUTPUT:
-                    audit_output += f"\n... (truncated, {len(output)} total chars)"
+                audit_output = stripped_output[:MAX_AUDIT_OUTPUT]
+                if len(stripped_output) > MAX_AUDIT_OUTPUT:
+                    audit_output += f"\n... (truncated, {len(stripped_output)} total chars)"
                 t.add_audit("agent_completed", f"Agent '{agent_def['name']}' completed.\n\nOutput:\n{audit_output}")
                 # Reset retry count on success
                 t.retry_count = 0
                 t.last_failure_at = None
             else:
-                error_msg = output[:MAX_AUDIT_OUTPUT]
+                error_msg = stripped_output[:MAX_AUDIT_OUTPUT]
                 if final_status == "timeout":
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' timed out.\n\nError:\n{error_msg}")
                 elif final_status == "killed":
