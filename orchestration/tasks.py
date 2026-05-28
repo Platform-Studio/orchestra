@@ -808,6 +808,105 @@ def move_task(
     return task
 
 
+def reorder_tasks_in_workstream(
+    workstream_id: str,
+    base_dir: str = ".",
+) -> dict:
+    """Reorder tasks within each column/status of a workstream.
+
+    Within each column, tasks are sorted by:
+      1. Priority tag: P0 > P1 > P2 > (no priority tag)
+      2. User-story / card number extracted from the title (lower number = earlier)
+      3. Existing rank (as a stable tiebreaker)
+
+    After sorting, fresh spaced ranks are assigned so that the board renders
+    cards in the correct descending order (earlier-numbered cards first).
+    """
+
+    import re
+
+    _priority_order = {"P0": 0, "P1": 1, "P2": 2}
+
+    def _priority_key(task: Task) -> int:
+        for tag in (task.tags or []):
+            key = _priority_order.get(tag.upper())
+            if key is not None:
+                return key
+        return 3  # no recognized priority tag
+
+    # Match patterns like "User Story #3", "Card #7", "#12", "US-5", etc.
+    _card_number_re = re.compile(
+        r"(?:user\s*story|card|us|task)\s*[#\-]?\s*(\d+)",
+        re.IGNORECASE,
+    )
+    _leading_number_re = re.compile(r"^#?(\d+)[\s:\-]+")
+
+    def _card_number(task: Task) -> int:
+        """Extract a stable card number from the task title."""
+        title = str(task.title or "")
+        m = _card_number_re.search(title)
+        if m:
+            return int(m.group(1))
+        m = _leading_number_re.search(title)
+        if m:
+            return int(m.group(1))
+        # Fall back to rank-based ordering when no number is present
+        return None
+
+    def _sort_key(task: Task):
+        parsed_rank = _parse_rank(getattr(task, "rank", None))
+        card_num = _card_number(task)
+        if card_num is not None:
+            return (0, _priority_key(task), card_num, parsed_rank or Decimal("0"), task.id)
+        # No card number – fall back to existing rank order
+        return (1, _priority_key(task), parsed_rank or Decimal("0"), task.id)
+
+    ws = read_workstream(workstream_id, base_dir)
+    tasks = list_tasks(workstream_id, base_dir=base_dir)
+
+    # Group tasks by status
+    by_status: dict[str, list] = {}
+    for t in tasks:
+        by_status.setdefault(t.status, []).append(t)
+
+    total_reordered = 0
+    reordered_columns = []
+
+    for status, col_tasks in by_status.items():
+        if not col_tasks:
+            continue
+
+        # Determine desired order
+        desired_order = sorted(col_tasks, key=_sort_key)
+
+        # Check if already correctly ordered
+        current_ids = [t.id for t in col_tasks]
+        desired_ids = [t.id for t in desired_order]
+
+        if current_ids == desired_ids:
+            continue
+
+        # Re-assign ranks in desired order
+        for idx, task in enumerate(desired_order):
+            new_rank = _format_rank(RANK_GAP * Decimal(idx + 1))
+            if task.rank != new_rank:
+                task.rank = new_rank
+                _save_task(task, base_dir)
+
+        total_reordered += len(col_tasks)
+        reordered_columns.append(status)
+
+    return {
+        "workstream_id": workstream_id,
+        "workstream_name": ws.name,
+        "total_tasks": len(tasks),
+        "columns_checked": len(by_status),
+        "columns_reordered": len(reordered_columns),
+        "reordered_columns": reordered_columns,
+        "total_reordered": total_reordered,
+    }
+
+
 def duplicate_task(
     task_id: str,
     target_workstream_id: str = None,

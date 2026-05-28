@@ -52,7 +52,8 @@ from orchestration.workstreams import (
     list_effective_workstream_env, resolve_workstream_workspace, resolve_workstream_state_root,
     resolve_workstream_artifact_root, resolve_workstream_child_state_root, set_workstream_context,
     read_workstream_agent_concurrency, set_workstream_agent_concurrency,
-    get_workstream_tags, upsert_workstream_tag, get_workstream_code_mount_statuses,
+    get_workstream_tags, pause_workstream_states, resume_workstream_states, upsert_workstream_tag,
+    get_workstream_code_mount_statuses,
 )
 from orchestration.tasks import (
     CorruptTaskError, create_task, read_task, read_task_from_workstream, update_task, list_tasks,
@@ -64,7 +65,7 @@ from orchestration.locks import (
     acquire_lock, release_lock, lock_status, lock_status_for_workstream,
     list_workstream_locks_for_workstream,
 )
-from orchestration.triggers import create_trigger, list_triggers, delete_trigger, run_trigger_now, get_active_triggers
+from orchestration.triggers import create_trigger, list_triggers, delete_trigger, pause_trigger, resume_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
 from orchestration.agents import get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, read_agent_run_context_file, retry_agent_run, set_global_sound_mute, tail_active_agent
@@ -112,6 +113,35 @@ def _truthy_param(raw) -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_state_names(params) -> list[str]:
+    raw = params.get("states")
+    if raw is None:
+        raw = params.get("state")
+    if raw is None:
+        raise ValueError("Missing required parameter: state")
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped.startswith("["):
+            values = json.loads(stripped)
+        else:
+            values = [part.strip() for part in stripped.split(",")]
+    else:
+        values = [raw]
+    normalized = []
+    seen = set()
+    for value in values:
+        state = str(value or "").strip()
+        if not state or state in seen:
+            continue
+        seen.add(state)
+        normalized.append(state)
+    if not normalized:
+        raise ValueError("At least one state is required")
+    return normalized
 
 
 def _serialize_board_tasks(tasks):
@@ -570,6 +600,22 @@ def handle_workstream(method, parts, params):
         from orchestration.workspace_audit import log_event
         log_event("workstream_resumed", f"Workstream '{ws.name}' resumed", WORKSPACE_DIR, workstream_id=ws.id)
         return _ok(ws.to_dict())
+    elif m == "pause-columns" and parts:
+        ws = pause_workstream_states(
+            parts[0],
+            _parse_state_names(params),
+            base_dir=WORKSPACE_DIR,
+            updated_by=params.get("updated_by") or "Workspace Manager",
+        )
+        return _ok(ws.to_dict())
+    elif m == "resume-columns" and parts:
+        ws = resume_workstream_states(
+            parts[0],
+            _parse_state_names(params),
+            base_dir=WORKSPACE_DIR,
+            updated_by=params.get("updated_by") or "Workspace Manager",
+        )
+        return _ok(ws.to_dict())
     elif m == "create":
         kwargs = {"name": params["name"], "base_dir": WORKSPACE_DIR}
         if "description" in params:
@@ -813,6 +859,12 @@ def handle_trigger(method, parts, params):
     elif m == "delete" and parts:
         delete_trigger(parts[0], base_dir=WORKSPACE_DIR)
         return _ok({"deleted": True})
+    elif m == "pause" and parts:
+        trigger = pause_trigger(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(trigger.to_dict())
+    elif m == "resume" and parts:
+        trigger = resume_trigger(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(trigger.to_dict())
     elif m == "run-now" and parts:
         result = run_trigger_now(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(result)

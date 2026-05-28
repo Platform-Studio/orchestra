@@ -601,9 +601,22 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   border-radius: 6px; display: flex; flex-direction: column;
   max-height: 100%;
 }
+.column.column-paused {
+  background: #242124;
+  outline: 1px solid rgba(210,153,34,0.32);
+}
+.column.column-paused .column-header {
+  color: #d29922;
+}
 .column-header {
   padding: 10px 12px; font-size: 14px; font-weight: 700; color: #8b949e;
   display: flex; align-items: center; justify-content: space-between;
+}
+.column-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .column-title-row {
   display: inline-flex;
@@ -635,6 +648,34 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .column-add-btn:hover {
   background: rgba(255,255,255,0.1);
+}
+.column-pause-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: none;
+  color: #8b949e;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.column-pause-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #c9d1d9;
+}
+.column-pause-btn.paused {
+  border-color: rgba(210,153,34,0.45);
+  background: rgba(210,153,34,0.12);
+  color: #d29922;
+}
+.column-pause-btn svg {
+  width: 13px;
+  height: 13px;
 }
 .column-header .count {
   background: rgba(255,255,255,0.1); color: #8b949e; border-radius: 10px;
@@ -677,6 +718,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   text-decoration: none;
 }
 .card-agent-link:hover { color: #a5d6ff; text-decoration: underline; }
+.card-agent-model {
+  color: #8b949e;
+  font-weight: 500;
+}
 .card-agent-duration {
   color: #8b949e;
   font-variant-numeric: tabular-nums;
@@ -1431,11 +1476,25 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .trigger-item.trigger-running {
   border-left: 3px solid #3fb950;
 }
+.trigger-item.trigger-paused {
+  border-left: 3px solid #d29922;
+}
 .trigger-running-badge {
   display: inline-block; background: #238636; color: #fff; font-size: 11px;
   font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 8px;
   animation: trigger-pulse 2s ease-in-out infinite;
 }
+.trigger-paused-badge {
+  display: inline-block; background: rgba(210,153,34,0.16); color: #d29922; font-size: 11px;
+  font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 8px;
+}
+.trigger-item .trigger-pause-btn {
+  margin-top: 6px; margin-left: 6px; background: rgba(255,255,255,0.08); border: none; color: #c9d1d9;
+  padding: 4px 12px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-weight: 600; transition: background 0.15s;
+}
+.trigger-item .trigger-pause-btn:hover { background: rgba(255,255,255,0.15); }
+.trigger-item .trigger-pause-btn.paused { color: #d29922; background: rgba(210,153,34,0.12); }
 
 /* ── Workstream info modal ───────────────────────────────────── */
 .ws-info-uid {
@@ -2425,6 +2484,28 @@ function initTagEditor(editorEl, opts = {}) {
 const ICON_LOCK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v4m0 12v4m-10-10h4m12 0h4"/></svg>';
 const ICON_SCHEDULE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>';
 const ICON_AGENT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><circle cx="15" cy="10" r="1.5"/><path d="M9 15h6"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M8 5v14l11-7z"/></svg>';
+
+function getPausedStates(ws = selectedWs) {
+  return Array.isArray(ws && ws.paused_states) ? ws.paused_states : [];
+}
+
+function isStatePaused(state, ws = selectedWs) {
+  return getPausedStates(ws).includes(state);
+}
+
+function triggerColumnState(trigger) {
+  if (!trigger) return '';
+  if (trigger.on_state) return String(trigger.on_state);
+  const filter = trigger.filter && typeof trigger.filter === 'object' ? trigger.filter : null;
+  return filter ? String(filter.state || filter.status || '') : '';
+}
+
+function isTriggerEffectivelyPaused(trigger, ws = selectedWs) {
+  const state = triggerColumnState(trigger);
+  return !!(trigger && trigger.paused) || (!!state && isStatePaused(state, ws));
+}
 
 function formatRelativeTime(ts) {
   if (!ts) return '';
@@ -2737,7 +2818,10 @@ function renderSidebar() {
   function renderItem(ws, depth) {
     const active = ws.id === selectedWsId ? ' active' : '';
     const cls = depth > 0 ? ` depth-${Math.min(depth, 4)}` : '';
-    const pause = ws.paused ? '<span class="pause-badge">PAUSED</span>' : '';
+    const pausedBits = getPausedStates(ws).length + (ws.triggers || []).filter(t => t.paused).length;
+    const pause = ws.paused
+      ? '<span class="pause-badge">PAUSED</span>'
+      : (pausedBits ? `<span class="pause-badge" title="${pausedBits} paused column/trigger controls">PARTIAL</span>` : '');
     const activeTriggerCount = getActiveTriggerCount(ws);
     const activeDot = activeTriggerCount > 0
       ? `<span class="trigger-active-dot" title="${activeTriggerCount} active trigger${activeTriggerCount === 1 ? '' : 's'}"></span>`
@@ -2948,7 +3032,14 @@ function renderBoardHeader(ws) {
   const header = document.getElementById('board-header');
   header.style.display = 'flex';
   const statusCls = ws.paused ? 'paused' : 'active';
-  const statusLabel = ws.paused ? 'Paused' : 'Active';
+  const pausedStateCount = getPausedStates(ws).length;
+  const pausedTriggerCount = (ws.triggers || []).filter(t => t.paused).length;
+  const partialPauseBits = [];
+  if (pausedStateCount) partialPauseBits.push(`${pausedStateCount} column${pausedStateCount === 1 ? '' : 's'}`);
+  if (pausedTriggerCount) partialPauseBits.push(`${pausedTriggerCount} trigger${pausedTriggerCount === 1 ? '' : 's'}`);
+  const statusLabel = ws.paused
+    ? 'Paused'
+    : (partialPauseBits.length ? `Active (${partialPauseBits.join(', ')} paused)` : 'Active');
   const btnLabel = ws.paused ? 'Resume' : 'Pause';
   const triggerCount = (ws.triggers || []).length;
   const activeCount = (ws.triggers || []).filter(t => activeTriggerIds.includes(t.id)).length;
@@ -3003,6 +3094,9 @@ function normalizeBoardRun(run) {
     started_at: run.started_at || '',
     ended_at: run.ended_at || '',
     status: normalizedRunStatus(run),
+    runtime: run.runtime || '',
+    model: run.model || '',
+    effort: run.effort || '',
   };
 }
 
@@ -3012,8 +3106,9 @@ function boardRenderKey(ws, tasks, lockMap) {
       id: ws && ws.id,
       name: ws && ws.name,
       paused: !!(ws && ws.paused),
+      paused_states: getPausedStates(ws),
       task_states: ws && ws.task_states,
-      triggers: (ws && ws.triggers || []).map(t => ({ id: t.id, name: t.name, state: t.state, agent: t.agent })),
+      triggers: (ws && ws.triggers || []).map(t => ({ id: t.id, name: t.name, state: t.state, on_state: t.on_state, paused: !!t.paused, agent: t.agent })),
     },
     tasks: (tasks || []).map(t => ({
       id: t.id,
@@ -3080,13 +3175,18 @@ function renderBoard(ws, tasks, lockMap) {
   let html = '';
   for (const state of states) {
     const stateTasks = tasks.filter(t => t.status === state);
-    html += `<div class="column" data-state="${esc(state)}">
+    const paused = isStatePaused(state, ws);
+    const pauseTitle = paused ? `Resume ${state}` : `Pause ${state}`;
+    html += `<div class="column${paused ? ' column-paused' : ''}" data-state="${esc(state)}">
       <div class="column-header">
         <div class="column-title-row">
           <span class="column-title-label">${esc(state)}</span>
           <button class="column-add-btn" type="button" data-create-state="${encodeURIComponent(state)}" title="Add task to ${esc(state)}">+</button>
         </div>
-        <span class="count">${stateTasks.length}</span>
+        <div class="column-header-actions">
+          <button class="column-pause-btn${paused ? ' paused' : ''}" type="button" data-column-pause-state="${encodeURIComponent(state)}" title="${esc(pauseTitle)}" aria-label="${esc(pauseTitle)}">${paused ? ICON_PLAY : ICON_PAUSE}</button>
+          <span class="count">${stateTasks.length}</span>
+        </div>
       </div>
       <div class="column-cards">`;
 
@@ -3131,6 +3231,13 @@ function renderBoard(ws, tasks, lockMap) {
     el.addEventListener('click', (event) => {
       event.stopPropagation();
       showCreateTaskModal(decodeURIComponent(el.dataset.createState || ''));
+    });
+  });
+  board.querySelectorAll('[data-column-pause-state]').forEach((el) => {
+    el.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const state = decodeURIComponent(el.dataset.columnPauseState || '');
+      await toggleColumnPause(state, el);
     });
   });
 
@@ -3264,7 +3371,8 @@ function renderCard(task, lock, state) {
     const agentLabel = lock.agent_id || (run && (run.agent || run.agent_ref)) || 'agent';
     if (run && run.run_id) {
       const duration = formatRunDuration(run.started_at, run.ended_at);
-      meta += `<button type="button" class="card-lock card-agent-link" data-agent-run-id="${esc(run.run_id)}" title="Open ${esc(agentLabel)} run">${ICON_AGENT} ${esc(agentLabel)} <span class="card-agent-duration" data-started-at="${esc(run.started_at || '')}" data-ended-at="${esc(run.ended_at || '')}">${esc(duration)}</span></button>`;
+      const runMeta = formatRunModelMetadata(run);
+      meta += `<button type="button" class="card-lock card-agent-link" data-agent-run-id="${esc(run.run_id)}" title="Open ${esc(agentLabel)} run · ${esc(runMeta.summaryText)}">${ICON_AGENT} ${esc(agentLabel)} <span class="card-agent-model">· ${esc(runMeta.cardChipText)}</span> <span class="card-agent-duration" data-started-at="${esc(run.started_at || '')}" data-ended-at="${esc(run.ended_at || '')}">${esc(duration)}</span></button>`;
     } else {
       meta += `<span class="card-lock">${ICON_AGENT} ${esc(agentLabel)}</span>`;
     }
@@ -4249,6 +4357,10 @@ function showTriggers() {
   if ((selectedWs.triggers || []).length) {
     for (const t of selectedWs.triggers) {
       const isRunning = activeTriggerIds.includes(t.id);
+      const triggerState = triggerColumnState(t);
+      const columnPaused = !!triggerState && isStatePaused(triggerState, selectedWs);
+      const triggerPaused = !!t.paused;
+      const effectivelyPaused = triggerPaused || columnPaused;
       let typeLabel;
       if (t.on_state) {
         typeLabel = `On state → ${esc(t.on_state)}`;
@@ -4264,6 +4376,8 @@ function showTriggers() {
         typeLabel = `Email: ${esc(eventType)} → ${esc(recipient)}`;
       }
       if (isRunning) typeLabel += ` <span class="trigger-running-badge">Running</span>`;
+      if (triggerPaused) typeLabel += ` <span class="trigger-paused-badge">Paused</span>`;
+      if (columnPaused) typeLabel += ` <span class="trigger-paused-badge">Column paused</span>`;
 
       let actionLabel;
       if (t.action === 'run_agent') {
@@ -4275,15 +4389,17 @@ function showTriggers() {
 
       const showForceRunBtn = !!selectedWs.paused && !!t.on_state;
       const runNowBtn = showForceRunBtn
-        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Force Run Now</button>`
+        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning || effectivelyPaused ? ' disabled' : ''}>Force Run Now</button>`
         : (t.on_schedule
-          ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Run Now</button>`
+          ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning || effectivelyPaused ? ' disabled' : ''}>Run Now</button>`
           : '');
+      const pauseLabel = triggerPaused ? 'Resume Trigger' : 'Pause Trigger';
+      const pauseBtn = `<button class="trigger-pause-btn${triggerPaused ? ' paused' : ''}" onclick="toggleTriggerPause('${t.id}', this)">${pauseLabel}</button>`;
 
-      html += `<div class="trigger-item${isRunning ? ' trigger-running' : ''}">
+      html += `<div class="trigger-item${isRunning ? ' trigger-running' : ''}${effectivelyPaused ? ' trigger-paused' : ''}">
         <div class="trigger-type">${typeLabel}</div>
         <div class="trigger-action">${actionLabel}</div>
-        ${runNowBtn}
+        ${runNowBtn}${pauseBtn}
       </div>`;
     }
   } else {
@@ -4577,6 +4693,22 @@ async function runTriggerNow(triggerId, btn) {
   }
 }
 
+async function toggleTriggerPause(triggerId, btn) {
+  if (!selectedWs || !triggerId) return;
+  const trigger = (selectedWs.triggers || []).find(t => t.id === triggerId);
+  const action = trigger && trigger.paused ? 'resume' : 'pause';
+  if (btn) btn.disabled = true;
+  try {
+    await api(`trigger/${action}/` + triggerId, { method: 'POST' });
+    await Promise.all([loadWorkstreams(), loadBoard()]);
+    showTriggers();
+  } catch (e) {
+    alert('Failed to update trigger pause state: ' + (e.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ── Pause / Resume ──────────────────────────────────────────────
 async function togglePause() {
   if (!selectedWs) return;
@@ -4585,6 +4717,23 @@ async function togglePause() {
   await Promise.all([loadWorkstreams(), loadBoard()]);
   if (action === 'resume') {
     await playWorkstreamManagerSound(WORKSTREAM_MANAGER_TUNING_SOUND);
+  }
+}
+
+async function toggleColumnPause(state, btn) {
+  if (!selectedWs || !state) return;
+  const action = isStatePaused(state, selectedWs) ? 'resume-columns' : 'pause-columns';
+  if (btn) btn.disabled = true;
+  try {
+    await api(`workstream/${action}/${selectedWsId}`, {
+      method: 'POST',
+      body: { states: [state] },
+    });
+    await Promise.all([loadWorkstreams(), loadBoard()]);
+  } catch (e) {
+    alert('Failed to update column pause state: ' + (e.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -4726,6 +4875,76 @@ function normalizedRunStatus(run) {
   const status = String(run && run.status ? run.status : '').toLowerCase();
   if (status) return status;
   return run && run.ended_at ? 'completed' : 'running';
+}
+
+function runtimeDisplayLabel(runtime) {
+  const runtimeValue = String(runtime || '').trim().toLowerCase();
+  if (runtimeValue === 'cline') return 'Cline';
+  if (runtimeValue === 'copilot') return 'Copilot';
+  if (runtimeValue === 'claude-code' || runtimeValue === 'claude') return 'Claude Code';
+  return runtimeValue ? runtimeValue.replace(/(^|[-_\s])([a-z])/g, (_, prefix, ch) => `${prefix}${ch.toUpperCase()}`) : 'Agent';
+}
+
+function providerDisplayLabel(provider) {
+  const providerValue = String(provider || '').trim().toLowerCase();
+  const labels = {
+    anthropic: 'Anthropic',
+    openai: 'OpenAI',
+    google: 'Google',
+    deepseek: 'DeepSeek',
+    mistral: 'Mistral',
+    meta: 'Meta',
+    groq: 'Groq',
+    xai: 'xAI',
+    ollama: 'Ollama',
+    openrouter: 'OpenRouter',
+    qwen: 'Qwen',
+    copilot: 'Copilot',
+  };
+  if (labels[providerValue]) return labels[providerValue];
+  return providerValue
+    ? providerValue.replace(/(^|[-_\s])([a-z])/g, (_, prefix, ch) => `${prefix}${ch.toUpperCase()}`)
+    : 'Unknown';
+}
+
+function splitProviderAndModel(model) {
+  const rawModel = String(model || '').trim();
+  if (!rawModel) {
+    return { providerKey: '', providerLabel: 'Unknown', modelLabel: 'unknown' };
+  }
+  const slashIndex = rawModel.indexOf('/');
+  if (slashIndex > 0) {
+    const providerKey = rawModel.slice(0, slashIndex);
+    const modelLabel = rawModel.slice(slashIndex + 1) || rawModel;
+    return {
+      providerKey,
+      providerLabel: providerDisplayLabel(providerKey),
+      modelLabel,
+    };
+  }
+  return {
+    providerKey: '',
+    providerLabel: 'Unknown',
+    modelLabel: rawModel,
+  };
+}
+
+function formatRunModelMetadata(run, runtimeOverride = null) {
+  const runtimeKey = String(runtimeOverride != null ? runtimeOverride : (run && run.runtime ? run.runtime : '')).trim().toLowerCase();
+  const runtimeLabel = runtimeDisplayLabel(runtimeKey);
+  const parts = splitProviderAndModel(run && run.model ? run.model : '');
+  const effortLabel = run && run.effort ? String(run.effort) : 'default';
+  const providerLabel = parts.providerLabel;
+  const modelLabel = parts.modelLabel;
+  return {
+    runtimeKey,
+    runtimeLabel,
+    providerLabel,
+    modelLabel,
+    effortLabel,
+    summaryText: `Runtime: ${runtimeLabel} | Provider: ${providerLabel} | Model: ${modelLabel} | Effort: ${effortLabel}`,
+    cardChipText: modelLabel === 'unknown' ? providerLabel : modelLabel,
+  };
 }
 
 function sortAgentRunsForDisplay(runs) {
@@ -5014,14 +5233,9 @@ function renderActiveAgentsModal() {
       : ((selectedCommandLine.includes(' copilot ') || selectedCommandLine.includes('/copilot '))
         ? 'copilot'
         : 'claude-code'));
-  const selectedRuntimeLabel = selectedRuntime === 'cline'
-    ? 'Cline'
-    : (selectedRuntime === 'copilot'
-      ? 'Copilot'
-      : (selectedRuntime === 'claude-code' ? 'Claude Code' : 'Agent'));
-  const selectedModel = selected && selected.model ? esc(selected.model.replace(/^anthropic\//, '')) : 'unknown';
-  const selectedEffort = selected && selected.effort ? esc(selected.effort) : 'default';
-  const selectedModelEffort = `Runtime: ${selectedRuntimeLabel} | Model: ${selectedModel} | Effort: ${selectedEffort}`;
+  const selectedRunMeta = formatRunModelMetadata(selected, selectedRuntime);
+  const selectedRuntimeLabel = selectedRunMeta.runtimeLabel;
+  const selectedModelEffort = selectedRunMeta.summaryText;
   const selectedStatus = selected ? normalizedRunStatus(selected) : '';
   const showKill = !!selected && isKillableStatus(selectedStatus);
   const showRetryButton = !!selected && isRetryableStatus(selectedStatus);

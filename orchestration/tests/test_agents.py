@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from orchestration import agents as agents_module
-from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, get_agent_run_context, get_global_sound_mute, list_agent_runs, read_agent_run_context_file, retry_agent_run, run_agent, set_global_sound_mute
+from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, _strip_ansi_escape_codes, count_active_agent_runs, get_agent_run, get_agent_run_context, get_global_sound_mute, list_agent_runs, read_agent_run_context_file, retry_agent_run, run_agent, set_global_sound_mute
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
@@ -23,6 +23,21 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.delenv("ORCHESTRATION_CLINE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("ORCHESTRATION_CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("ORCHESTRATION_COPILOT_CONTEXT_DIRS", raising=False)
+    monkeypatch.delenv("DEFAULT_EFFORT", raising=False)
+    monkeypatch.delenv("HIGH_EFFORT", raising=False)
+    monkeypatch.delenv("MEDIUM_EFFORT", raising=False)
+    monkeypatch.delenv("LOW_EFFORT", raising=False)
+    monkeypatch.delenv("CODING_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_DEFAULT_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_HIGH_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_MEDIUM_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_LOW_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_CODING_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_DEFAULT_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_HIGH_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_MEDIUM_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_LOW_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_CODING_EFFORT", raising=False)
     monkeypatch.delenv("CLINE_DEFAULT_LLM", raising=False)
     monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
     monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
@@ -1202,6 +1217,99 @@ def test_run_agent_cli_parameters_include_effort_when_configured(mock_popen, moc
     assert " --effort high" in command_line
 
 
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_level_specific_effort_env_when_x_effort_missing(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("HIGH_LLM", "anthropic/claude-opus-4-6")
+    monkeypatch.setenv("HIGH_EFFORT", "xhigh")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "env_level_effort_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Env Level Effort Agent\n"
+            "description: Uses env level effort\n"
+            "x-model-level: high\n"
+            "---\n"
+            "You are env-level-effort aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Env Level Effort Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["effort"] == "xhigh"
+    assert " --effort xhigh" in latest.get("command_line", "")
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_runtime_specific_effort_env_for_cline(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("CLINE_DEFAULT_EFFORT", "high")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_env_effort_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Env Effort Agent\n"
+            "description: Uses runtime env effort\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-env-effort aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Env Effort Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--thinking" in cmd
+    assert cmd[cmd.index("--thinking") + 1] == "high"
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["runtime"] == "cline"
+    assert latest["effort"] == "high"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_runtime_level_specific_effort_env_for_copilot(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("COPILOT_CODING_LLM", "gpt-5.3-codex")
+    monkeypatch.setenv("COPILOT_CODING_EFFORT", "medium")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "copilot_env_level_effort_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Copilot Env Level Effort Agent\n"
+            "description: Uses copilot level env effort\n"
+            "x-runtime: copilot\n"
+            "x-model-level: coding\n"
+            "---\n"
+            "You are copilot-level-env-effort aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Copilot Env Level Effort Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "medium"
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["runtime"] == "copilot"
+    assert latest["effort"] == "medium"
+
+
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
@@ -1224,21 +1332,45 @@ def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
 
     cmd = mock_popen.call_args.args[0]
     assert cmd[0] == "/usr/bin/cline"
-    assert "-y" in cmd
-    assert "-a" in cmd
     assert "-c" in cmd
     assert cmd[cmd.index("-c") + 1] == workspace
     assert "-m" in cmd
     assert cmd[cmd.index("-m") + 1] == "claude-opus-4-6"
     assert "--timeout" in cmd
     assert cmd[cmd.index("--timeout") + 1] == "1800"
+    assert "--auto-approve" in cmd
+    assert cmd[cmd.index("--auto-approve") + 1] == "true"
     assert "--thinking" in cmd
+    assert cmd[cmd.index("--thinking") + 1] == "high"
     assert "--verbose" not in cmd
     assert "--append-system-prompt" not in cmd
     assert "--dangerously-skip-permissions" not in cmd
     effective_prompt = cmd[-1]
     assert "=== SYSTEM INSTRUCTIONS ===" in effective_prompt
     assert "=== TASK ===" in effective_prompt
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_omits_cline_thinking_for_medium_effort(mock_popen, mock_which, workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_medium_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Medium Agent\n"
+            "description: Runs with Cline medium effort\n"
+            "x-runtime: cline\n"
+            "x-effort: medium\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Medium Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--thinking" not in cmd
 
     runs = list_agent_runs(limit=5, base_dir=workspace)
     latest = runs[0]
@@ -1615,3 +1747,139 @@ def test_runtime_reported_timeout_detects_cline_timeout():
     assert _runtime_reported_timeout("cline", '{"type": "error", "message": "Timeout"}', 1) is True
     assert _runtime_reported_timeout("claude-code", "Error: Timeout\n", 1) is False
     assert _runtime_reported_timeout("cline", "done", 0) is False
+
+
+# ── ANSI escape code stripping ────────────────────────────────────────
+
+class TestStripAnsiEscapeCodes:
+    """Tests for `_strip_ansi_escape_codes`."""
+
+    # ── No-op on clean text ───────────────────────────────────────────
+
+    def test_noop_on_empty(self):
+        assert _strip_ansi_escape_codes("") == ""
+
+    def test_noop_on_plain_text(self):
+        text = "Hello world.\nThis is clean output."
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_noop_on_markdown(self):
+        text = "# Heading\n- bullet\n```python\nprint('hi')\n```"
+        assert _strip_ansi_escape_codes(text) == text
+
+    # ── Complete CSI (SGR) sequences ──────────────────────────────────
+
+    def test_strips_reset(self):
+        assert _strip_ansi_escape_codes("\x1b[0mtext") == "text"
+
+    def test_strips_dim(self):
+        assert _strip_ansi_escape_codes("\x1b[2m- \x1b[0m") == "- "
+
+    def test_strips_color_codes(self):
+        assert _strip_ansi_escape_codes("\x1b[31mred\x1b[0m") == "red"
+        assert _strip_ansi_escape_codes("\x1b[1;32mbold green\x1b[0m") == "bold green"
+        assert _strip_ansi_escape_codes("\x1b[38;5;208morange\x1b[0m") == "orange"
+
+    def test_strips_complex_csi(self):
+        assert _strip_ansi_escape_codes("\x1b[1;4;33mtext\x1b[0m") == "text"
+        assert _strip_ansi_escape_codes("\x1b[48;2;255;128;0mbg\x1b[0m") == "bg"
+
+
+    # ── Bare SGR fragments (no ESC) ───────────────────────────────────
+
+    def test_strips_bare_sgr_fragments(self):
+        text = "[0m[2m- [0m[2msurvey complete[0m[2m"
+        expected = "- survey complete"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    def test_strips_bare_sgr_in_mixed_content(self):
+        text = "[0m[2mAnd[0m[2m the[0m[2m valid[0m[2m next[0m[2m states"
+        expected = "And the valid next states"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    def test_strips_bare_dim_around_survey(self):
+        text = "[0m[2m- [0m[2m`[0m[2msurvey[0m[2m complete[0m[2m`\n"
+        expected = "- `survey complete`\n"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    # ── Preserves legitimate text ─────────────────────────────────────
+
+    def test_preserves_bracketed_sections(self):
+        text = "[Section 1]\nContent here.\n[Section 2]\nMore content."
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_array_literals(self):
+        text = "['planned', 'reject']"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_numeric_references(self):
+        text = "See reference [1] for details. In section [2.3] we cover..."
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_edge_brackets(self):
+        text = "[m] [k] [h]"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_markdown_links(self):
+        text = "[click here](https://example.com)"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_task_lists(self):
+        text = "- [ ] todo\n- [x] done"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_code_blocks(self):
+        text = "```\n[0] -> first\n[1] -> second\n```"
+        assert _strip_ansi_escape_codes(text) == text
+
+
+    # ── Agent-like output (integration samples) ───────────────────────
+
+    def test_cleans_survey_complete_output(self):
+        text = (
+            "\x1b[0m\x1b[2m- \x1b[0m\x1b[2m`\x1b[0m\x1b[2msurvey\x1b[0m\x1b[2m "
+            "complete\x1b[0m\x1b[2m`\n\n"
+            "\x1b[0m\x1b[2mAnd\x1b[0m\x1b[2m the\x1b[0m\x1b[2m valid\x1b[0m\x1b[2m "
+            "next\x1b[0m\x1b[2m states\x1b[0m\x1b[2m for\x1b[0m\x1b[2m "
+            "`\x1b[0m\x1b[2mnew\x1b[0m\x1b[2m`\x1b[0m\x1b[2m are\x1b[0m\x1b[2m "
+            "`\x1b[0m\x1b[2m['\x1b[0m\x1b[2mplanned\x1b[0m\x1b[2m',\x1b[0m\x1b[2m "
+            "'\x1b[0m\x1b[2mre\x1b[0m\x1b[2mject\x1b[0m\x1b[2m']\x1b[0m\x1b[2m`.\n"
+        )
+        expected = (
+            "- `survey complete`\n\n"
+            "And the valid next states for `new` are `['planned', 'reject']`.\n"
+        )
+        assert _strip_ansi_escape_codes(text) == expected
+
+    def test_cleans_mixed_complete_and_bare(self):
+        text = "\x1b[2mPart 1\x1b[0m\n[2mPart 2[0m\n\x1b[2mPart 3\x1b[0m"
+        expected = "Part 1\nPart 2\nPart 3"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    # ── Other ANSI sequence types ─────────────────────────────────────
+
+    def test_strips_character_set_sequences(self):
+        text = "\x1b(0line draw\x1b(B"
+        assert _strip_ansi_escape_codes(text) == "line draw"
+
+    def test_strips_osc_sequences_bel_terminated(self):
+        text = "Before \x1b]0;My Title\x07 after"
+        assert _strip_ansi_escape_codes(text) == "Before  after"
+
+    # ── Edge cases ────────────────────────────────────────────────────
+
+    def test_multiple_sequences_consecutive(self):
+        assert _strip_ansi_escape_codes("\x1b[0m\x1b[2m\x1b[33mhello") == "hello"
+
+    def test_sequence_at_start(self):
+        assert _strip_ansi_escape_codes("\x1b[0mstart") == "start"
+
+    def test_sequence_at_end(self):
+        assert _strip_ansi_escape_codes("end\x1b[0m") == "end"
+
+    def test_only_sequences(self):
+        assert _strip_ansi_escape_codes("\x1b[0m\x1b[2m") == ""
+
+    def test_unclosed_sequence(self):
+        assert _strip_ansi_escape_codes("text\x1b[32") == "text\x1b[32"
+

@@ -6,6 +6,7 @@ import json
 import os
 import glob
 import pty
+import re
 import shlex
 import signal
 import shutil
@@ -62,6 +63,28 @@ COPILOT_MODEL_LEVEL_DEFAULTS = {
 }
 
 _ACTIVE_AGENTS_LOCK = threading.Lock()
+
+# Compile once for efficiency — matches complete and bare ANSI escape sequences.
+_ANSI_ESCAPE_RE = re.compile(
+    r'\x1b\[[0-9;]*[a-zA-Z]'       # CSI sequences: \x1b[0m, \x1b[1;32m, etc.
+    r'|\x1b\][^\x07]*\x07'         # OSC sequences: \x1b]0;title\x07
+    r'|\x1b[PX^_][^\x1b]*\x1b\\'   # DCS/SOS/PM/APC sequences
+    r'|\x1b[()][AB012]'            # Character set sequences
+    r'|\[[0-9;]+m'                 # Bare SGR fragments (when \x1b already stripped)
+)
+
+
+def _strip_ansi_escape_codes(text: str) -> str:
+    """Remove ANSI terminal escape sequences and bare SGR fragments from output.
+
+    Cline and other runtimes may output ANSI-styled text.  When stdout is not a
+    TTY the leading ``\\x1b`` byte is sometimes stripped, leaving bare fragments
+    like ``[0m``, ``[2m`` in the output.  This helper removes both complete and
+    partial sequences so the output is clean for UI display and audit storage.
+    """
+    if not text:
+        return text
+    return _ANSI_ESCAPE_RE.sub('', text)
 
 
 def _coerce_bool(value, default: bool = True) -> bool:
@@ -1211,7 +1234,7 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
         abs_log_path = log_path if os.path.isabs(log_path) else os.path.join(base_dir, log_path)
         if os.path.exists(abs_log_path):
             with open(abs_log_path, "r", encoding="utf-8", errors="replace") as f:
-                output = f.read()
+                output = _strip_ansi_escape_codes(f.read())
 
     from .workspace_audit import get_audit_log
     cli_calls = get_audit_log(base_dir=base_dir, limit=2000, event_type="orchestration_cli_call")
@@ -1473,7 +1496,7 @@ def tail_active_agent(run_id: str, lines: int = 200, base_dir: str = ".") -> dic
     with open(abs_log_path, "r", encoding="utf-8", errors="replace") as f:
         all_lines = f.readlines()
 
-    tail_text = "".join(all_lines[-lines:])
+    tail_text = _strip_ansi_escape_codes("".join(all_lines[-lines:]))
     return {
         "run": run,
         "tail": tail_text,
@@ -1673,6 +1696,10 @@ def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
     env_value = os.getenv(env_key)
     if not env_value:
         if runtime_norm == "cline":
+            if level_norm == "coding":
+                default_runtime_model = _normalize_model_name(os.getenv(CLINE_DEFAULT_MODEL_ENV_VAR, CLINE_DEFAULT_MODEL))
+                if default_runtime_model:
+                    return default_runtime_model
             default_model = _normalize_model_name(CLINE_MODEL_LEVEL_DEFAULTS.get(level_norm))
             if default_model:
                 return default_model
@@ -1701,19 +1728,75 @@ def _resolve_agent_model(agent_def: dict, runtime: str = DEFAULT_AGENT_RUNTIME) 
     return _get_model(runtime=runtime)
 
 
-def _resolve_agent_effort(agent_def: dict):
-    """Return validated effort value or None when not set."""
-    raw = agent_def.get("effort")
+def _normalize_agent_effort(raw, *, source_label: str = "x-effort") -> str | None:
+    """Validate and normalize effort values from headers or env vars."""
     effort = str(raw or "").strip().lower()
     if not effort:
         return None
-
     allowed = {"low", "medium", "high", "xhigh", "max"}
     if effort not in allowed:
         raise ValueError(
-            f"Invalid x-effort '{raw}'. Expected one of: low, medium, high, xhigh, max"
+            f"Invalid {source_label} '{raw}'. Expected one of: low, medium, high, xhigh, max"
         )
     return effort
+
+
+def _effort_env_var_for_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
+    """Map model level to runtime-aware effort env var names."""
+    level_norm = str(level or "").strip().lower()
+    runtime_norm = _normalize_agent_runtime(runtime)
+    env_key_by_level = {
+        "high": "HIGH_EFFORT",
+        "medium": "MEDIUM_EFFORT",
+        "low": "LOW_EFFORT",
+        "coding": "CODING_EFFORT",
+    }
+    if runtime_norm == "cline":
+        env_key_by_level = {
+            "high": "CLINE_HIGH_EFFORT",
+            "medium": "CLINE_MEDIUM_EFFORT",
+            "low": "CLINE_LOW_EFFORT",
+            "coding": "CLINE_CODING_EFFORT",
+        }
+    elif runtime_norm == "copilot":
+        env_key_by_level = {
+            "high": "COPILOT_HIGH_EFFORT",
+            "medium": "COPILOT_MEDIUM_EFFORT",
+            "low": "COPILOT_LOW_EFFORT",
+            "coding": "COPILOT_CODING_EFFORT",
+        }
+
+    env_key = env_key_by_level.get(level_norm)
+    if not env_key:
+        raise ValueError(f"Invalid x-model-level '{level}'. Expected one of: high, medium, low, coding")
+    return env_key
+
+
+def _default_effort_env_var(runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
+    """Return runtime-aware default effort env var name."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+    if runtime_norm == "cline":
+        return "CLINE_DEFAULT_EFFORT"
+    if runtime_norm == "copilot":
+        return "COPILOT_DEFAULT_EFFORT"
+    return "DEFAULT_EFFORT"
+
+
+def _resolve_agent_effort(agent_def: dict, runtime: str = DEFAULT_AGENT_RUNTIME):
+    """Resolve effort with precedence: x-effort > level env > runtime default env."""
+    explicit_effort = _normalize_agent_effort(agent_def.get("effort"), source_label="x-effort")
+    if explicit_effort:
+        return explicit_effort
+
+    level = agent_def.get("model_level")
+    if str(level or "").strip():
+        env_key = _effort_env_var_for_level(level, runtime=runtime)
+        env_effort = _normalize_agent_effort(os.getenv(env_key), source_label=f"env var {env_key}")
+        if env_effort:
+            return env_effort
+
+    default_env_key = _default_effort_env_var(runtime=runtime)
+    return _normalize_agent_effort(os.getenv(default_env_key), source_label=f"env var {default_env_key}")
 
 
 def _normalize_agent_runtime(raw: str) -> str:
@@ -1791,6 +1874,21 @@ def _build_cline_prompt(task_prompt: str, system_prompt: str) -> str:
         "=== TASK ===\n"
         f"{task_prompt}"
     )
+
+
+def _cline_thinking_level(effort: str | None) -> str | None:
+    """Map orchestration effort hints onto Cline's explicit thinking levels."""
+    normalized = str(effort or "").strip().lower()
+    if not normalized:
+        return None
+    mapping = {
+        "low": None,
+        "medium": None,
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "xhigh",
+    }
+    return mapping.get(normalized)
 
 
 def _build_copilot_prompt(task_prompt: str, system_prompt: str) -> str:
@@ -2016,8 +2114,6 @@ def _build_runtime_command(
         effective_prompt = _build_cline_prompt(task_prompt, system_prompt)
         cmd = [
             runtime_path,
-            "-y",
-            "-a",
             "-c",
             task_cwd,
             "-m",
@@ -2025,13 +2121,15 @@ def _build_runtime_command(
             "--timeout",
             str(timeout_seconds),
         ]
+        cmd.extend(["--auto-approve", "true"])
         if _cline_verbose_enabled():
             cmd.append("--verbose")
         cline_config_dir = _resolve_cline_config_dir()
         if cline_config_dir:
             cmd.extend(["--config", cline_config_dir])
-        if effort and effort not in {"low", "medium"}:
-            cmd.append("--thinking")
+        thinking_level = _cline_thinking_level(effort)
+        if thinking_level:
+            cmd.extend(["--thinking", thinking_level])
         cmd.append(effective_prompt)
         return cmd, effective_prompt
 
@@ -2542,7 +2640,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Resolve model and effort for CLI and for run metadata
         model = _resolve_agent_model(agent_def, runtime=runtime)
-        effort = _resolve_agent_effort(agent_def)
+        effort = _resolve_agent_effort(agent_def, runtime=runtime)
         effective_timeout = _coerce_timeout_seconds(
             timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
         )
@@ -2785,18 +2883,19 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         _write_run_meta(base_dir, run_id, run_meta)
 
         # Log agent output to audit trail for each task
+        stripped_output = _strip_ansi_escape_codes(output)
         for tid in task_ids:
             t = read_task(tid, base_dir)  # Re-read in case agent modified it
             if final_status == "completed":
-                audit_output = output[:MAX_AUDIT_OUTPUT]
-                if len(output) > MAX_AUDIT_OUTPUT:
-                    audit_output += f"\n... (truncated, {len(output)} total chars)"
+                audit_output = stripped_output[:MAX_AUDIT_OUTPUT]
+                if len(stripped_output) > MAX_AUDIT_OUTPUT:
+                    audit_output += f"\n... (truncated, {len(stripped_output)} total chars)"
                 t.add_audit("agent_completed", f"Agent '{agent_def['name']}' completed.\n\nOutput:\n{audit_output}")
                 # Reset retry count on success
                 t.retry_count = 0
                 t.last_failure_at = None
             else:
-                error_msg = output[:MAX_AUDIT_OUTPUT]
+                error_msg = stripped_output[:MAX_AUDIT_OUTPUT]
                 if final_status == "timeout":
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' timed out.\n\nError:\n{error_msg}")
                 elif final_status == "killed":

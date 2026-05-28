@@ -26,6 +26,7 @@ from orchestration.tasks import (
     duplicate_task,
     attach_to_task,
     detach_from_task,
+    reorder_tasks_in_workstream,
 )
 from orchestration.artifacts import create_artifact, copy_artifact_tree
 from orchestration.agents import _read_task_attachments_for_prompt
@@ -598,3 +599,128 @@ class TestDuplicateTask:
         task = create_task(ws.id, title="T", attachments=["Theses/x.md"], base_dir=workspace)
         dup = duplicate_task(task.id, base_dir=workspace)
         assert dup.attachments == ["Theses/x.md"]
+
+
+class TestReorderTasksInWorkstream:
+    @pytest.fixture
+    def prod_ws(self, workspace):
+        states = {
+            "Backlog": ["On Deck"],
+            "On Deck": ["In Progress"],
+            "In Progress": ["Done"],
+            "Done": [],
+        }
+        return create_workstream(name="Product Dev", task_states=states, base_dir=workspace)
+
+    def test_return_dict_structure(self, workspace, prod_ws):
+        result = reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        assert result["workstream_id"] == prod_ws.id
+        assert result["workstream_name"] == "Product Dev"
+        assert "total_tasks" in result
+        assert "columns_checked" in result
+        assert "columns_reordered" in result
+        assert "reordered_columns" in result
+        assert "total_reordered" in result
+
+    def test_empty_workstream(self, workspace, prod_ws):
+        result = reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        assert result["total_tasks"] == 0
+        assert result["columns_reordered"] == 0
+        assert result["total_reordered"] == 0
+
+    def test_already_correct_order_no_reorder(self, workspace, prod_ws):
+        # create_task prepends (lower rank), so create P1 first then P0
+        # — P0 ends up with a lower rank and thus appears first in list_tasks
+        create_task(prod_ws.id, title="User Story #2", tags=["P1"], base_dir=workspace)
+        create_task(prod_ws.id, title="User Story #1", tags=["P0"], base_dir=workspace)
+        result = reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        assert result["columns_reordered"] == 0
+        assert result["total_reordered"] == 0
+
+    def test_priority_order_p0_before_p1_before_p2(self, workspace, prod_ws):
+        # create_task prepends; create P0 first so it ends up with the highest rank
+        # and thus appears last — the column is in wrong (P2-first) order initially
+        t_p0 = create_task(prod_ws.id, title="Card #3", tags=["P0"], base_dir=workspace)
+        t_p1 = create_task(prod_ws.id, title="Card #2", tags=["P1"], base_dir=workspace)
+        t_p2 = create_task(prod_ws.id, title="Card #1", tags=["P2"], base_dir=workspace)
+        result = reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        tasks = list_tasks(prod_ws.id, status="Backlog", base_dir=workspace)
+        assert tasks[0].id == t_p0.id
+        assert tasks[1].id == t_p1.id
+        assert tasks[2].id == t_p2.id
+        assert result["columns_reordered"] == 1
+
+    def test_lower_card_number_first_within_same_priority(self, workspace, prod_ws):
+        # Card #3 inserted before card #1 — after reorder card #1 must come first
+        t3 = create_task(prod_ws.id, title="User Story #3", tags=["P1"], base_dir=workspace)
+        t1 = create_task(prod_ws.id, title="User Story #1", tags=["P1"], base_dir=workspace)
+        reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        tasks = list_tasks(prod_ws.id, status="Backlog", base_dir=workspace)
+        assert tasks[0].id == t1.id
+        assert tasks[1].id == t3.id
+
+    def test_card_number_extraction_various_patterns(self, workspace, prod_ws):
+        # Titles using "User Story #N", "Card #N", and "#N prefix" formats
+        t5 = create_task(prod_ws.id, title="User Story #5 Login flow", tags=["P1"], base_dir=workspace)
+        t2 = create_task(prod_ws.id, title="Card #2 Dashboard", tags=["P1"], base_dir=workspace)
+        t1 = create_task(prod_ws.id, title="#1 Homepage", tags=["P1"], base_dir=workspace)
+        reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        tasks = list_tasks(prod_ws.id, status="Backlog", base_dir=workspace)
+        assert tasks[0].id == t1.id  # card 1
+        assert tasks[1].id == t2.id  # card 2
+        assert tasks[2].id == t5.id  # card 5
+
+    def test_us_dash_pattern_extracted(self, workspace, prod_ws):
+        # "US-N" format should resolve card number N
+        t5 = create_task(prod_ws.id, title="US-5 Profile page", tags=["P0"], base_dir=workspace)
+        t1 = create_task(prod_ws.id, title="US-1 Auth flow", tags=["P0"], base_dir=workspace)
+        reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        tasks = list_tasks(prod_ws.id, status="Backlog", base_dir=workspace)
+        assert tasks[0].id == t1.id
+        assert tasks[1].id == t5.id
+
+    def test_no_priority_tag_ranks_below_p2(self, workspace, prod_ws):
+        # An untagged task should end up after a P2 task regardless of card number
+        t_none = create_task(prod_ws.id, title="Card #1 No priority", base_dir=workspace)
+        t_p2 = create_task(prod_ws.id, title="Card #2 P2 task", tags=["P2"], base_dir=workspace)
+        reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        tasks = list_tasks(prod_ws.id, status="Backlog", base_dir=workspace)
+        assert tasks[0].id == t_p2.id
+        assert tasks[1].id == t_none.id
+
+    def test_multiple_columns_reordered_independently(self, workspace, prod_ws):
+        # Backlog: create P0 first (higher rank = appears last) then P1 (lower rank = first)
+        # — so the column initially shows [P1, P0] which is wrong order
+        b_p0 = create_task(prod_ws.id, title="Card #1", tags=["P0"], base_dir=workspace)
+        b_p1 = create_task(prod_ws.id, title="Card #2", tags=["P1"], base_dir=workspace)
+        # On Deck: card #3 before card #1 (wrong card-number order)
+        d_c3 = create_task(prod_ws.id, title="Card #3", tags=["P0"], base_dir=workspace)
+        d_c1 = create_task(prod_ws.id, title="Card #1 on deck", tags=["P0"], base_dir=workspace)
+        update_task(d_c3.id, status="On Deck", base_dir=workspace)
+        update_task(d_c1.id, status="On Deck", base_dir=workspace)
+
+        result = reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+
+        assert result["columns_reordered"] == 2
+        backlog = list_tasks(prod_ws.id, status="Backlog", base_dir=workspace)
+        assert backlog[0].id == b_p0.id
+        assert backlog[1].id == b_p1.id
+        on_deck = list_tasks(prod_ws.id, status="On Deck", base_dir=workspace)
+        assert on_deck[0].id == d_c1.id
+        assert on_deck[1].id == d_c3.id
+
+    def test_reorder_persists_to_disk(self, workspace, prod_ws):
+        # Ranks written by reorder should survive a fresh list_tasks call
+        t2 = create_task(prod_ws.id, title="Card #2", tags=["P0"], base_dir=workspace)
+        t1 = create_task(prod_ws.id, title="Card #1", tags=["P0"], base_dir=workspace)
+        reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        reloaded = list_tasks(prod_ws.id, status="Backlog", base_dir=workspace)
+        assert reloaded[0].id == t1.id
+        assert reloaded[1].id == t2.id
+
+    def test_total_tasks_count(self, workspace, prod_ws):
+        create_task(prod_ws.id, title="T1", base_dir=workspace)
+        create_task(prod_ws.id, title="T2", base_dir=workspace)
+        create_task(prod_ws.id, title="T3", base_dir=workspace)
+        result = reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
+        assert result["total_tasks"] == 3

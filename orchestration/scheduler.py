@@ -23,7 +23,7 @@ from .models import now_iso
 from .persistence import resolve_workstream_root
 from .workstreams import list_workstreams
 from .tasks import list_tasks, list_tasks_for_workstream, read_task, _save_task
-from .triggers import execute_trigger
+from .triggers import execute_trigger, trigger_pause_reason
 
 
 SCHEDULER_STATE_FILE = "scheduler_state.yaml"
@@ -527,6 +527,13 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
             "status": "skipped",
             "message": f"Workstream '{latest_ws.name}' is paused",
         }
+    pause_reason = trigger_pause_reason(trigger, latest_ws)
+    if pause_reason:
+        return {
+            "trigger_id": trigger.id,
+            "status": "skipped",
+            "message": pause_reason,
+        }
 
     agent_id = trigger.agent or f"trigger:{trigger.id}"
 
@@ -662,10 +669,13 @@ def tick(base_dir: str = ".") -> dict:
 
         tasks = list_tasks_for_workstream(ws, base_dir=base_dir)
         tasks_by_status = _group_tasks_by_status(tasks)
+        paused_states = set(getattr(ws, "paused_states", []) or [])
 
         # 1. Task-level schedules
         for task in tasks:
             if task.scheduled_at is None:
+                continue
+            if task.status in paused_states:
                 continue
             sched_time = datetime.fromisoformat(task.scheduled_at)
             if sched_time.tzinfo is None:
@@ -703,6 +713,13 @@ def tick(base_dir: str = ".") -> dict:
             if trigger.on_schedule is None:
                 continue
             if not _cron_matches_between(trigger.on_schedule, last_tick, now):
+                continue
+            pause_reason = trigger_pause_reason(trigger, ws)
+            if pause_reason:
+                results["trigger_schedules_fired"].append({
+                    "trigger_id": trigger.id,
+                    "result": {"status": "skipped", "reason": pause_reason},
+                })
                 continue
 
             if trigger.filter is None:
@@ -780,6 +797,14 @@ def tick(base_dir: str = ".") -> dict:
             )
 
         for trigger in state_triggers:
+            pause_reason = trigger_pause_reason(trigger, ws)
+            if pause_reason:
+                results["state_triggers_fired"].append({
+                    "trigger_id": trigger.id,
+                    "task_ids": [],
+                    "result": {"status": "skipped", "reason": pause_reason},
+                })
+                continue
 
             # Find tasks in the trigger's target state that aren't already locked
             matching_ids = [

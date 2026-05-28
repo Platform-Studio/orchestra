@@ -369,6 +369,12 @@ def cmd_task_clear_schedule(args):
     _output(task.to_dict())
 
 
+def cmd_task_reorder(args):
+    from .tasks import reorder_tasks_in_workstream
+    result = reorder_tasks_in_workstream(args.workstream_id, base_dir=args.base_dir)
+    _output(result)
+
+
 def cmd_task_move(args):
     from .tasks import move_task
     kwargs = {"task_id": args.task_id, "target_workstream_id": args.workstream_id, "base_dir": args.base_dir}
@@ -510,6 +516,18 @@ def cmd_trigger_delete(args):
     _output({"deleted": True, "trigger_id": args.trigger_id})
 
 
+def cmd_trigger_pause(args):
+    from .triggers import pause_trigger
+    trigger = pause_trigger(args.trigger_id, base_dir=args.base_dir)
+    _output(trigger.to_dict())
+
+
+def cmd_trigger_resume(args):
+    from .triggers import resume_trigger
+    trigger = resume_trigger(args.trigger_id, base_dir=args.base_dir)
+    _output(trigger.to_dict())
+
+
 # ── Agent commands ───────────────────────────────────────────────────
 
 def cmd_agent_list(args):
@@ -577,6 +595,18 @@ def cmd_workstream_resume(args):
     ws.paused = False
     save_workstream(ws, args.base_dir)
     log_event("workstream_resumed", f"Workstream '{ws.name}' resumed", args.base_dir, workstream_id=ws.id)
+    _output(ws.to_dict())
+
+
+def cmd_workstream_pause_columns(args):
+    from .workstreams import pause_workstream_states
+    ws = pause_workstream_states(args.id, args.state, base_dir=args.base_dir)
+    _output(ws.to_dict())
+
+
+def cmd_workstream_resume_columns(args):
+    from .workstreams import resume_workstream_states
+    ws = resume_workstream_states(args.id, args.state, base_dir=args.base_dir)
     _output(ws.to_dict())
 
 
@@ -893,6 +923,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", help="Target state in the destination workstream (defaults to initial state)")
     p.set_defaults(func=cmd_task_move)
 
+    p = task_sub.add_parser("reorder")
+    p.add_argument("workstream_id")
+    p.set_defaults(func=cmd_task_reorder)
+
     p = task_sub.add_parser("duplicate")
     p.add_argument("task_id")
     p.add_argument("--workstream-id", dest="workstream_id", help="Target workstream ID (defaults to same workstream)")
@@ -982,6 +1016,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("trigger_id")
     p.set_defaults(func=cmd_trigger_delete)
 
+    p = trigger_sub.add_parser("pause")
+    p.add_argument("trigger_id")
+    p.set_defaults(func=cmd_trigger_pause)
+
+    p = trigger_sub.add_parser("resume")
+    p.add_argument("trigger_id")
+    p.set_defaults(func=cmd_trigger_resume)
+
     p = ws_sub.add_parser("pause")
     p.add_argument("id")
     p.set_defaults(func=cmd_workstream_pause)
@@ -989,6 +1031,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = ws_sub.add_parser("resume")
     p.add_argument("id")
     p.set_defaults(func=cmd_workstream_resume)
+
+    p = ws_sub.add_parser("pause-columns")
+    p.add_argument("id")
+    p.add_argument("state", nargs="+", help="One or more board column/state names to pause")
+    p.set_defaults(func=cmd_workstream_pause_columns)
+
+    p = ws_sub.add_parser("resume-columns")
+    p.add_argument("id")
+    p.add_argument("state", nargs="+", help="One or more board column/state names to resume")
+    p.set_defaults(func=cmd_workstream_resume_columns)
 
     # ── Agent ────────────────────────────────────────────────────────
     agent_parser = subparsers.add_parser("agent")
