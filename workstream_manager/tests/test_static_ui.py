@@ -80,6 +80,16 @@ def test_triggers_modal_labels_state_task_selection_mode() -> None:
     assert "typeLabel += t.task_selection === 'all_unlocked'" in html
     assert "(all unlocked tasks)" in html
     assert "(first unlocked task)" in html
+    assert "Email: ${esc(eventType)} → ${esc(recipient)}" in html
+
+
+def test_long_task_tags_clip_in_cards_and_modal() -> None:
+    html = _index_html()
+
+    assert '.card-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px; min-width: 0; }' in html
+    assert 'max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' in html
+    assert '.tag-editor-summary {' in html
+    assert '.tag-editor-tag {' in html
 
 
 def test_board_columns_include_pause_controls() -> None:
@@ -158,6 +168,23 @@ def test_agent_run_details_show_cli_flags_separately_from_prompt() -> None:
     assert 'function maskPromptArgs(args)' in html
     assert "masked.push(arg, '<prompt omitted>');" in html
     assert "masked.push(arg, '<system prompt omitted>');" in html
+
+
+def test_agent_run_details_group_content_into_tabs_with_outputs_default() -> None:
+    html = _index_html()
+
+    assert "let selectedAgentDetailTab = 'outputs';" in html
+    assert "function setSelectedAgentDetailTab(tab)" in html
+    assert 'data-agent-detail-tab="inputs"' in html
+    assert 'data-agent-detail-tab="outputs"' in html
+    assert 'data-agent-detail-tab="retries"' in html
+    assert 'data-agent-detail-panel="inputs"' in html
+    assert 'data-agent-detail-panel="outputs"' in html
+    assert 'data-agent-detail-panel="retries"' in html
+    assert "selectedAgentDetailTab = 'outputs';" in html
+    assert 'appearance: none;' in html
+    assert 'border-radius: 6px 6px 0 0;' in html
+    assert 'box-shadow: inset 0 2px 0 #58a6ff;' in html
     assert 'const selectedCommandArgs = parsedCommandLine && parsedCommandLine.length > 1' in html
     assert "CLI Flags" in html
 

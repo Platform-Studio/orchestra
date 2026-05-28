@@ -115,6 +115,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   gap: 6px;
   flex-wrap: wrap;
   min-height: 32px;
+  min-width: 0;
 }
 .tag-editor-tag,
 .tag-editor-plus-btn {
@@ -124,6 +125,11 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .tag-editor-tag {
   border: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tag-editor-tag-btn {
   cursor: pointer;
@@ -479,6 +485,43 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-size: 12px;
   line-height: 1.45;
 }
+.agent-detail-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0 12px;
+  padding-bottom: 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.agent-detail-tab {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: #8b949e;
+  border-radius: 6px 6px 0 0;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  margin-bottom: -1px;
+  position: relative;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.agent-detail-tab:hover {
+  background: rgba(255,255,255,0.05);
+  color: #c9d1d9;
+}
+.agent-detail-tab.active {
+  background: #22272e;
+  border-color: rgba(255,255,255,0.12);
+  color: #e6edf3;
+  box-shadow: inset 0 2px 0 #58a6ff;
+}
+.agent-detail-panel.hidden {
+  display: none;
+}
 
 /* ── Audit log modal ──────────────────────────────────────────── */
 .audit-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -654,10 +697,11 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 .card.drop-after { box-shadow: inset 0 -2px 0 #58a6ff; }
 .column-cards.drop-active { outline: 1px dashed rgba(88,166,255,0.55); outline-offset: -4px; }
 .card:hover { background: #353b44; }
-.card-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px; }
+.card-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px; min-width: 0; }
 .card-tag {
   font-size: 11px; font-weight: 600; color: #fff; height: auto;
   min-width: 40px; border-radius: 4px; padding: 2px 8px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .card-title { font-size: 14px; margin-bottom: 4px; color: #e6edf3; }
 .card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -1772,6 +1816,7 @@ let activeAgentTailTimer = null;
 let selectedAgentRunId = null;
 let selectedAgentArtifacts = null;  // selected run details (prompt/output/cli_calls)
 let selectedAgentArtifactsError = '';
+let selectedAgentDetailTab = 'outputs';
 let retryingAgentRunId = null;
 const DEFAULT_AGENT_RUN_STATUS_FILTER = 'running';
 let agentRunStatusFilter = DEFAULT_AGENT_RUN_STATUS_FILTER;
@@ -4317,6 +4362,10 @@ function showTriggers() {
       } else if (t.on_schedule) {
         typeLabel = `Schedule: ${esc(cronToHuman(t.on_schedule))}`;
         if (t.filter) typeLabel += ` (filter: ${esc(JSON.stringify(t.filter))})`;
+      } else if (t.on_email) {
+        const recipient = t.on_email.recipient || '?';
+        const eventType = t.on_email.event || 'new_thread';
+        typeLabel = `Email: ${esc(eventType)} → ${esc(recipient)}`;
       }
       if (isRunning) typeLabel += ` <span class="trigger-running-badge">Running</span>`;
       if (triggerPaused) typeLabel += ` <span class="trigger-paused-badge">Paused</span>`;
@@ -4740,6 +4789,7 @@ async function openAuditLog(filterType) {
 async function openActiveAgentsModal(initialRunId) {
   const overlay = document.getElementById('active-agents-modal');
   overlay.classList.remove('hidden');
+  selectedAgentDetailTab = 'outputs';
   if (initialRunId) selectedAgentRunId = initialRunId;
   await refreshActiveAgentsModal();
   if (initialRunId && activeAgentRuns.some(r => r.run_id === initialRunId)) {
@@ -4763,7 +4813,16 @@ function closeActiveAgentsModal() {
   selectedAgentRunId = null;
   selectedAgentArtifacts = null;
   selectedAgentArtifactsError = '';
+  selectedAgentDetailTab = 'outputs';
   agentRunStatusFilter = DEFAULT_AGENT_RUN_STATUS_FILTER;
+}
+
+function setSelectedAgentDetailTab(tab) {
+  const nextTab = String(tab || '').trim().toLowerCase();
+  if (!['inputs', 'outputs', 'retries'].includes(nextTab)) return;
+  captureAgentRunsScrollState();
+  selectedAgentDetailTab = nextTab;
+  renderActiveAgentsModal();
 }
 
 function captureAgentRunsScrollState() {
@@ -5171,6 +5230,12 @@ function renderActiveAgentsModal() {
         </div>`;
       }).join('')
     : '<div style="font-size:12px;color:#8b949e;">No orchestration CLI calls recorded.</div>';
+  const activeDetailTab = ['inputs', 'outputs', 'retries'].includes(selectedAgentDetailTab)
+    ? selectedAgentDetailTab
+    : 'outputs';
+  const inputsTabActive = activeDetailTab === 'inputs';
+  const outputsTabActive = activeDetailTab === 'outputs';
+  const retriesTabActive = activeDetailTab === 'retries';
   const providerContext = selectedDetails && selectedDetails.context_capture ? selectedDetails.context_capture : null;
   const providerManifest = providerContext && providerContext.manifest ? providerContext.manifest : null;
   const providerFiles = providerContext && Array.isArray(providerContext.files) ? providerContext.files : [];
@@ -5228,57 +5293,68 @@ function renderActiveAgentsModal() {
           <h4>RUN DETAIL ${showKill ? `- <button class="action-btn danger" onclick="killSelectedAgentRun()">Kill</button>` : ''}</h4>
           <span style="font-size:12px;color:#8b949e;">${selectedModelEffort}</span>
         </div>
-        <div class="agent-section">
-          <div class="agent-section-header">
-            <h4>RUN RETRY</h4>
-            ${showRetryButton ? `<button class="action-btn" onclick="retrySelectedAgentRun()" ${canRetrySelectedRun ? '' : 'disabled'}>${retryingAgentRunId === selectedAgentRunId ? 'Retrying...' : 'Retry Now'}</button>` : ''}
+        <div class="agent-detail-tabs">
+          <button class="agent-detail-tab${inputsTabActive ? ' active' : ''}" data-agent-detail-tab="inputs" onclick="setSelectedAgentDetailTab('inputs')">Inputs</button>
+          <button class="agent-detail-tab${outputsTabActive ? ' active' : ''}" data-agent-detail-tab="outputs" onclick="setSelectedAgentDetailTab('outputs')">Outputs</button>
+          <button class="agent-detail-tab${retriesTabActive ? ' active' : ''}" data-agent-detail-tab="retries" onclick="setSelectedAgentDetailTab('retries')">Retries</button>
+        </div>
+        <div class="agent-detail-panel${inputsTabActive ? '' : ' hidden'}" data-agent-detail-panel="inputs">
+          <div class="agent-section">
+            <h4>${selected ? `${selectedRuntimeLabel} CLI Flags` : 'Agent CLI Flags'}</h4>
+            <pre class="agent-tail-pre">${selected ? esc(selectedCommandArgs || 'No flags or args recorded for this run.') : 'Select an agent run from the list.'}</pre>
           </div>
-          <div class="agent-cli-calls">${runLineageHtml}</div>
+          <div class="agent-section">
+            <h4>${selected ? `${selectedRuntimeLabel} Command` : 'Agent Command'}</h4>
+            <pre class="agent-tail-pre">${selected ? esc(selectedCommandLine || 'Command line not recorded for this run.') : 'Select an agent run from the list.'}</pre>
+          </div>
+          <div class="agent-section">
+            <h4>Input Prompt</h4>
+            <pre class="agent-tail-pre" id="active-agent-input-prompt">${selected ? esc(selectedPrompt || 'Loading prompt...') : 'Select an agent run from the list.'}</pre>
+          </div>
         </div>
-        <div class="agent-section">
-          <h4>TASK RETRY POLICY</h4>
-          <div class="agent-cli-calls">${retryHtml}</div>
-        </div>
-        <div class="agent-section">
-          <h4>${selected ? `${selectedRuntimeLabel} CLI Flags` : 'Agent CLI Flags'}</h4>
-          <pre class="agent-tail-pre">${selected ? esc(selectedCommandArgs || 'No flags or args recorded for this run.') : 'Select an agent run from the list.'}</pre>
-        </div>
-        <div class="agent-section">
-          <h4>${selected ? `${selectedRuntimeLabel} Command` : 'Agent Command'}</h4>
-          <pre class="agent-tail-pre">${selected ? esc(selectedCommandLine || 'Command line not recorded for this run.') : 'Select an agent run from the list.'}</pre>
-        </div>
-        <div class="agent-section">
-          <h4>Input Prompt</h4>
-          <pre class="agent-tail-pre" id="active-agent-input-prompt">${selected ? esc(selectedPrompt || 'Loading prompt...') : 'Select an agent run from the list.'}</pre>
-        </div>
-        <div class="agent-section">
-          <h4>Output</h4>
-          <pre class="agent-tail-pre" id="active-agent-tail-output">${esc(outputFallback)}</pre>
-        </div>
-        <div class="agent-section">
-          <h4>Provider Context</h4>
-          <div class="agent-cli-calls">
-            <div style="font-size:12px;line-height:1.55;color:#c9d1d9;margin-bottom:8px;">
-              <div><strong>Central Store:</strong> ${providerManifest && providerManifest.storage ? esc(providerManifest.storage.context_dir || 'not captured') : 'not captured'}</div>
-              <div><strong>Raw Files:</strong> ${esc(String(providerFiles.length))}</div>
-              <div><strong>Messages:</strong> ${esc(String(providerMessages.length))}</div>
-              <div><strong>Events:</strong> ${esc(String(providerEvents.length))}</div>
+        <div class="agent-detail-panel${outputsTabActive ? '' : ' hidden'}" data-agent-detail-panel="outputs">
+          <div class="agent-section">
+            <h4>Output</h4>
+            <pre class="agent-tail-pre" id="active-agent-tail-output">${esc(outputFallback)}</pre>
+          </div>
+          <div class="agent-section">
+            <h4>Provider Context</h4>
+            <div class="agent-cli-calls">
+              <div style="font-size:12px;line-height:1.55;color:#c9d1d9;margin-bottom:8px;">
+                <div><strong>Central Store:</strong> ${providerManifest && providerManifest.storage ? esc(providerManifest.storage.context_dir || 'not captured') : 'not captured'}</div>
+                <div><strong>Raw Files:</strong> ${esc(String(providerFiles.length))}</div>
+                <div><strong>Messages:</strong> ${esc(String(providerMessages.length))}</div>
+                <div><strong>Events:</strong> ${esc(String(providerEvents.length))}</div>
+              </div>
+              <h4>Capture Sources</h4>
+              ${selected ? providerSourceRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+              <h4>Intermediate Messages</h4>
+              ${selected ? providerMessageRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+              <h4>Progress / Reasoning Events</h4>
+              ${selected ? providerEventRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+              <h4>Raw Captured Files</h4>
+              ${selected ? providerFileRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+              <h4>Warnings</h4>
+              ${selected ? providerWarningRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
             </div>
-            <h4>Capture Sources</h4>
-            ${selected ? providerSourceRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
-            <h4>Intermediate Messages</h4>
-            ${selected ? providerMessageRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
-            <h4>Progress / Reasoning Events</h4>
-            ${selected ? providerEventRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
-            <h4>Raw Captured Files</h4>
-            ${selected ? providerFileRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
-            <h4>Warnings</h4>
-            ${selected ? providerWarningRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}
+          </div>
+          <div class="agent-section">
+            <h4>Orchestration CLI Calls</h4>
+            <div id="active-agent-artifacts" class="agent-cli-calls">${selected ? cliRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}</div>
           </div>
         </div>
-        <div class="agent-section">
-          <h4>Orchestration CLI Calls</h4>
-          <div id="active-agent-artifacts" class="agent-cli-calls">${selected ? cliRows : '<div style="font-size:12px;color:#8b949e;">Select an agent run from the list.</div>'}</div>
+        <div class="agent-detail-panel${retriesTabActive ? '' : ' hidden'}" data-agent-detail-panel="retries">
+          <div class="agent-section">
+            <div class="agent-section-header">
+              <h4>RUN RETRY</h4>
+              ${showRetryButton ? `<button class="action-btn" onclick="retrySelectedAgentRun()" ${canRetrySelectedRun ? '' : 'disabled'}>${retryingAgentRunId === selectedAgentRunId ? 'Retrying...' : 'Retry Now'}</button>` : ''}
+            </div>
+            <div class="agent-cli-calls">${runLineageHtml}</div>
+          </div>
+          <div class="agent-section">
+            <h4>TASK RETRY POLICY</h4>
+            <div class="agent-cli-calls">${retryHtml}</div>
+          </div>
         </div>
       </div>
     </div>
@@ -5309,6 +5385,7 @@ async function selectActiveAgentRun(runId) {
   selectedAgentRunId = runId;
   selectedAgentArtifacts = null;
   selectedAgentArtifactsError = '';
+  selectedAgentDetailTab = 'outputs';
   agentRunsScrollState.prompt = 0;
   agentRunsScrollState.output = 0;
   agentRunsScrollState.calls = 0;

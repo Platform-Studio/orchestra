@@ -251,7 +251,7 @@ class TestScheduleTriggers:
         assert trigger.on_schedule == "0 9 * * 1"
 
     def test_cannot_set_both_on_state_and_on_schedule(self, workspace, ws):
-        with pytest.raises(ValueError, match="Cannot specify both"):
+        with pytest.raises(ValueError, match="Exactly one trigger condition must be specified"):
             create_trigger(
                 ws.id,
                 on_state="Done",
@@ -263,7 +263,7 @@ class TestScheduleTriggers:
             )
 
     def test_must_set_state_or_schedule(self, workspace, ws):
-        with pytest.raises(ValueError, match="Either"):
+        with pytest.raises(ValueError, match="Exactly one trigger condition must be specified"):
             create_trigger(
                 ws.id,
                 action="run_command",

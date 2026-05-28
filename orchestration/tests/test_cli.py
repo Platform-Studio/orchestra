@@ -777,6 +777,31 @@ class TestCLIScheduleTrigger:
         data = json.loads(result.stdout)["data"]
         assert data["task_selection"] == "all_unlocked"
 
+    def test_create_email_trigger(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli(
+            "trigger",
+            "create",
+            ws_id,
+            "--on-email-recipient",
+            "build@guild.platformstud.io",
+            "--on-email-event",
+            "new_thread",
+            "--action",
+            "run_agent",
+            "--agent",
+            "startup_vendor",
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["on_email"] == {
+            "recipient": "build@guild.platformstud.io",
+            "event": "new_thread",
+        }
+
     def test_create_trigger_requires_state_or_schedule(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
         ws_id = json.loads(result.stdout)["data"]["id"]

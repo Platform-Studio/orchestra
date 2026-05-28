@@ -12,8 +12,10 @@ import signal
 import subprocess
 import sys
 import time
+import json
 import yaml
 import threading
+import copy
 
 from datetime import datetime, timezone
 
@@ -44,6 +46,28 @@ def _save_state(state: dict, base_dir: str) -> None:
     path = _state_path(base_dir)
     with open(path, "w") as f:
         yaml.dump(state, f, default_flow_style=False, sort_keys=False)
+
+
+def _trigger_state_path(ws_id: str, trigger_id: str, base_dir: str) -> str:
+    from .workstreams import resolve_workstream_state_root
+
+    state_root = resolve_workstream_state_root(ws_id, base_dir=base_dir)
+    return os.path.join(state_root, ".orchestration", "triggers", f"{trigger_id}.yaml")
+
+
+def _load_trigger_state(ws_id: str, trigger_id: str, base_dir: str) -> dict:
+    path = _trigger_state_path(ws_id, trigger_id, base_dir)
+    if os.path.exists(path):
+        with open(path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def _save_trigger_state(ws_id: str, trigger_id: str, trigger_state: dict, base_dir: str) -> None:
+    path = _trigger_state_path(ws_id, trigger_id, base_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(trigger_state, f, default_flow_style=False, sort_keys=False)
 
 
 def _existing_running_pid(base_dir: str):
@@ -390,6 +414,86 @@ def _run_without_lock(trigger, ws, base_dir: str, task_ids: list = None, ignore_
         print(f"[scheduler] background standalone trigger error: {e}", file=sys.stderr)
 
 
+def _email_event_context(event: dict) -> dict:
+    attachments = list(event.get("attachments") or [])
+    return {
+        "email_from": str(event.get("from") or ""),
+        "email_to": str(event.get("to") or ""),
+        "email_subject": str(event.get("subject") or ""),
+        "email_date": str(event.get("date") or ""),
+        "email_body": str(event.get("body") or ""),
+        "email_storage_key": str(event.get("storage_key") or ""),
+        "email_attachment_count": len(attachments),
+        "email_attachments_json": json.dumps(attachments, sort_keys=True),
+    }
+
+
+def _email_event_prompt(event: dict) -> str:
+    context = _email_event_context(event)
+    attachments = list(event.get("attachments") or [])
+    lines = [
+        "Inbound email event:",
+        f"From: {context['email_from']}",
+        f"To: {context['email_to']}",
+        f"Subject: {context['email_subject']}",
+    ]
+    if context["email_date"]:
+        lines.append(f"Date: {context['email_date']}")
+    if context["email_storage_key"]:
+        lines.append(f"Storage Key: {context['email_storage_key']}")
+    if attachments:
+        lines.append(f"Attachments ({len(attachments)}):")
+        for attachment in attachments:
+            name = attachment.get("name") or "(unnamed attachment)"
+            content_type = attachment.get("content_type") or "unknown"
+            size = attachment.get("size")
+            size_text = f", {size} bytes" if size not in (None, "") else ""
+            lines.append(f"- {name} ({content_type}{size_text})")
+    if context["email_body"]:
+        lines.extend(["", context["email_body"]])
+    return "\n".join(lines)
+
+
+def _dispatch_email_trigger(trigger, event: dict, ws, base_dir: str) -> dict:
+    trigger_copy = copy.copy(trigger)
+    trigger_copy.event_context = _email_event_context(event)
+    if trigger_copy.action == "run_agent":
+        injected_prompt = _email_event_prompt(event)
+        if trigger_copy.prompt:
+            trigger_copy.prompt = f"{trigger_copy.prompt}\n\n{injected_prompt}"
+        else:
+            trigger_copy.prompt = injected_prompt
+
+    thread = threading.Thread(
+        target=_run_without_lock,
+        args=(trigger_copy, ws, base_dir, []),
+        daemon=True,
+    )
+    thread.start()
+    return {"trigger_id": trigger.id, "status": "dispatched"}
+
+
+def _poll_email_trigger_events(trigger, ws, base_dir: str) -> tuple[list[dict], dict]:
+    from .email_inbox import list_new_thread_messages
+
+    email_config = getattr(trigger, "on_email", None) or {}
+    recipient = str(email_config.get("recipient") or "").strip().lower()
+    event_name = str(email_config.get("event") or "new_thread").strip().lower()
+    if not recipient or event_name != "new_thread":
+        return [], _load_trigger_state(ws.id, trigger.id, base_dir)
+
+    trigger_state = _load_trigger_state(ws.id, trigger.id, base_dir)
+    processed_keys = list(trigger_state.get("processed_keys") or [])
+    processed_set = set(processed_keys)
+    new_events = []
+    for event in list_new_thread_messages(recipient):
+        storage_key = str(event.get("storage_key") or "").strip()
+        if not storage_key or storage_key in processed_set:
+            continue
+        new_events.append(event)
+    return new_events, trigger_state
+
+
 def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: bool = False, ignore_paused: bool = False) -> dict:
     """Lock all task_ids, invoke the trigger, then unlock all.
 
@@ -546,6 +650,7 @@ def tick(base_dir: str = ".") -> dict:
         "expired_locks_cleaned": [],
         "task_schedules_fired": [],
         "trigger_schedules_fired": [],
+        "email_triggers_fired": [],
         "state_triggers_fired": [],
     }
 
@@ -649,6 +754,33 @@ def tick(base_dir: str = ".") -> dict:
                     "task_ids": matching_ids,
                     "result": result,
                 })
+
+        # 2b. Email-based triggers
+        for trigger in ws.triggers:
+            if getattr(trigger, "on_email", None) is None:
+                continue
+
+            email_events, trigger_state = _poll_email_trigger_events(trigger, ws, base_dir)
+            processed_keys = list(trigger_state.get("processed_keys") or [])
+            processed_changed = False
+
+            for event in email_events:
+                result = _dispatch_email_trigger(trigger, event, ws, base_dir)
+                results["email_triggers_fired"].append({
+                    "trigger_id": trigger.id,
+                    "storage_key": event.get("storage_key"),
+                    "subject": event.get("subject"),
+                    "result": result,
+                })
+
+                storage_key = str(event.get("storage_key") or "").strip()
+                if storage_key:
+                    processed_keys.append(storage_key)
+                    processed_changed = True
+
+            if processed_changed:
+                trigger_state["processed_keys"] = processed_keys[-200:]
+                _save_trigger_state(ws.id, trigger.id, trigger_state, base_dir)
 
         # 3. State-based triggers
         from .locks import list_workstream_locks_for_workstream

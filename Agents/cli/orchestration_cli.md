@@ -361,13 +361,16 @@ python -m orchestration.cli trigger create WORKSTREAM_ID --on-state "Done" --act
 # Schedule-based trigger: runs every minute on matching tasks
 python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "* * * * *" --action run_command --command "echo tick"
 
+# Email-based trigger: dispatches an agent when a new inbound thread arrives
+python -m orchestration.cli trigger create WORKSTREAM_ID --on-email-recipient "build@guild.platformstud.io" --on-email-event new_thread --action run_agent --agent startup_vendor
+
 # Schedule-based trigger with task filter
 python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "*/5 * * * *" --filter '{"status": "pending", "tags": ["batch"]}' --action run_agent --agent sdr
 ```
 
-Template variables `{task_id}` and `{workstream_id}` are replaced in `run_command` commands.
+Template variables `{task_id}` and `{workstream_id}` are replaced in `run_command` commands. Email triggers also populate `{email_from}`, `{email_to}`, `{email_subject}`, `{email_date}`, `{email_body}`, `{email_storage_key}`, `{email_attachment_count}`, and `{email_attachments_json}`.
 
-All triggers are evaluated by the scheduler on each tick (every 60 seconds). State-based triggers match tasks currently in the specified state and evaluate them in task order, dispatching only the first currently unlocked match per trigger evaluation. Schedule-based triggers match on cron expressions.
+All triggers are evaluated by the scheduler on each tick (every 60 seconds). State-based triggers match tasks currently in the specified state and evaluate them in task order, dispatching only the first currently unlocked match per trigger evaluation. Schedule-based triggers match on cron expressions. Email-based `new_thread` triggers poll the configured recipient on each tick and dispatch the configured action once per unseen inbound thread as a standalone workstream-scoped run. For `run_agent`, the inbound email is appended to the trigger prompt so the agent can decide whether to create or update tasks.
 
 Concurrency for `run_agent` triggers is controlled at the workstream level, per agent, with default `1` run per agent:
 
