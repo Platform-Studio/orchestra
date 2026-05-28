@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from orchestration import agents as agents_module
-from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, count_active_agent_runs, get_agent_run, get_agent_run_context, get_global_sound_mute, list_agent_runs, read_agent_run_context_file, retry_agent_run, run_agent, set_global_sound_mute
+from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, _strip_ansi_escape_codes, count_active_agent_runs, get_agent_run, get_agent_run_context, get_global_sound_mute, list_agent_runs, read_agent_run_context_file, retry_agent_run, run_agent, set_global_sound_mute
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
@@ -1698,3 +1698,139 @@ def test_runtime_reported_timeout_detects_cline_timeout():
     assert _runtime_reported_timeout("cline", '{"type": "error", "message": "Timeout"}', 1) is True
     assert _runtime_reported_timeout("claude-code", "Error: Timeout\n", 1) is False
     assert _runtime_reported_timeout("cline", "done", 0) is False
+
+
+# ── ANSI escape code stripping ────────────────────────────────────────
+
+class TestStripAnsiEscapeCodes:
+    """Tests for `_strip_ansi_escape_codes`."""
+
+    # ── No-op on clean text ───────────────────────────────────────────
+
+    def test_noop_on_empty(self):
+        assert _strip_ansi_escape_codes("") == ""
+
+    def test_noop_on_plain_text(self):
+        text = "Hello world.\nThis is clean output."
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_noop_on_markdown(self):
+        text = "# Heading\n- bullet\n```python\nprint('hi')\n```"
+        assert _strip_ansi_escape_codes(text) == text
+
+    # ── Complete CSI (SGR) sequences ──────────────────────────────────
+
+    def test_strips_reset(self):
+        assert _strip_ansi_escape_codes("\x1b[0mtext") == "text"
+
+    def test_strips_dim(self):
+        assert _strip_ansi_escape_codes("\x1b[2m- \x1b[0m") == "- "
+
+    def test_strips_color_codes(self):
+        assert _strip_ansi_escape_codes("\x1b[31mred\x1b[0m") == "red"
+        assert _strip_ansi_escape_codes("\x1b[1;32mbold green\x1b[0m") == "bold green"
+        assert _strip_ansi_escape_codes("\x1b[38;5;208morange\x1b[0m") == "orange"
+
+    def test_strips_complex_csi(self):
+        assert _strip_ansi_escape_codes("\x1b[1;4;33mtext\x1b[0m") == "text"
+        assert _strip_ansi_escape_codes("\x1b[48;2;255;128;0mbg\x1b[0m") == "bg"
+
+
+    # ── Bare SGR fragments (no ESC) ───────────────────────────────────
+
+    def test_strips_bare_sgr_fragments(self):
+        text = "[0m[2m- [0m[2msurvey complete[0m[2m"
+        expected = "- survey complete"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    def test_strips_bare_sgr_in_mixed_content(self):
+        text = "[0m[2mAnd[0m[2m the[0m[2m valid[0m[2m next[0m[2m states"
+        expected = "And the valid next states"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    def test_strips_bare_dim_around_survey(self):
+        text = "[0m[2m- [0m[2m`[0m[2msurvey[0m[2m complete[0m[2m`\n"
+        expected = "- `survey complete`\n"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    # ── Preserves legitimate text ─────────────────────────────────────
+
+    def test_preserves_bracketed_sections(self):
+        text = "[Section 1]\nContent here.\n[Section 2]\nMore content."
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_array_literals(self):
+        text = "['planned', 'reject']"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_numeric_references(self):
+        text = "See reference [1] for details. In section [2.3] we cover..."
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_edge_brackets(self):
+        text = "[m] [k] [h]"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_markdown_links(self):
+        text = "[click here](https://example.com)"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_task_lists(self):
+        text = "- [ ] todo\n- [x] done"
+        assert _strip_ansi_escape_codes(text) == text
+
+    def test_preserves_code_blocks(self):
+        text = "```\n[0] -> first\n[1] -> second\n```"
+        assert _strip_ansi_escape_codes(text) == text
+
+
+    # ── Agent-like output (integration samples) ───────────────────────
+
+    def test_cleans_survey_complete_output(self):
+        text = (
+            "\x1b[0m\x1b[2m- \x1b[0m\x1b[2m`\x1b[0m\x1b[2msurvey\x1b[0m\x1b[2m "
+            "complete\x1b[0m\x1b[2m`\n\n"
+            "\x1b[0m\x1b[2mAnd\x1b[0m\x1b[2m the\x1b[0m\x1b[2m valid\x1b[0m\x1b[2m "
+            "next\x1b[0m\x1b[2m states\x1b[0m\x1b[2m for\x1b[0m\x1b[2m "
+            "`\x1b[0m\x1b[2mnew\x1b[0m\x1b[2m`\x1b[0m\x1b[2m are\x1b[0m\x1b[2m "
+            "`\x1b[0m\x1b[2m['\x1b[0m\x1b[2mplanned\x1b[0m\x1b[2m',\x1b[0m\x1b[2m "
+            "'\x1b[0m\x1b[2mre\x1b[0m\x1b[2mject\x1b[0m\x1b[2m']\x1b[0m\x1b[2m`.\n"
+        )
+        expected = (
+            "- `survey complete`\n\n"
+            "And the valid next states for `new` are `['planned', 'reject']`.\n"
+        )
+        assert _strip_ansi_escape_codes(text) == expected
+
+    def test_cleans_mixed_complete_and_bare(self):
+        text = "\x1b[2mPart 1\x1b[0m\n[2mPart 2[0m\n\x1b[2mPart 3\x1b[0m"
+        expected = "Part 1\nPart 2\nPart 3"
+        assert _strip_ansi_escape_codes(text) == expected
+
+    # ── Other ANSI sequence types ─────────────────────────────────────
+
+    def test_strips_character_set_sequences(self):
+        text = "\x1b(0line draw\x1b(B"
+        assert _strip_ansi_escape_codes(text) == "line draw"
+
+    def test_strips_osc_sequences_bel_terminated(self):
+        text = "Before \x1b]0;My Title\x07 after"
+        assert _strip_ansi_escape_codes(text) == "Before  after"
+
+    # ── Edge cases ────────────────────────────────────────────────────
+
+    def test_multiple_sequences_consecutive(self):
+        assert _strip_ansi_escape_codes("\x1b[0m\x1b[2m\x1b[33mhello") == "hello"
+
+    def test_sequence_at_start(self):
+        assert _strip_ansi_escape_codes("\x1b[0mstart") == "start"
+
+    def test_sequence_at_end(self):
+        assert _strip_ansi_escape_codes("end\x1b[0m") == "end"
+
+    def test_only_sequences(self):
+        assert _strip_ansi_escape_codes("\x1b[0m\x1b[2m") == ""
+
+    def test_unclosed_sequence(self):
+        assert _strip_ansi_escape_codes("text\x1b[32") == "text\x1b[32"
+
