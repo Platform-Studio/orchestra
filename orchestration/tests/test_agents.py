@@ -582,6 +582,23 @@ def test_parse_agent_md_reads_x_role_header(workspace):
     assert parsed["agent_type"] == "executive"
 
 
+def test_parse_agent_md_reads_x_own_worktree_header(workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    own_worktree_agent = os.path.join(agents_dir, "own_worktree_agent.md")
+    with open(own_worktree_agent, "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Own Worktree Agent\n"
+            "x-own-worktree: true\n"
+            "---\n"
+            "You are worktree aware.\n"
+        )
+
+    parsed = _parse_agent_md(own_worktree_agent)
+
+    assert parsed["own_worktree"] is True
+
+
 def test_configured_agent_sound_name_uses_default_env_when_header_missing(monkeypatch):
     monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "start.mp3")
 
@@ -722,6 +739,44 @@ def test_run_agent_plays_error_sound_on_failure(mock_popen, mock_which, workspac
         run_agent("Sound Error Agent", workstream_id=ws.id, base_dir=workspace)
 
     assert events == [("start", "intro.wav"), ("error", "fail.wav")]
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeFailedProc())
+def test_run_agent_uses_and_cleans_own_worktree(mock_popen, mock_which, workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "own_worktree_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Own Worktree Agent\n"
+            "description: Runs in an isolated worktree\n"
+            "x-own-worktree: true\n"
+            "---\n"
+            "You are worktree aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+    isolated_root = os.path.join(workspace, ".orchestration", "run_worktrees", "run-123")
+    worktree = {
+        "repo_root": os.path.abspath(workspace),
+        "worktree_root": isolated_root,
+        "workspace_root": isolated_root,
+    }
+
+    with patch("orchestration.agents._provision_run_worktree", return_value=worktree) as mock_provision, \
+         patch("orchestration.agents._deprovision_run_worktree") as mock_deprovision:
+        with pytest.raises(RuntimeError, match="failed"):
+            run_agent("Own Worktree Agent", workstream_id=ws.id, base_dir=workspace, _run_id="run-123")
+
+    prompt = mock_popen.call_args.args[0][mock_popen.call_args.args[0].index("-p") + 1]
+    popen_env = mock_popen.call_args.kwargs["env"]
+
+    mock_provision.assert_called_once_with(os.path.abspath(workspace), "run-123", base_dir=workspace)
+    mock_deprovision.assert_called_once_with(worktree, base_dir=workspace)
+    assert f"WORKSPACE_ROOT: {isolated_root}" in prompt
+    assert popen_env["WORKSPACE_ROOT"] == isolated_root
+    assert popen_env["ORCHESTRATION_AGENT_WORKTREE_ROOT"] == isolated_root
+    assert mock_popen.call_args.kwargs["cwd"] == isolated_root
 
 
 def test_resolve_agent_file_falls_back_to_source_agents_for_mounted_workspace(tmp_path, monkeypatch):

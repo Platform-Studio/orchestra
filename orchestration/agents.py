@@ -456,6 +456,10 @@ def _agent_runs_dir(base_dir: str) -> str:
     return os.path.join(_state_dir(base_dir), "agent_runs")
 
 
+def _agent_run_worktrees_dir(base_dir: str) -> str:
+    return os.path.join(_state_dir(base_dir), "run_worktrees")
+
+
 def _agent_run_context_dir(base_dir: str, run_id: str) -> str:
     return os.path.join(_agent_runs_dir(base_dir), run_id, "context")
 
@@ -475,6 +479,90 @@ def _agent_run_meta_path(base_dir: str, run_id: str) -> str:
 def _ensure_state_dirs(base_dir: str) -> None:
     os.makedirs(_state_dir(base_dir), exist_ok=True)
     os.makedirs(_agent_runs_dir(base_dir), exist_ok=True)
+
+
+def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".") -> dict:
+    """Create a detached per-run worktree and return its resolved paths."""
+    source_workspace_root = os.path.abspath(os.path.expanduser(workspace_root))
+    try:
+        repo_root_result = subprocess.run(
+            ["git", "-C", source_workspace_root, "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Git is required to provision an isolated agent worktree") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or exc.stdout or "").strip()
+        raise RuntimeError(
+            f"Agent requested x-own-worktree, but WORKSPACE_ROOT is not inside a git repo: {stderr or source_workspace_root}"
+        ) from exc
+
+    repo_root = os.path.abspath(repo_root_result.stdout.strip())
+    relative_workspace = os.path.relpath(source_workspace_root, repo_root)
+
+    worktrees_dir = _agent_run_worktrees_dir(base_dir)
+    os.makedirs(worktrees_dir, exist_ok=True)
+    worktree_root = os.path.join(worktrees_dir, run_id)
+    if os.path.exists(worktree_root):
+        raise RuntimeError(f"Isolated worktree path already exists for run {run_id}: {worktree_root}")
+
+    try:
+        subprocess.run(
+            ["git", "-C", repo_root, "worktree", "add", "--detach", worktree_root],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        shutil.rmtree(worktree_root, ignore_errors=True)
+        stderr = (exc.stderr or exc.stdout or "").strip()
+        raise RuntimeError(
+            f"Failed to create isolated worktree for agent run {run_id}: {stderr or 'git worktree add failed'}"
+        ) from exc
+
+    effective_workspace_root = worktree_root
+    if relative_workspace not in (".", ""):
+        effective_workspace_root = os.path.join(worktree_root, relative_workspace)
+
+    return {
+        "repo_root": repo_root,
+        "worktree_root": worktree_root,
+        "workspace_root": effective_workspace_root,
+    }
+
+
+def _deprovision_run_worktree(worktree: dict | None, base_dir: str = ".") -> None:
+    """Best-effort cleanup for a detached per-run worktree."""
+    if not worktree:
+        return
+
+    worktree_root = os.path.abspath(str(worktree.get("worktree_root") or "").strip())
+    repo_root = os.path.abspath(str(worktree.get("repo_root") or "").strip())
+    if not worktree_root:
+        return
+
+    managed_root = os.path.abspath(_agent_run_worktrees_dir(base_dir))
+    safe_to_delete = False
+    try:
+        safe_to_delete = os.path.commonpath([worktree_root, managed_root]) == managed_root
+    except ValueError:
+        safe_to_delete = False
+
+    if repo_root and os.path.exists(worktree_root):
+        try:
+            subprocess.run(
+                ["git", "-C", repo_root, "worktree", "remove", "--force", worktree_root],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            pass
+
+    if safe_to_delete and os.path.exists(worktree_root):
+        shutil.rmtree(worktree_root, ignore_errors=True)
 
 
 def get_global_sound_mute(base_dir: str) -> bool:
@@ -2265,6 +2353,7 @@ def _parse_agent_md(path: str) -> dict:
         "agent_type": _normalize_agent_role(header.get("x-role", header.get("x-agent-type", "worker"))),
         "tools": header.get("x-tools", []),
         "learning_enabled": _coerce_bool(header.get("x-learning", True), default=True),
+        "own_worktree": _coerce_bool(header.get("x-own-worktree", False), default=False),
         "timeout": header.get("x-timeout"),
         "model": header.get("x-model"),
         "model_level": header.get("x-model-level"),
@@ -2512,10 +2601,11 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
     # Write task IDs to a temp file for the agent to reference (always, even for single task)
     task_file_path = None
-    run_id = None
+    run_id = _run_id or str(uuid.uuid4())
     log_path_rel = None
     run_meta = None
     provider_context_snapshot = None
+    owned_worktree = None
     fd, task_file_path = tempfile.mkstemp(suffix=".json", prefix="agent_tasks_")
     with os.fdopen(fd, "w") as f:
         json.dump({"task_ids": task_ids, "workstream_id": workstream_id}, f)
@@ -2535,6 +2625,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 )
             except Exception:
                 workspace_root = orchestration_root
+        if agent_def.get("own_worktree"):
+            owned_worktree = _provision_run_worktree(workspace_root, run_id, base_dir=base_dir)
+            workspace_root = owned_worktree["workspace_root"]
         _path_context = (
             f"ORCHESTRATION_ROOT: {orchestration_root} "
             f"(orchestration CLI, artifacts, agent instructions)\n"
@@ -2647,7 +2740,6 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Initialize run metadata
         _ensure_state_dirs(base_dir)
-        run_id = _run_id or str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
         log_path = os.path.join(_agent_runs_dir(base_dir), f"{run_id}.log")
         log_path_rel = os.path.relpath(log_path, base_dir)
@@ -2659,6 +2751,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         env["ORCHESTRATION_AGENT_TASK_IDS"] = _compact_json(task_ids)
         env["ORCHESTRATION_ROOT"] = orchestration_root
         env["WORKSPACE_ROOT"] = workspace_root
+        if owned_worktree:
+            env["ORCHESTRATION_AGENT_WORKTREE_ROOT"] = owned_worktree["worktree_root"]
         if workstream_id:
             env["ORCHESTRATION_AGENT_WORKSTREAM_ID"] = str(workstream_id)
         if runtime == "copilot":
@@ -2683,12 +2777,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "effort": effort,
             "workstream_id": workstream_id,
             "workstream_path": _workstream_path(base_dir, workstream_id),
+            "workspace_root": workspace_root,
             "concurrency_state": concurrency_state,
             "task_ids": list(task_ids),
             "tasks": task_titles,
             "prompt": task_prompt,
             "system_prompt": system_prompt,
             "log_path": log_path_rel,
+            "own_worktree": bool(owned_worktree),
             "started_at": started_at,
             "ended_at": None,
             "status": "running",
@@ -2696,9 +2792,12 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "retried_from_run_id": retried_from_run_id,
             "retried_to_run_ids": [],
         }
+        if owned_worktree:
+            run_meta["worktree_root"] = owned_worktree["worktree_root"]
         _write_run_meta(base_dir, run_id, run_meta)
 
-        task_cwd = workspace_root if runtime == "cline" else abs_base
+        process_cwd = workspace_root if owned_worktree else abs_base
+        task_cwd = workspace_root if runtime == "cline" else process_cwd
         cmd, effective_prompt = _build_runtime_command(
             runtime=runtime,
             runtime_path=runtime_path,
@@ -2732,7 +2831,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             pty_slave_fd = None
             popen_kwargs = {
                 "stderr": subprocess.STDOUT,
-                "cwd": abs_base,
+                "cwd": process_cwd,
                 "env": env,
                 # Detach the agent process from the scheduler's process group.
                 # This prevents scheduler restarts/stops from accidentally terminating
@@ -2943,6 +3042,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         raise
 
     finally:
+        if owned_worktree is not None:
+            _deprovision_run_worktree(owned_worktree, base_dir=base_dir)
         # Clean up temp file
         if task_file_path and os.path.exists(task_file_path):
             os.remove(task_file_path)
