@@ -1985,6 +1985,20 @@ def _runtime_reported_timeout(runtime: str, output: str, returncode: int) -> boo
     )
 
 
+def _runtime_reported_failure(runtime: str, output: str) -> bool:
+    """Detect fatal runtime-generated errors surfaced in command output."""
+    if _normalize_agent_runtime(runtime) != "copilot":
+        return False
+
+    for line in str(output or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Execution failed:"):
+            return True
+        if stripped.startswith("Authorization error"):
+            return True
+    return False
+
+
 def _build_runtime_command(
     runtime: str,
     runtime_path: str,
@@ -2304,12 +2318,14 @@ def _should_inline_attachments(ws) -> bool:
 DEFAULT_AGENT_TIMEOUT = 1800
 
 
-def _classify_run_outcome(returncode: int, timeout_expired: bool) -> str:
+def _classify_run_outcome(returncode: int, timeout_expired: bool, runtime_failed: bool = False) -> str:
     """Map subprocess result to persisted run status."""
-    if returncode == 0:
-        return "completed"
     if timeout_expired:
         return "timeout"
+    if runtime_failed:
+        return "failed"
+    if returncode == 0:
+        return "completed"
 
     # Treat termination signals as killed so UI/operator intent is preserved.
     if returncode in (-signal.SIGTERM, 128 + signal.SIGTERM, -signal.SIGKILL, 128 + signal.SIGKILL):
@@ -2733,8 +2749,15 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         final_status = _classify_run_outcome(
             returncode,
             timeout_expired or _runtime_reported_timeout(runtime, output, returncode),
+            runtime_failed=_runtime_reported_failure(runtime, output),
         )
-        run_meta["output_bytes"] = int(stream_stats.get("output_bytes") or 0)
+        output_bytes = int(stream_stats.get("output_bytes") or 0)
+        if output_bytes == 0:
+            try:
+                output_bytes = os.path.getsize(log_path)
+            except OSError:
+                output_bytes = 0
+        run_meta["output_bytes"] = output_bytes
         run_meta["first_output_at"] = stream_stats.get("first_output_at")
         run_meta["last_output_at"] = stream_stats.get("last_output_at")
         if stream_stats.get("output_capture_error"):

@@ -425,6 +425,22 @@ class _FakeFailedProc(_FakeProc):
         self.returncode = 1
 
 
+class _FakeCopilotFatalProc(_FakeProc):
+    def __init__(self, stdout_handle, message=None):
+        super().__init__()
+        self._stdout_handle = stdout_handle
+        self._message = message or (
+            "Execution failed: CAPIError: 400 Duplicate item found with id "
+            "fc_call_duplicate"
+        )
+
+    def communicate(self, timeout=None):
+        self.communicate_timeouts.append(timeout)
+        self._stdout_handle.write(f"{self._message}\n")
+        self._stdout_handle.flush()
+        return ("", "")
+
+
 def test_capture_provider_context_copies_cline_task_files_to_central_store(workspace, tmp_path, monkeypatch):
     cline_home = tmp_path / ".cline"
     tasks_dir = cline_home / "data" / "tasks"
@@ -1287,6 +1303,39 @@ def test_run_agent_copilot_runtime_strips_openai_key_from_child_env(mock_popen, 
     child_env = mock_popen.call_args.kwargs["env"]
     assert "OPENAI_API_KEY" not in child_env
     assert child_env["GH_TOKEN"] == "test-github-token"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+def test_run_agent_marks_copilot_runtime_reported_error_as_failed(mock_which, workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "copilot_error_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Copilot Error Agent\n"
+            "description: Runs with Copilot\n"
+            "x-runtime: copilot\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    def _fake_popen(*args, **kwargs):
+        return _FakeCopilotFatalProc(kwargs["stdout"])
+
+    with patch("orchestration.agents.subprocess.Popen", side_effect=_fake_popen):
+        with pytest.raises(RuntimeError, match=r"failed \(exit 0\)"):
+            run_agent("Copilot Error Agent", workstream_id=ws.id, base_dir=workspace)
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    details = get_agent_run(latest["run_id"], base_dir=workspace)
+
+    assert latest["runtime"] == "copilot"
+    assert latest["status"] == "failed"
+    assert latest["exit_code"] == 0
+    assert latest["output_bytes"] > 0
+    assert "Execution failed: CAPIError" in details["output"]
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
