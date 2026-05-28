@@ -1701,19 +1701,75 @@ def _resolve_agent_model(agent_def: dict, runtime: str = DEFAULT_AGENT_RUNTIME) 
     return _get_model(runtime=runtime)
 
 
-def _resolve_agent_effort(agent_def: dict):
-    """Return validated effort value or None when not set."""
-    raw = agent_def.get("effort")
+def _normalize_agent_effort(raw, *, source_label: str = "x-effort") -> str | None:
+    """Validate and normalize effort values from headers or env vars."""
     effort = str(raw or "").strip().lower()
     if not effort:
         return None
-
     allowed = {"low", "medium", "high", "xhigh", "max"}
     if effort not in allowed:
         raise ValueError(
-            f"Invalid x-effort '{raw}'. Expected one of: low, medium, high, xhigh, max"
+            f"Invalid {source_label} '{raw}'. Expected one of: low, medium, high, xhigh, max"
         )
     return effort
+
+
+def _effort_env_var_for_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
+    """Map model level to runtime-aware effort env var names."""
+    level_norm = str(level or "").strip().lower()
+    runtime_norm = _normalize_agent_runtime(runtime)
+    env_key_by_level = {
+        "high": "HIGH_EFFORT",
+        "medium": "MEDIUM_EFFORT",
+        "low": "LOW_EFFORT",
+        "coding": "CODING_EFFORT",
+    }
+    if runtime_norm == "cline":
+        env_key_by_level = {
+            "high": "CLINE_HIGH_EFFORT",
+            "medium": "CLINE_MEDIUM_EFFORT",
+            "low": "CLINE_LOW_EFFORT",
+            "coding": "CLINE_CODING_EFFORT",
+        }
+    elif runtime_norm == "copilot":
+        env_key_by_level = {
+            "high": "COPILOT_HIGH_EFFORT",
+            "medium": "COPILOT_MEDIUM_EFFORT",
+            "low": "COPILOT_LOW_EFFORT",
+            "coding": "COPILOT_CODING_EFFORT",
+        }
+
+    env_key = env_key_by_level.get(level_norm)
+    if not env_key:
+        raise ValueError(f"Invalid x-model-level '{level}'. Expected one of: high, medium, low, coding")
+    return env_key
+
+
+def _default_effort_env_var(runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
+    """Return runtime-aware default effort env var name."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+    if runtime_norm == "cline":
+        return "CLINE_DEFAULT_EFFORT"
+    if runtime_norm == "copilot":
+        return "COPILOT_DEFAULT_EFFORT"
+    return "DEFAULT_EFFORT"
+
+
+def _resolve_agent_effort(agent_def: dict, runtime: str = DEFAULT_AGENT_RUNTIME):
+    """Resolve effort with precedence: x-effort > level env > runtime default env."""
+    explicit_effort = _normalize_agent_effort(agent_def.get("effort"), source_label="x-effort")
+    if explicit_effort:
+        return explicit_effort
+
+    level = agent_def.get("model_level")
+    if str(level or "").strip():
+        env_key = _effort_env_var_for_level(level, runtime=runtime)
+        env_effort = _normalize_agent_effort(os.getenv(env_key), source_label=f"env var {env_key}")
+        if env_effort:
+            return env_effort
+
+    default_env_key = _default_effort_env_var(runtime=runtime)
+    return _normalize_agent_effort(os.getenv(default_env_key), source_label=f"env var {default_env_key}")
 
 
 def _normalize_agent_runtime(raw: str) -> str:
@@ -2526,7 +2582,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Resolve model and effort for CLI and for run metadata
         model = _resolve_agent_model(agent_def, runtime=runtime)
-        effort = _resolve_agent_effort(agent_def)
+        effort = _resolve_agent_effort(agent_def, runtime=runtime)
         effective_timeout = _coerce_timeout_seconds(
             timeout or agent_def.get("timeout") or DEFAULT_AGENT_TIMEOUT
         )
