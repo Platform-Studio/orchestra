@@ -38,6 +38,12 @@ workstreams/**/.env.*
 # Allow this file itself
 !.gitignore
 
+# Allow GitHub CI workflow files
+!.github/workflows/*.yml
+
+# Allow pip requirements file
+!requirements.txt
+
 # Allow the Prova product directory (all product source code)
 !prova/**
 
