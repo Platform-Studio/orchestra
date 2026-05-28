@@ -423,6 +423,46 @@ class TestTick:
         result = tick(workspace)
         assert len(result["task_schedules_fired"]) == 0
 
+    def test_tick_skips_due_task_schedule_in_paused_column(self, workspace, ws):
+        from orchestration.workstreams import pause_workstream_states
+
+        pause_workstream_states(ws.id, ["To Do"], base_dir=workspace)
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        task = create_task(
+            ws.id, title="Paused Column",
+            scheduled_at=past,
+            scheduled_action={"type": "run_command", "command": "echo no"},
+            base_dir=workspace,
+        )
+
+        result = tick(workspace)
+
+        assert len(result["task_schedules_fired"]) == 0
+        reloaded = read_task(task.id, base_dir=workspace)
+        assert reloaded.scheduled_at == past
+
+    def test_tick_skips_schedule_trigger_scoped_to_paused_column(self, workspace, ws):
+        from orchestration.workstreams import pause_workstream_states
+
+        pause_workstream_states(ws.id, ["To Do"], base_dir=workspace)
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="* * * * *",
+            filter={"state": "To Do"},
+            action="run_command",
+            command="echo no",
+            base_dir=workspace,
+        )
+        create_task(ws.id, title="Waiting", base_dir=workspace)
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+
+        result = tick(workspace)
+
+        assert result["trigger_schedules_fired"] == [{
+            "trigger_id": trigger.id,
+            "result": {"status": "skipped", "reason": "Column 'To Do' is paused"},
+        }]
+
     def test_tick_updates_last_tick_at(self, workspace, ws):
         tick(workspace)
         state = _load_state(workspace)

@@ -505,6 +505,18 @@ def cmd_trigger_delete(args):
     _output({"deleted": True, "trigger_id": args.trigger_id})
 
 
+def cmd_trigger_pause(args):
+    from .triggers import pause_trigger
+    trigger = pause_trigger(args.trigger_id, base_dir=args.base_dir)
+    _output(trigger.to_dict())
+
+
+def cmd_trigger_resume(args):
+    from .triggers import resume_trigger
+    trigger = resume_trigger(args.trigger_id, base_dir=args.base_dir)
+    _output(trigger.to_dict())
+
+
 # ── Agent commands ───────────────────────────────────────────────────
 
 def cmd_agent_list(args):
@@ -572,6 +584,18 @@ def cmd_workstream_resume(args):
     ws.paused = False
     save_workstream(ws, args.base_dir)
     log_event("workstream_resumed", f"Workstream '{ws.name}' resumed", args.base_dir, workstream_id=ws.id)
+    _output(ws.to_dict())
+
+
+def cmd_workstream_pause_columns(args):
+    from .workstreams import pause_workstream_states
+    ws = pause_workstream_states(args.id, args.state, base_dir=args.base_dir)
+    _output(ws.to_dict())
+
+
+def cmd_workstream_resume_columns(args):
+    from .workstreams import resume_workstream_states
+    ws = resume_workstream_states(args.id, args.state, base_dir=args.base_dir)
     _output(ws.to_dict())
 
 
@@ -975,6 +999,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("trigger_id")
     p.set_defaults(func=cmd_trigger_delete)
 
+    p = trigger_sub.add_parser("pause")
+    p.add_argument("trigger_id")
+    p.set_defaults(func=cmd_trigger_pause)
+
+    p = trigger_sub.add_parser("resume")
+    p.add_argument("trigger_id")
+    p.set_defaults(func=cmd_trigger_resume)
+
     p = ws_sub.add_parser("pause")
     p.add_argument("id")
     p.set_defaults(func=cmd_workstream_pause)
@@ -982,6 +1014,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = ws_sub.add_parser("resume")
     p.add_argument("id")
     p.set_defaults(func=cmd_workstream_resume)
+
+    p = ws_sub.add_parser("pause-columns")
+    p.add_argument("id")
+    p.add_argument("state", nargs="+", help="One or more board column/state names to pause")
+    p.set_defaults(func=cmd_workstream_pause_columns)
+
+    p = ws_sub.add_parser("resume-columns")
+    p.add_argument("id")
+    p.add_argument("state", nargs="+", help="One or more board column/state names to resume")
+    p.set_defaults(func=cmd_workstream_resume_columns)
 
     # ── Agent ────────────────────────────────────────────────────────
     agent_parser = subparsers.add_parser("agent")

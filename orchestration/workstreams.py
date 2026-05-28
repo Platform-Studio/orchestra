@@ -59,6 +59,31 @@ def _normalize_tag_name(name: str) -> str:
     return re.sub(r"\s+", " ", str(name or "").strip())
 
 
+def _normalize_state_names(states) -> list[str]:
+    if states is None:
+        return []
+    if isinstance(states, str):
+        raw_states = [states]
+    else:
+        raw_states = list(states)
+    normalized = []
+    seen = set()
+    for state in raw_states:
+        name = str(state or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
+
+
+def _validate_workstream_states(ws: Workstream, states: list[str]) -> None:
+    known = set((ws.task_states or {}).keys())
+    unknown = [state for state in states if state not in known]
+    if unknown:
+        raise ValueError(f"Unknown workstream state(s): {', '.join(unknown)}")
+
+
 def _default_tag_color(name: str) -> str:
     normalized = _normalize_tag_name(name)
     if not normalized:
@@ -748,6 +773,71 @@ def set_workstream_agent_concurrency(
         description,
         base_dir,
         workstream_id=ws.id,
+    )
+    return ws
+
+
+def pause_workstream_states(
+    ws_id: str,
+    states,
+    base_dir: str = ".",
+    updated_by: str = None,
+) -> Workstream:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    normalized = _normalize_state_names(states)
+    if not normalized:
+        raise ValueError("At least one state is required")
+    _validate_workstream_states(ws, normalized)
+
+    paused = _normalize_state_names(getattr(ws, "paused_states", []))
+    for state in normalized:
+        if state not in paused:
+            paused.append(state)
+
+    ws.paused_states = [state for state in ws.task_states.keys() if state in paused]
+    save_workstream(ws, base_dir)
+
+    from .workspace_audit import log_event
+
+    actor = f" by {updated_by}" if updated_by else ""
+    log_event(
+        "workstream_states_paused",
+        f"Paused column(s){actor}: {', '.join(normalized)}",
+        base_dir,
+        workstream_id=ws.id,
+        states=normalized,
+    )
+    return ws
+
+
+def resume_workstream_states(
+    ws_id: str,
+    states,
+    base_dir: str = ".",
+    updated_by: str = None,
+) -> Workstream:
+    ws = read_workstream(ws_id, base_dir=base_dir)
+    normalized = _normalize_state_names(states)
+    if not normalized:
+        raise ValueError("At least one state is required")
+    _validate_workstream_states(ws, normalized)
+
+    resume_set = set(normalized)
+    ws.paused_states = [
+        state for state in _normalize_state_names(getattr(ws, "paused_states", []))
+        if state not in resume_set
+    ]
+    save_workstream(ws, base_dir)
+
+    from .workspace_audit import log_event
+
+    actor = f" by {updated_by}" if updated_by else ""
+    log_event(
+        "workstream_states_resumed",
+        f"Resumed column(s){actor}: {', '.join(normalized)}",
+        base_dir,
+        workstream_id=ws.id,
+        states=normalized,
     )
     return ws
 

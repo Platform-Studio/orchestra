@@ -35,6 +35,7 @@ def _fake_workstream(**kwargs):
         "agent_concurrency": {},
         "task_states": {"backlog": ["doing"], "doing": ["done"], "done": []},
         "paused": False,
+        "paused_states": [],
         "retry": None,
     }
     defaults.update(kwargs)
@@ -84,6 +85,7 @@ def _fake_trigger(**kwargs):
         "filter": None,
         "agent": "test_agent",
         "command": None,
+        "paused": False,
     }
     defaults.update(kwargs)
     obj = SimpleNamespace(**defaults)
@@ -157,6 +159,8 @@ _PATCHES = {
     "set_workstream_agent_concurrency": "workstream_manager.server.set_workstream_agent_concurrency",
     "get_workstream_code_mount_statuses": "workstream_manager.server.get_workstream_code_mount_statuses",
     "get_workstream_tags": "workstream_manager.server.get_workstream_tags",
+    "pause_workstream_states": "workstream_manager.server.pause_workstream_states",
+    "resume_workstream_states": "workstream_manager.server.resume_workstream_states",
     "upsert_workstream_tag": "workstream_manager.server.upsert_workstream_tag",
     "list_workstream_hierarchy_env": "workstream_manager.server.list_workstream_hierarchy_env",
     "list_effective_workstream_env": "workstream_manager.server.list_effective_workstream_env",
@@ -187,6 +191,8 @@ _PATCHES = {
     "create_trigger":    "workstream_manager.server.create_trigger",
     "list_triggers":     "workstream_manager.server.list_triggers",
     "delete_trigger":    "workstream_manager.server.delete_trigger",
+    "pause_trigger":     "workstream_manager.server.pause_trigger",
+    "resume_trigger":    "workstream_manager.server.resume_trigger",
     "scheduler_status":  "workstream_manager.server.scheduler_status",
     "get_global_sound_mute": "workstream_manager.server.get_global_sound_mute",
     "set_global_sound_mute": "workstream_manager.server.set_global_sound_mute",
@@ -236,9 +242,13 @@ def api(tmp_path):
     mocks["resolve_workstream_child_state_root"].return_value = "/tmp/state-base"
     mocks["get_workstream_code_mount_statuses"].return_value = {}
     mocks["get_workstream_tags"].return_value = []
+    mocks["pause_workstream_states"].return_value = _fake_workstream(paused_states=["doing"])
+    mocks["resume_workstream_states"].return_value = _fake_workstream(paused_states=[])
     mocks["upsert_workstream_tag"].return_value = {"name": "Urgent", "color": "#eb5a46"}
     mocks["_task_counts_by_workstream"].return_value = {}
     mocks["_run_orchestration_cli"].return_value = {}
+    mocks["pause_trigger"].return_value = _fake_trigger(paused=True)
+    mocks["resume_trigger"].return_value = _fake_trigger(paused=False)
 
     from workstream_manager.server import Handler, ThreadingHTTPServer, _invalidate_poll_sidebar_cache
 
@@ -724,6 +734,25 @@ class TestWorkstream:
         assert ws.paused is False
         api.mocks["save_workstream"].assert_called_once()
 
+    def test_pause_columns(self, api):
+        ws = _fake_workstream(paused_states=["doing"])
+        api.mocks["pause_workstream_states"].return_value = ws
+        code, body = api.post("/api/workstream/pause-columns/ws-1", {"states": ["doing", "done"]})
+
+        assert code == 200
+        assert body["data"]["paused_states"] == ["doing"]
+        call = api.mocks["pause_workstream_states"].call_args
+        assert call.args[:2] == ("ws-1", ["doing", "done"])
+        assert call.kwargs.get("base_dir")
+
+    def test_resume_columns_accepts_comma_delimited_states(self, api):
+        code, body = api.post("/api/workstream/resume-columns/ws-1", {"states": "doing,done"})
+
+        assert code == 200
+        call = api.mocks["resume_workstream_states"].call_args
+        assert call.args[:2] == ("ws-1", ["doing", "done"])
+        assert call.kwargs.get("base_dir")
+
 
 # ── Task handler ────────────────────────────────────────────────
 
@@ -987,6 +1016,22 @@ class TestTrigger:
         code, body = api.post("/api/trigger/delete/trig-1")
         assert code == 200
         assert body["data"]["deleted"] is True
+
+    def test_pause(self, api):
+        api.mocks["pause_trigger"].return_value = _fake_trigger(paused=True)
+        code, body = api.post("/api/trigger/pause/trig-1")
+
+        assert code == 200
+        assert body["data"]["paused"] is True
+        api.mocks["pause_trigger"].assert_called_once()
+
+    def test_resume(self, api):
+        api.mocks["resume_trigger"].return_value = _fake_trigger(paused=False)
+        code, body = api.post("/api/trigger/resume/trig-1")
+
+        assert code == 200
+        assert body["data"]["paused"] is False
+        api.mocks["resume_trigger"].assert_called_once()
 
 
 # ── Scheduler handler ──────────────────────────────────────────

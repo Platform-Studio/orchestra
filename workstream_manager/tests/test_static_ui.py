@@ -82,6 +82,28 @@ def test_triggers_modal_labels_state_task_selection_mode() -> None:
     assert "(first unlocked task)" in html
 
 
+def test_board_columns_include_pause_controls() -> None:
+    html = _index_html()
+
+    assert 'data-column-pause-state="${encodeURIComponent(state)}"' in html
+    assert 'function toggleColumnPause(state, btn)' in html
+    assert "api(`workstream/${action}/${selectedWsId}`" in html
+    assert "'pause-columns'" in html
+    assert "'resume-columns'" in html
+    assert 'column-paused' in html
+
+
+def test_triggers_modal_includes_pause_controls_and_column_pause_badges() -> None:
+    html = _index_html()
+
+    assert 'function triggerColumnState(trigger)' in html
+    assert 'function isTriggerEffectivelyPaused(trigger, ws = selectedWs)' in html
+    assert 'Column paused' in html
+    assert 'function toggleTriggerPause(triggerId, btn)' in html
+    assert "api(`trigger/${action}/` + triggerId" in html
+    assert 'trigger-paused-badge' in html
+
+
 def test_workstream_manager_plays_tuning_sound_on_initial_load_and_resume() -> None:
     html = _index_html()
 

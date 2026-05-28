@@ -73,6 +73,7 @@ class Trigger:
     command: str = None
     prompt: str = None         # custom prompt injected into agent when trigger fires
     timeout: int = None        # override agent timeout (seconds); None = use agent default
+    paused: bool = False
 
     def to_dict(self) -> dict:
         d = {"id": self.id, "action": self.action}
@@ -92,6 +93,8 @@ class Trigger:
             d["prompt"] = self.prompt
         if self.timeout is not None:
             d["timeout"] = self.timeout
+        if self.paused:
+            d["paused"] = True
         return d
 
     @classmethod
@@ -107,6 +110,7 @@ class Trigger:
             command=data.get("command"),
             prompt=data.get("prompt"),
             timeout=data.get("timeout"),
+            paused=data.get("paused", False),
         )
 
 
@@ -127,6 +131,7 @@ class Workstream:
     retry: RetryConfig = None
     triggers: list = field(default_factory=list)
     paused: bool = False
+    paused_states: list = field(default_factory=list)
 
     def to_dict(self, *, include_transient: bool = True) -> dict:
         d = {
@@ -157,6 +162,8 @@ class Workstream:
             d["retry"] = self.retry.to_dict()
         if self.paused:
             d["paused"] = True
+        if self.paused_states:
+            d["paused_states"] = list(self.paused_states)
         if include_transient:
             if hasattr(self, "_mount_available"):
                 d["mount_available"] = bool(getattr(self, "_mount_available"))
@@ -188,6 +195,7 @@ class Workstream:
             retry=retry,
             triggers=triggers,
             paused=data.get("paused", False),
+            paused_states=list(data.get("paused_states", data.get("paused_columns", [])) or []),
         )
 
     def initial_status(self) -> str:

@@ -20,6 +20,43 @@ def get_active_triggers() -> list:
         return list(_active_triggers)
 
 
+def _trigger_filter_state(trigger: Trigger) -> str | None:
+    filter_def = getattr(trigger, "filter", None)
+    if not isinstance(filter_def, dict):
+        return None
+    state = filter_def.get("state") or filter_def.get("status")
+    if state is None:
+        return None
+    return str(state)
+
+
+def trigger_column_state(trigger: Trigger) -> str | None:
+    """Return the board column/state this trigger is scoped to, if any."""
+    if getattr(trigger, "on_state", None) is not None:
+        return str(trigger.on_state)
+    return _trigger_filter_state(trigger)
+
+
+def _current_trigger_for_workstream(trigger: Trigger, ws: Workstream) -> Trigger:
+    for candidate in getattr(ws, "triggers", []) or []:
+        if candidate.id == trigger.id:
+            return candidate
+    return trigger
+
+
+def trigger_pause_reason(trigger: Trigger, ws: Workstream) -> str | None:
+    """Return a human-readable reason this trigger should not run."""
+    current = _current_trigger_for_workstream(trigger, ws)
+    if getattr(current, "paused", False):
+        return f"Trigger '{current.id}' is paused"
+
+    state = trigger_column_state(current)
+    paused_states = set(getattr(ws, "paused_states", []) or [])
+    if state in paused_states:
+        return f"Column '{state}' is paused"
+    return None
+
+
 def execute_trigger(
     trigger: Trigger,
     task_ids: list,
@@ -46,11 +83,20 @@ def execute_trigger(
             "message": f"Workstream '{ws.name}' is paused",
         }
 
+    current_trigger = _current_trigger_for_workstream(trigger, ws)
+    pause_reason = trigger_pause_reason(current_trigger, ws)
+    if pause_reason:
+        return {
+            "trigger_id": current_trigger.id,
+            "status": "skipped",
+            "message": pause_reason,
+        }
+
     with _active_triggers_lock:
-        _active_triggers.add(trigger.id)
+        _active_triggers.add(current_trigger.id)
     try:
         return _execute_trigger_inner(
-            trigger,
+            current_trigger,
             task_ids,
             workstream_id,
             base_dir,
@@ -58,7 +104,7 @@ def execute_trigger(
         )
     finally:
         with _active_triggers_lock:
-            _active_triggers.discard(trigger.id)
+            _active_triggers.discard(current_trigger.id)
 
 
 def _execute_trigger_inner(
@@ -174,6 +220,37 @@ def delete_trigger(trigger_id: str, base_dir: str = ".") -> bool:
     raise FileNotFoundError(f"Trigger {trigger_id} not found")
 
 
+def set_trigger_paused(trigger_id: str, paused: bool, base_dir: str = ".") -> Trigger:
+    """Pause or resume a trigger by scanning all workstreams."""
+    from .workstreams import list_workstreams
+    for ws in list_workstreams(base_dir):
+        for trigger in ws.triggers:
+            if trigger.id != trigger_id:
+                continue
+            if trigger.paused == paused:
+                return trigger
+            trigger.paused = paused
+            save_workstream(ws, base_dir)
+            log_event(
+                "trigger_paused" if paused else "trigger_resumed",
+                f"Trigger '{trigger.id}' {'paused' if paused else 'resumed'}",
+                base_dir,
+                trigger_id=trigger.id,
+                workstream_id=ws.id,
+                state=trigger_column_state(trigger),
+            )
+            return trigger
+    raise FileNotFoundError(f"Trigger {trigger_id} not found")
+
+
+def pause_trigger(trigger_id: str, base_dir: str = ".") -> Trigger:
+    return set_trigger_paused(trigger_id, True, base_dir=base_dir)
+
+
+def resume_trigger(trigger_id: str, base_dir: str = ".") -> Trigger:
+    return set_trigger_paused(trigger_id, False, base_dir=base_dir)
+
+
 def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
     """Kick off a trigger immediately in a background thread.
 
@@ -193,6 +270,9 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                 raise ValueError("Run Now is only supported for schedule-based or state-based triggers")
             if ws.paused and trigger.on_state is None:
                 raise RuntimeError(f"Workstream '{ws.name}' is paused")
+            pause_reason = trigger_pause_reason(trigger, ws)
+            if pause_reason:
+                raise RuntimeError(pause_reason)
 
             # Capture references for the background thread
             _trigger, _ws = trigger, ws

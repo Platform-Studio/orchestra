@@ -230,6 +230,36 @@ class TestRunTriggerNow:
         assert result["status"] == "started"
         assert captured["calls"] == 0
 
+    def test_run_now_rejects_paused_trigger(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="*/5 * * * *",
+            action="run_command",
+            command="echo x",
+            base_dir=workspace,
+        )
+        trigger.paused = True
+        ws.triggers = [trigger]
+        save_workstream(ws, workspace)
+
+        with pytest.raises(RuntimeError, match="paused"):
+            run_trigger_now(trigger.id, base_dir=workspace)
+
+    def test_run_now_rejects_trigger_in_paused_column(self, workspace, ws):
+        from orchestration.workstreams import pause_workstream_states
+
+        pause_workstream_states(ws.id, ["To Do"], base_dir=workspace)
+        trigger = create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_command",
+            command="echo x",
+            base_dir=workspace,
+        )
+
+        with pytest.raises(RuntimeError, match="Column 'To Do' is paused"):
+            run_trigger_now(trigger.id, base_dir=workspace)
+
 
 class TestExecuteTrigger:
     def test_run_command(self, workspace, ws):
@@ -297,6 +327,42 @@ class TestExecuteTrigger:
         assert result["status"] == "ok"
         assert "forced_run" in result["stdout"]
 
+    def test_execute_trigger_skips_when_trigger_paused(self, workspace, ws):
+        trigger = create_trigger(
+            ws.id,
+            on_state="Done",
+            action="run_command",
+            command="echo should_not_run",
+            base_dir=workspace,
+        )
+        trigger.paused = True
+        ws.triggers = [trigger]
+        save_workstream(ws, workspace)
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace, ignore_paused=True)
+
+        assert result["status"] == "skipped"
+        assert "paused" in result.get("message", "")
+
+    def test_execute_trigger_skips_when_column_paused(self, workspace, ws):
+        from orchestration.workstreams import pause_workstream_states
+
+        pause_workstream_states(ws.id, ["Done"], base_dir=workspace)
+        trigger = create_trigger(
+            ws.id,
+            on_state="Done",
+            action="run_command",
+            command="echo should_not_run",
+            base_dir=workspace,
+        )
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        result = execute_trigger(trigger, [task.id], ws.id, base_dir=workspace, ignore_paused=True)
+
+        assert result["status"] == "skipped"
+        assert "Column 'Done' is paused" == result.get("message")
+
     def test_execute_run_agent_can_ignore_paused_for_manual_force_run(self, workspace, ws, monkeypatch):
         from orchestration.workstreams import save_workstream
 
@@ -353,6 +419,58 @@ class TestStateTriggerViaTick:
                 break
             time.sleep(0.1)
         assert os.path.exists(marker_file)
+
+    def test_tick_skips_state_trigger_for_paused_column(self, workspace, ws, monkeypatch):
+        from orchestration.workstreams import pause_workstream_states
+
+        pause_workstream_states(ws.id, ["To Do"], base_dir=workspace)
+        trigger = create_trigger(
+            ws.id, on_state="To Do", action="run_command",
+            command="echo x", base_dir=workspace,
+        )
+        create_task(ws.id, title="Paused", base_dir=workspace)
+        calls = []
+
+        def _fake_lock_invoke_unlock(*_args, **_kwargs):
+            calls.append(True)
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        result = tick(workspace)
+
+        assert calls == []
+        assert result["state_triggers_fired"] == [{
+            "trigger_id": trigger.id,
+            "task_ids": [],
+            "result": {"status": "skipped", "reason": "Column 'To Do' is paused"},
+        }]
+
+    def test_tick_skips_paused_state_trigger(self, workspace, ws, monkeypatch):
+        trigger = create_trigger(
+            ws.id, on_state="To Do", action="run_command",
+            command="echo x", base_dir=workspace,
+        )
+        trigger.paused = True
+        ws.triggers = [trigger]
+        save_workstream(ws, workspace)
+        create_task(ws.id, title="Paused trigger", base_dir=workspace)
+        calls = []
+
+        def _fake_lock_invoke_unlock(*_args, **_kwargs):
+            calls.append(True)
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        result = tick(workspace)
+
+        assert calls == []
+        assert result["state_triggers_fired"] == [{
+            "trigger_id": trigger.id,
+            "task_ids": [],
+            "result": {"status": "skipped", "reason": f"Trigger '{trigger.id}' is paused"},
+        }]
 
     def test_tick_does_not_fire_for_wrong_state(self, workspace, ws):
         """State trigger only fires for tasks in the matching state."""
