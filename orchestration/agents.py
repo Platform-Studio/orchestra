@@ -1673,6 +1673,10 @@ def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
     env_value = os.getenv(env_key)
     if not env_value:
         if runtime_norm == "cline":
+            if level_norm == "coding":
+                default_runtime_model = _normalize_model_name(os.getenv(CLINE_DEFAULT_MODEL_ENV_VAR, CLINE_DEFAULT_MODEL))
+                if default_runtime_model:
+                    return default_runtime_model
             default_model = _normalize_model_name(CLINE_MODEL_LEVEL_DEFAULTS.get(level_norm))
             if default_model:
                 return default_model
@@ -1847,6 +1851,21 @@ def _build_cline_prompt(task_prompt: str, system_prompt: str) -> str:
         "=== TASK ===\n"
         f"{task_prompt}"
     )
+
+
+def _cline_thinking_level(effort: str | None) -> str | None:
+    """Map orchestration effort hints onto Cline's explicit thinking levels."""
+    normalized = str(effort or "").strip().lower()
+    if not normalized:
+        return None
+    mapping = {
+        "low": None,
+        "medium": None,
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": "xhigh",
+    }
+    return mapping.get(normalized)
 
 
 def _build_copilot_prompt(task_prompt: str, system_prompt: str) -> str:
@@ -2058,8 +2077,6 @@ def _build_runtime_command(
         effective_prompt = _build_cline_prompt(task_prompt, system_prompt)
         cmd = [
             runtime_path,
-            "-y",
-            "-a",
             "-c",
             task_cwd,
             "-m",
@@ -2067,13 +2084,15 @@ def _build_runtime_command(
             "--timeout",
             str(timeout_seconds),
         ]
+        cmd.extend(["--auto-approve", "true"])
         if _cline_verbose_enabled():
             cmd.append("--verbose")
         cline_config_dir = _resolve_cline_config_dir()
         if cline_config_dir:
             cmd.extend(["--config", cline_config_dir])
-        if effort and effort not in {"low", "medium"}:
-            cmd.append("--thinking")
+        thinking_level = _cline_thinking_level(effort)
+        if thinking_level:
+            cmd.extend(["--thinking", thinking_level])
         cmd.append(effective_prompt)
         return cmd, effective_prompt
 

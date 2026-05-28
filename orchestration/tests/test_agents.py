@@ -1254,6 +1254,7 @@ def test_run_agent_uses_runtime_specific_effort_env_for_cline(mock_popen, mock_w
 
     cmd = mock_popen.call_args.args[0]
     assert "--thinking" in cmd
+    assert cmd[cmd.index("--thinking") + 1] == "high"
 
     runs = list_agent_runs(limit=5, base_dir=workspace)
     latest = runs[0]
@@ -1315,21 +1316,45 @@ def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
 
     cmd = mock_popen.call_args.args[0]
     assert cmd[0] == "/usr/bin/cline"
-    assert "-y" in cmd
-    assert "-a" in cmd
     assert "-c" in cmd
     assert cmd[cmd.index("-c") + 1] == workspace
     assert "-m" in cmd
     assert cmd[cmd.index("-m") + 1] == "claude-opus-4-6"
     assert "--timeout" in cmd
     assert cmd[cmd.index("--timeout") + 1] == "1800"
+    assert "--auto-approve" in cmd
+    assert cmd[cmd.index("--auto-approve") + 1] == "true"
     assert "--thinking" in cmd
+    assert cmd[cmd.index("--thinking") + 1] == "high"
     assert "--verbose" not in cmd
     assert "--append-system-prompt" not in cmd
     assert "--dangerously-skip-permissions" not in cmd
     effective_prompt = cmd[-1]
     assert "=== SYSTEM INSTRUCTIONS ===" in effective_prompt
     assert "=== TASK ===" in effective_prompt
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_omits_cline_thinking_for_medium_effort(mock_popen, mock_which, workspace):
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_medium_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Medium Agent\n"
+            "description: Runs with Cline medium effort\n"
+            "x-runtime: cline\n"
+            "x-effort: medium\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Medium Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--thinking" not in cmd
 
     runs = list_agent_runs(limit=5, base_dir=workspace)
     latest = runs[0]

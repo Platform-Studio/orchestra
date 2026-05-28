@@ -8,6 +8,7 @@ from orchestration.agents import (
     _parse_agent_md,
     _build_system_prompt,
     _get_model,
+    _cline_thinking_level,
     _resolve_agent_model,
     _resolve_agent_effort,
     _resolve_agent_runtime,
@@ -123,6 +124,12 @@ class TestModelAndEffortResolution:
         agent_def = {"model_level": "high"}
         assert _resolve_agent_model(agent_def, runtime="cline") == "qwen/qwen3-coder-next"
 
+    def test_resolve_agent_model_from_cline_coding_level_falls_back_to_default_model(self, monkeypatch):
+        monkeypatch.delenv("CLINE_CODING_LLM", raising=False)
+        monkeypatch.setenv("CLINE_DEFAULT_LLM", "deepseek/deepseek-v4-pro")
+        agent_def = {"model_level": "coding"}
+        assert _resolve_agent_model(agent_def, runtime="cline") == "deepseek/deepseek-v4-pro"
+
     def test_resolve_agent_model_from_copilot_level_default(self, monkeypatch):
         monkeypatch.delenv("COPILOT_HIGH_LLM", raising=False)
         agent_def = {"model_level": "high"}
@@ -164,6 +171,14 @@ class TestModelAndEffortResolution:
     def test_resolve_agent_effort_uses_runtime_level_specific_env(self, monkeypatch):
         monkeypatch.setenv("COPILOT_CODING_EFFORT", "medium")
         assert _resolve_agent_effort({"model_level": "coding"}, runtime="copilot") == "medium"
+
+    def test_cline_thinking_level_maps_effort_values(self):
+        assert _cline_thinking_level(None) is None
+        assert _cline_thinking_level("low") is None
+        assert _cline_thinking_level("medium") is None
+        assert _cline_thinking_level("high") == "high"
+        assert _cline_thinking_level("xhigh") == "xhigh"
+        assert _cline_thinking_level("max") == "xhigh"
 
     def test_resolve_agent_effort_prefers_x_effort_over_env(self, monkeypatch):
         monkeypatch.setenv("HIGH_EFFORT", "xhigh")
