@@ -369,6 +369,12 @@ def cmd_task_clear_schedule(args):
     _output(task.to_dict())
 
 
+def cmd_task_reorder(args):
+    from .tasks import reorder_tasks_in_workstream
+    result = reorder_tasks_in_workstream(args.workstream_id, base_dir=args.base_dir)
+    _output(result)
+
+
 def cmd_task_move(args):
     from .tasks import move_task
     kwargs = {"task_id": args.task_id, "target_workstream_id": args.workstream_id, "base_dir": args.base_dir}
@@ -916,6 +922,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("workstream_id", help="Target workstream ID")
     p.add_argument("--status", help="Target state in the destination workstream (defaults to initial state)")
     p.set_defaults(func=cmd_task_move)
+
+    p = task_sub.add_parser("reorder")
+    p.add_argument("workstream_id")
+    p.set_defaults(func=cmd_task_reorder)
 
     p = task_sub.add_parser("duplicate")
     p.add_argument("task_id")
