@@ -718,6 +718,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   text-decoration: none;
 }
 .card-agent-link:hover { color: #a5d6ff; text-decoration: underline; }
+.card-agent-model {
+  color: #8b949e;
+  font-weight: 500;
+}
 .card-agent-duration {
   color: #8b949e;
   font-variant-numeric: tabular-nums;
@@ -3090,6 +3094,9 @@ function normalizeBoardRun(run) {
     started_at: run.started_at || '',
     ended_at: run.ended_at || '',
     status: normalizedRunStatus(run),
+    runtime: run.runtime || '',
+    model: run.model || '',
+    effort: run.effort || '',
   };
 }
 
@@ -3364,7 +3371,8 @@ function renderCard(task, lock, state) {
     const agentLabel = lock.agent_id || (run && (run.agent || run.agent_ref)) || 'agent';
     if (run && run.run_id) {
       const duration = formatRunDuration(run.started_at, run.ended_at);
-      meta += `<button type="button" class="card-lock card-agent-link" data-agent-run-id="${esc(run.run_id)}" title="Open ${esc(agentLabel)} run">${ICON_AGENT} ${esc(agentLabel)} <span class="card-agent-duration" data-started-at="${esc(run.started_at || '')}" data-ended-at="${esc(run.ended_at || '')}">${esc(duration)}</span></button>`;
+      const runMeta = formatRunModelMetadata(run);
+      meta += `<button type="button" class="card-lock card-agent-link" data-agent-run-id="${esc(run.run_id)}" title="Open ${esc(agentLabel)} run · ${esc(runMeta.summaryText)}">${ICON_AGENT} ${esc(agentLabel)} <span class="card-agent-model">· ${esc(runMeta.cardChipText)}</span> <span class="card-agent-duration" data-started-at="${esc(run.started_at || '')}" data-ended-at="${esc(run.ended_at || '')}">${esc(duration)}</span></button>`;
     } else {
       meta += `<span class="card-lock">${ICON_AGENT} ${esc(agentLabel)}</span>`;
     }
@@ -4869,6 +4877,76 @@ function normalizedRunStatus(run) {
   return run && run.ended_at ? 'completed' : 'running';
 }
 
+function runtimeDisplayLabel(runtime) {
+  const runtimeValue = String(runtime || '').trim().toLowerCase();
+  if (runtimeValue === 'cline') return 'Cline';
+  if (runtimeValue === 'copilot') return 'Copilot';
+  if (runtimeValue === 'claude-code' || runtimeValue === 'claude') return 'Claude Code';
+  return runtimeValue ? runtimeValue.replace(/(^|[-_\s])([a-z])/g, (_, prefix, ch) => `${prefix}${ch.toUpperCase()}`) : 'Agent';
+}
+
+function providerDisplayLabel(provider) {
+  const providerValue = String(provider || '').trim().toLowerCase();
+  const labels = {
+    anthropic: 'Anthropic',
+    openai: 'OpenAI',
+    google: 'Google',
+    deepseek: 'DeepSeek',
+    mistral: 'Mistral',
+    meta: 'Meta',
+    groq: 'Groq',
+    xai: 'xAI',
+    ollama: 'Ollama',
+    openrouter: 'OpenRouter',
+    qwen: 'Qwen',
+    copilot: 'Copilot',
+  };
+  if (labels[providerValue]) return labels[providerValue];
+  return providerValue
+    ? providerValue.replace(/(^|[-_\s])([a-z])/g, (_, prefix, ch) => `${prefix}${ch.toUpperCase()}`)
+    : 'Unknown';
+}
+
+function splitProviderAndModel(model) {
+  const rawModel = String(model || '').trim();
+  if (!rawModel) {
+    return { providerKey: '', providerLabel: 'Unknown', modelLabel: 'unknown' };
+  }
+  const slashIndex = rawModel.indexOf('/');
+  if (slashIndex > 0) {
+    const providerKey = rawModel.slice(0, slashIndex);
+    const modelLabel = rawModel.slice(slashIndex + 1) || rawModel;
+    return {
+      providerKey,
+      providerLabel: providerDisplayLabel(providerKey),
+      modelLabel,
+    };
+  }
+  return {
+    providerKey: '',
+    providerLabel: 'Unknown',
+    modelLabel: rawModel,
+  };
+}
+
+function formatRunModelMetadata(run, runtimeOverride = null) {
+  const runtimeKey = String(runtimeOverride != null ? runtimeOverride : (run && run.runtime ? run.runtime : '')).trim().toLowerCase();
+  const runtimeLabel = runtimeDisplayLabel(runtimeKey);
+  const parts = splitProviderAndModel(run && run.model ? run.model : '');
+  const effortLabel = run && run.effort ? String(run.effort) : 'default';
+  const providerLabel = parts.providerLabel;
+  const modelLabel = parts.modelLabel;
+  return {
+    runtimeKey,
+    runtimeLabel,
+    providerLabel,
+    modelLabel,
+    effortLabel,
+    summaryText: `Runtime: ${runtimeLabel} | Provider: ${providerLabel} | Model: ${modelLabel} | Effort: ${effortLabel}`,
+    cardChipText: modelLabel === 'unknown' ? providerLabel : modelLabel,
+  };
+}
+
 function sortAgentRunsForDisplay(runs) {
   return [...(Array.isArray(runs) ? runs : [])].sort((left, right) => {
     const leftRunning = normalizedRunStatus(left) === 'running' ? 0 : 1;
@@ -5155,14 +5233,9 @@ function renderActiveAgentsModal() {
       : ((selectedCommandLine.includes(' copilot ') || selectedCommandLine.includes('/copilot '))
         ? 'copilot'
         : 'claude-code'));
-  const selectedRuntimeLabel = selectedRuntime === 'cline'
-    ? 'Cline'
-    : (selectedRuntime === 'copilot'
-      ? 'Copilot'
-      : (selectedRuntime === 'claude-code' ? 'Claude Code' : 'Agent'));
-  const selectedModel = selected && selected.model ? esc(selected.model.replace(/^anthropic\//, '')) : 'unknown';
-  const selectedEffort = selected && selected.effort ? esc(selected.effort) : 'default';
-  const selectedModelEffort = `Runtime: ${selectedRuntimeLabel} | Model: ${selectedModel} | Effort: ${selectedEffort}`;
+  const selectedRunMeta = formatRunModelMetadata(selected, selectedRuntime);
+  const selectedRuntimeLabel = selectedRunMeta.runtimeLabel;
+  const selectedModelEffort = selectedRunMeta.summaryText;
   const selectedStatus = selected ? normalizedRunStatus(selected) : '';
   const showKill = !!selected && isKillableStatus(selectedStatus);
   const showRetryButton = !!selected && isRetryableStatus(selectedStatus);

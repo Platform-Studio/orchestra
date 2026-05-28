@@ -157,8 +157,31 @@ def test_agent_run_details_recognize_copilot_runtime() -> None:
     html = _index_html()
 
     assert "selectedCommandLine.includes(' copilot ') || selectedCommandLine.includes('/copilot ')" in html
-    assert "selectedRuntime === 'copilot'" in html
-    assert "? 'Copilot'" in html
+    assert "runtimeValue === 'copilot'" in html
+    assert "return 'Copilot';" in html
+
+
+def test_agent_run_model_metadata_is_standardized_across_providers() -> None:
+    html = _index_html()
+
+    assert 'function formatRunModelMetadata(run, runtimeOverride = null)' in html
+    assert "Provider: ${providerLabel} | Model: ${modelLabel} | Effort: ${effortLabel}" in html
+    assert 'function splitProviderAndModel(model)' in html
+    assert "openai: 'OpenAI'" in html
+    assert "deepseek: 'DeepSeek'" in html
+    assert "anthropic: 'Anthropic'" in html
+    assert 'selected.model.replace(/^anthropic\\//, \'\')' not in html
+
+
+def test_board_agent_run_chips_include_model_metadata() -> None:
+    html = _index_html()
+
+    assert "runtime: run.runtime || ''" in html
+    assert "model: run.model || ''" in html
+    assert "effort: run.effort || ''" in html
+    assert 'const runMeta = formatRunModelMetadata(run);' in html
+    assert 'class="card-agent-model"' in html
+    assert 'runMeta.summaryText' in html
 
 
 def test_agent_run_details_show_cli_flags_separately_from_prompt() -> None:

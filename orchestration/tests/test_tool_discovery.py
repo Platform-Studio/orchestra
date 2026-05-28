@@ -149,6 +149,31 @@ class TestModelAndEffortResolution:
         assert _resolve_agent_effort({"effort": "high"}) == "high"
         assert _resolve_agent_effort({"effort": "XHIGH"}) == "xhigh"
 
+    def test_resolve_agent_effort_uses_default_env(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_EFFORT", "medium")
+        assert _resolve_agent_effort({}) == "medium"
+
+    def test_resolve_agent_effort_uses_runtime_default_env(self, monkeypatch):
+        monkeypatch.setenv("CLINE_DEFAULT_EFFORT", "high")
+        assert _resolve_agent_effort({}, runtime="cline") == "high"
+
+    def test_resolve_agent_effort_uses_level_specific_env(self, monkeypatch):
+        monkeypatch.setenv("HIGH_EFFORT", "xhigh")
+        assert _resolve_agent_effort({"model_level": "high"}) == "xhigh"
+
+    def test_resolve_agent_effort_uses_runtime_level_specific_env(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_CODING_EFFORT", "medium")
+        assert _resolve_agent_effort({"model_level": "coding"}, runtime="copilot") == "medium"
+
+    def test_resolve_agent_effort_prefers_x_effort_over_env(self, monkeypatch):
+        monkeypatch.setenv("HIGH_EFFORT", "xhigh")
+        assert _resolve_agent_effort({"model_level": "high", "effort": "low"}) == "low"
+
+    def test_resolve_agent_effort_invalid_env_raises(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_EFFORT", "turbo")
+        with pytest.raises(ValueError, match="Invalid env var DEFAULT_EFFORT"):
+            _resolve_agent_effort({})
+
     def test_resolve_agent_effort_invalid_raises(self):
         with pytest.raises(ValueError, match="Invalid x-effort"):
             _resolve_agent_effort({"effort": "turbo"})

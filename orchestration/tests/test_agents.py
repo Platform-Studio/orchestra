@@ -23,6 +23,21 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.delenv("ORCHESTRATION_CLINE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("ORCHESTRATION_CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("ORCHESTRATION_COPILOT_CONTEXT_DIRS", raising=False)
+    monkeypatch.delenv("DEFAULT_EFFORT", raising=False)
+    monkeypatch.delenv("HIGH_EFFORT", raising=False)
+    monkeypatch.delenv("MEDIUM_EFFORT", raising=False)
+    monkeypatch.delenv("LOW_EFFORT", raising=False)
+    monkeypatch.delenv("CODING_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_DEFAULT_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_HIGH_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_MEDIUM_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_LOW_EFFORT", raising=False)
+    monkeypatch.delenv("CLINE_CODING_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_DEFAULT_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_HIGH_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_MEDIUM_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_LOW_EFFORT", raising=False)
+    monkeypatch.delenv("COPILOT_CODING_EFFORT", raising=False)
     monkeypatch.delenv("CLINE_DEFAULT_LLM", raising=False)
     monkeypatch.delenv("CLINE_HIGH_LLM", raising=False)
     monkeypatch.delenv("CLINE_MEDIUM_LLM", raising=False)
@@ -1184,6 +1199,98 @@ def test_run_agent_cli_parameters_include_effort_when_configured(mock_popen, moc
     latest = runs[0]
     command_line = latest.get("command_line", "")
     assert " --effort high" in command_line
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_level_specific_effort_env_when_x_effort_missing(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("HIGH_LLM", "anthropic/claude-opus-4-6")
+    monkeypatch.setenv("HIGH_EFFORT", "xhigh")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "env_level_effort_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Env Level Effort Agent\n"
+            "description: Uses env level effort\n"
+            "x-model-level: high\n"
+            "---\n"
+            "You are env-level-effort aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Env Level Effort Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["effort"] == "xhigh"
+    assert " --effort xhigh" in latest.get("command_line", "")
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_runtime_specific_effort_env_for_cline(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("CLINE_DEFAULT_EFFORT", "high")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_env_effort_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Env Effort Agent\n"
+            "description: Uses runtime env effort\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-env-effort aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Cline Env Effort Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--thinking" in cmd
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["runtime"] == "cline"
+    assert latest["effort"] == "high"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_uses_runtime_level_specific_effort_env_for_copilot(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("COPILOT_CODING_LLM", "gpt-5.3-codex")
+    monkeypatch.setenv("COPILOT_CODING_EFFORT", "medium")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "copilot_env_level_effort_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Copilot Env Level Effort Agent\n"
+            "description: Uses copilot level env effort\n"
+            "x-runtime: copilot\n"
+            "x-model-level: coding\n"
+            "---\n"
+            "You are copilot-level-env-effort aware.\n"
+        )
+
+    ws = create_workstream(name="Standalone WS", base_dir=workspace)
+
+    run_agent("Copilot Env Level Effort Agent", workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "medium"
+
+    runs = list_agent_runs(limit=5, base_dir=workspace)
+    latest = runs[0]
+    assert latest["runtime"] == "copilot"
+    assert latest["effort"] == "medium"
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
