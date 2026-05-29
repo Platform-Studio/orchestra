@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -777,6 +778,31 @@ def test_run_agent_uses_and_cleans_own_worktree(mock_popen, mock_which, workspac
     assert popen_env["WORKSPACE_ROOT"] == isolated_root
     assert popen_env["ORCHESTRATION_AGENT_WORKTREE_ROOT"] == isolated_root
     assert mock_popen.call_args.kwargs["cwd"] == isolated_root
+
+
+def test_provision_run_worktree_uses_orphan_branch_for_unborn_head(workspace):
+    repo_root = os.path.join(workspace, "empty_repo")
+    os.makedirs(repo_root, exist_ok=True)
+    subprocess.run(["git", "init", repo_root], check=True, capture_output=True, text=True)
+
+    run_id = "run-unborn"
+    worktree = agents_module._provision_run_worktree(repo_root, run_id, base_dir=workspace)
+
+    try:
+        assert worktree["repo_root"] == os.path.abspath(repo_root)
+        assert worktree["worktree_root"].endswith(os.path.join("run_worktrees", run_id))
+        assert worktree["workspace_root"] == worktree["worktree_root"]
+        assert worktree["branch_name"] == run_id
+        assert os.path.isdir(worktree["worktree_root"])
+    finally:
+        agents_module._deprovision_run_worktree(worktree, base_dir=workspace)
+
+    branch_check = subprocess.run(
+        ["git", "-C", repo_root, "show-ref", "--verify", f"refs/heads/{run_id}"],
+        capture_output=True,
+        text=True,
+    )
+    assert branch_check.returncode != 0
 
 
 def test_resolve_agent_file_falls_back_to_source_agents_for_mounted_workspace(tmp_path, monkeypatch):

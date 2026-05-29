@@ -1458,12 +1458,19 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   background: #22272e; border-radius: 4px; padding: 10px 12px;
   margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.2); font-size: 13px;
 }
+.trigger-item .trigger-header {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  margin-bottom: 4px;
+}
+.trigger-item .trigger-header-actions {
+  display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+}
 .trigger-item .trigger-type {
-  font-weight: 600; color: #58a6ff; margin-bottom: 2px;
+  font-weight: 600; color: #58a6ff; margin-bottom: 0; line-height: 1.35; flex: 1 1 auto;
 }
 .trigger-item .trigger-action { color: #8b949e; }
 .trigger-item .run-now-btn {
-  margin-top: 6px; background: #238636; border: none; color: #fff;
+  background: #238636; border: none; color: #fff;
   padding: 4px 12px; border-radius: 4px; cursor: pointer;
   font-size: 12px; font-weight: 600; transition: background 0.15s;
 }
@@ -1488,8 +1495,17 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   display: inline-block; background: rgba(210,153,34,0.16); color: #d29922; font-size: 11px;
   font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 8px;
 }
+.trigger-item .trigger-prompt-toggle {
+  display: block; width: 100%; margin-top: 4px; padding: 0; border: none;
+  background: none; color: #8b949e; font: inherit; text-align: left; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.trigger-item .trigger-prompt-toggle:hover { color: #c9d1d9; }
+.trigger-item .trigger-prompt-toggle.expanded {
+  white-space: normal; overflow: visible;
+}
 .trigger-item .trigger-pause-btn {
-  margin-top: 6px; margin-left: 6px; background: rgba(255,255,255,0.08); border: none; color: #c9d1d9;
+  flex: 0 0 auto; background: rgba(255,255,255,0.08); border: none; color: #c9d1d9;
   padding: 4px 12px; border-radius: 4px; cursor: pointer;
   font-size: 12px; font-weight: 600; transition: background 0.15s;
 }
@@ -4380,16 +4396,19 @@ function showTriggers() {
       if (columnPaused) typeLabel += ` <span class="trigger-paused-badge">Column paused</span>`;
 
       let actionLabel;
+      let promptLabel = '';
       if (t.action === 'run_agent') {
         actionLabel = `Run agent: ${esc(t.agent || '?')}`;
-        if (t.prompt) actionLabel += `<br><span style=\"color:#8b949e;\">Prompt: ${esc(t.prompt)}</span>`;
+        if (t.prompt) {
+          promptLabel = `<button type="button" class="trigger-prompt-toggle" aria-expanded="false" onclick="toggleTriggerPrompt(this)">Prompt: ${esc(t.prompt)}</button>`;
+        }
       } else {
         actionLabel = `Command: ${esc(t.command || '?')}`;
       }
 
       const showForceRunBtn = !!selectedWs.paused && !!t.on_state;
       const runNowBtn = showForceRunBtn
-        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning || effectivelyPaused ? ' disabled' : ''}>Force Run Now</button>`
+        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning || effectivelyPaused ? ' disabled' : ''}>Run Now</button>`
         : (t.on_schedule
           ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning || effectivelyPaused ? ' disabled' : ''}>Run Now</button>`
           : '');
@@ -4397,9 +4416,15 @@ function showTriggers() {
       const pauseBtn = `<button class="trigger-pause-btn${triggerPaused ? ' paused' : ''}" onclick="toggleTriggerPause('${t.id}', this)">${pauseLabel}</button>`;
 
       html += `<div class="trigger-item${isRunning ? ' trigger-running' : ''}${effectivelyPaused ? ' trigger-paused' : ''}">
-        <div class="trigger-type">${typeLabel}</div>
+        <div class="trigger-header">
+          <div class="trigger-type">${typeLabel}</div>
+          <div class="trigger-header-actions">
+            ${pauseBtn}
+            ${runNowBtn}
+          </div>
+        </div>
         <div class="trigger-action">${actionLabel}</div>
-        ${runNowBtn}${pauseBtn}
+        ${promptLabel}
       </div>`;
     }
   } else {
@@ -4409,6 +4434,12 @@ function showTriggers() {
 
   content.innerHTML = html;
   modal.classList.remove('hidden');
+}
+
+function toggleTriggerPrompt(btn) {
+  if (!btn) return;
+  const expanded = btn.classList.toggle('expanded');
+  btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
 }
 
 async function showWorkstreamInfo() {
@@ -4674,7 +4705,7 @@ async function saveWorkstreamContext() {
 }
 
 async function runTriggerNow(triggerId, btn) {
-  const resetLabel = btn.textContent.includes('Force') ? 'Force Run Now' : 'Run Now';
+  const resetLabel = 'Run Now';
   btn.disabled = true;
   btn.textContent = 'Starting…';
   try {

@@ -508,9 +508,26 @@ def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".
     if os.path.exists(worktree_root):
         raise RuntimeError(f"Isolated worktree path already exists for run {run_id}: {worktree_root}")
 
+    branch_name = None
+    has_head = True
     try:
         subprocess.run(
-            ["git", "-C", repo_root, "worktree", "add", "--detach", worktree_root],
+            ["git", "-C", repo_root, "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        has_head = False
+
+    worktree_command = ["git", "-C", repo_root, "worktree", "add", "--detach", worktree_root]
+    if not has_head:
+        branch_name = os.path.basename(worktree_root)
+        worktree_command = ["git", "-C", repo_root, "worktree", "add", "--orphan", worktree_root]
+
+    try:
+        subprocess.run(
+            worktree_command,
             check=True,
             capture_output=True,
             text=True,
@@ -530,6 +547,7 @@ def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".
         "repo_root": repo_root,
         "worktree_root": worktree_root,
         "workspace_root": effective_workspace_root,
+        "branch_name": branch_name,
     }
 
 
@@ -540,6 +558,7 @@ def _deprovision_run_worktree(worktree: dict | None, base_dir: str = ".") -> Non
 
     worktree_root = os.path.abspath(str(worktree.get("worktree_root") or "").strip())
     repo_root = os.path.abspath(str(worktree.get("repo_root") or "").strip())
+    branch_name = str(worktree.get("branch_name") or "").strip()
     if not worktree_root:
         return
 
@@ -554,6 +573,17 @@ def _deprovision_run_worktree(worktree: dict | None, base_dir: str = ".") -> Non
         try:
             subprocess.run(
                 ["git", "-C", repo_root, "worktree", "remove", "--force", worktree_root],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            pass
+
+    if repo_root and branch_name:
+        try:
+            subprocess.run(
+                ["git", "-C", repo_root, "branch", "-D", branch_name],
                 check=True,
                 capture_output=True,
                 text=True,

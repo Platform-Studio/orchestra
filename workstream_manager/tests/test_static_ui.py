@@ -108,10 +108,15 @@ def test_triggers_modal_includes_pause_controls_and_column_pause_badges() -> Non
 
     assert 'function triggerColumnState(trigger)' in html
     assert 'function isTriggerEffectivelyPaused(trigger, ws = selectedWs)' in html
+    assert 'function toggleTriggerPrompt(btn)' in html
     assert 'Column paused' in html
     assert 'function toggleTriggerPause(triggerId, btn)' in html
     assert "api(`trigger/${action}/` + triggerId" in html
     assert 'trigger-paused-badge' in html
+    assert 'class="trigger-header"' in html
+    assert 'trigger-header-actions' in html
+    assert 'trigger-prompt-toggle' in html
+    assert 'Force Run Now' not in html
 
 
 def test_workstream_manager_plays_tuning_sound_on_initial_load_and_resume() -> None:
