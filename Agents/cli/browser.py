@@ -16,6 +16,7 @@ Usage:
     browser.py press SESSION KEY                    Press a key (Enter, Tab, etc)
     browser.py select SESSION SELECTOR VALUE        Select dropdown option
     browser.py screenshot SESSION [--path FILE]     Take a screenshot
+    browser.py get_console_logs SESSION             Get captured JS console output
     browser.py wait SESSION SELECTOR [--timeout MS] Wait for element
     browser.py eval SESSION EXPRESSION              Run JavaScript
     browser.py close SESSION                        Close a session
@@ -57,6 +58,7 @@ SERVER_LOG = _TMPDIR / "browser_server.log"
 DEFAULT_TIMEOUT = 30000  # ms
 AUTH_DIR = Path("playwright/.auth")
 AUTH_INDEX = AUTH_DIR / "index.json"
+MAX_CONSOLE_LOGS = 200
 
 
 def _normalize_site_key(site: str) -> str:
@@ -246,6 +248,29 @@ class BrowserManager:
             raise ValueError(f"Unknown session: {sid}")
         return self.sessions[sid]["page"]
 
+    def _session(self, params):
+        sid = params.get("session")
+        if not sid or sid not in self.sessions:
+            raise ValueError(f"Unknown session: {sid}")
+        return self.sessions[sid]
+
+    def _record_console_log(self, session_info, log_type, text):
+        entries = session_info.setdefault("console_logs", [])
+        seq = session_info.setdefault("console_next_seq", 1)
+        entries.append({
+            "seq": seq,
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "type": log_type,
+            "text": text,
+        })
+        session_info["console_next_seq"] = seq + 1
+        if len(entries) > MAX_CONSOLE_LOGS:
+            del entries[:-MAX_CONSOLE_LOGS]
+
+    def _attach_console_capture(self, page, session_info):
+        page.on("console", lambda msg: self._record_console_log(session_info, msg.type(), msg.text()))
+        page.on("pageerror", lambda err: self._record_console_log(session_info, "pageerror", str(err)))
+
     # ── Commands ──
 
     _STEALTH_INIT = """
@@ -273,14 +298,18 @@ class BrowserManager:
         context = self.browser.new_context(**ctx_kwargs)
         context.add_init_script(self._STEALTH_INIT)
         page = context.new_page()
-        target_url = params.get("url")
-        if target_url:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
-        self.sessions[sid] = {
+        session_info = {
             "context": context,
             "page": page,
             "created": datetime.now().isoformat(timespec="seconds"),
+            "console_logs": [],
+            "console_next_seq": 1,
         }
+        self._attach_console_capture(page, session_info)
+        target_url = params.get("url")
+        if target_url:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
+        self.sessions[sid] = session_info
         return {"session": sid, "url": page.url, "title": page.title()}
 
     def cmd_goto(self, params):
@@ -350,6 +379,20 @@ class BrowserManager:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=path, full_page=params.get("full_page", False))
         return {"path": path}
+
+    def cmd_get_console_logs(self, params):
+        session_info = self._session(params)
+        logs = list(session_info.get("console_logs", []))
+        since_seq = params.get("since_seq")
+        if since_seq is not None:
+            logs = [entry for entry in logs if entry.get("seq", 0) > since_seq]
+        limit = params.get("limit")
+        if limit is not None:
+            logs = logs[-max(0, int(limit)):]
+        result = {"session": params["session"], "logs": logs}
+        if params.get("clear"):
+            session_info["console_logs"] = []
+        return result
 
     def cmd_wait(self, params):
         page = self._page(params)
@@ -564,6 +607,12 @@ def main():
     p.add_argument("--path", help="Output file (default: /tmp/browser_SESSION.png)")
     p.add_argument("--full", action="store_true", help="Full page")
 
+    p = sub.add_parser("get_console_logs", aliases=["get-console-logs"], help="Get captured JS console output")
+    p.add_argument("session", help="Session ID")
+    p.add_argument("--since-seq", type=int, help="Only return entries with seq greater than this value")
+    p.add_argument("--limit", type=int, help="Return only the most recent N entries")
+    p.add_argument("--clear", action="store_true", help="Clear stored logs after reading")
+
     p = sub.add_parser("wait", help="Wait for element to appear")
     p.add_argument("session", help="Session ID")
     p.add_argument("selector", help="CSS selector")
@@ -724,6 +773,16 @@ def main():
         if args.full:
             params["full_page"] = True
 
+    elif cmd in {"get_console_logs", "get-console-logs"}:
+        cmd = "get_console_logs"
+        params["session"] = args.session
+        if args.since_seq is not None:
+            params["since_seq"] = args.since_seq
+        if args.limit is not None:
+            params["limit"] = args.limit
+        if args.clear:
+            params["clear"] = True
+
     elif cmd == "wait":
         params["session"] = args.session
         params["selector"] = args.selector
@@ -805,6 +864,14 @@ def main():
 
     elif cmd == "screenshot":
         print(f"Screenshot: {result['path']}")
+
+    elif cmd == "get_console_logs":
+        logs = result.get("logs", [])
+        if not logs:
+            print("No console logs.")
+        else:
+            for entry in logs:
+                print(f"[{entry.get('seq')}] {entry.get('timestamp')} {entry.get('type')}: {entry.get('text')}")
 
     elif cmd == "wait":
         print(f"Found: {result['found']}")

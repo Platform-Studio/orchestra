@@ -150,6 +150,21 @@ python3 Agents/cli/browser.py screenshot a1b2c3d4 --path /tmp/my_screenshot.png
 python3 Agents/cli/browser.py screenshot a1b2c3d4 --full
 ```
 
+### Browser console logs
+
+```bash
+# Read captured browser console output for the session:
+python3 Agents/cli/browser.py get_console_logs a1b2c3d4
+
+# Only fetch entries after a known sequence number:
+python3 Agents/cli/browser.py get_console_logs a1b2c3d4 --since-seq 12
+
+# Limit the output and clear the buffer after reading:
+python3 Agents/cli/browser.py get_console_logs a1b2c3d4 --limit 20 --clear
+```
+
+The browser CLI captures `console.log`, `console.warn`, `console.error`, and uncaught page errors from the moment the session is opened. Logs are stored per session in a bounded in-memory buffer of the most recent 200 entries.
+
 ### Run JavaScript
 
 ```bash
@@ -231,3 +246,4 @@ python3 Agents/cli/browser.py close 7e2f9b01
 - **Pop-ups / new tabs** opened by clicking links are not automatically tracked as new sessions. The original session stays on its page. Use `eval` to modify link targets if needed.
 - **The server is single-threaded.** It processes one command at a time. Don't send commands in parallel to the same server.
 - **Screenshots** are saved as PNG. Use the `view_image` tool to inspect them.
+- **`get_console_logs` only captures events after the session is opened.** It does not backfill console output that happened before the browser session existed.

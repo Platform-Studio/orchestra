@@ -18,12 +18,20 @@ def _load_browser_module():
 class _FakePage:
     def __init__(self):
         self.url = "about:blank"
+        self.handlers = {}
 
     def goto(self, url, wait_until=None, timeout=None):
         self.url = url
 
     def title(self):
         return "Fake Title"
+
+    def on(self, event_name, handler):
+        self.handlers.setdefault(event_name, []).append(handler)
+
+    def emit(self, event_name, payload):
+        for handler in self.handlers.get(event_name, []):
+            handler(payload)
 
 
 class _FakeContext:
@@ -36,6 +44,18 @@ class _FakeContext:
 
     def new_page(self):
         return self.page
+
+
+class _FakeConsoleMessage:
+    def __init__(self, msg_type, text):
+        self._msg_type = msg_type
+        self._text = text
+
+    def type(self):
+        return self._msg_type
+
+    def text(self):
+        return self._text
 
 
 def test_cmd_open_does_not_force_stale_user_agent():
@@ -155,3 +175,48 @@ def test_main_auth_save_updates_registry(tmp_path, monkeypatch, capsys):
     assert auth_info["path"] == str(browser.AUTH_DIR / "linkedin.json")
     assert auth_info["account_label"] == "Primary"
     assert f"Auth saved for linkedin [Primary]: {browser.AUTH_DIR / 'linkedin.json'}" in output
+
+
+def test_cmd_get_console_logs_returns_console_and_page_errors():
+    browser = _load_browser_module()
+    manager = browser.BrowserManager()
+    fake_context = _FakeContext()
+    manager.browser = SimpleNamespace(new_context=lambda **kwargs: fake_context)
+
+    opened = manager.cmd_open({"url": "https://example.com"})
+    session = opened["session"]
+
+    fake_context.page.emit("console", _FakeConsoleMessage("log", "hello from browser"))
+    fake_context.page.emit("pageerror", RuntimeError("boom"))
+
+    result = manager.cmd_get_console_logs({"session": session})
+
+    assert [entry["type"] for entry in result["logs"]] == ["log", "pageerror"]
+    assert [entry["text"] for entry in result["logs"]] == ["hello from browser", "boom"]
+    assert [entry["seq"] for entry in result["logs"]] == [1, 2]
+
+
+def test_main_get_console_logs_uses_server_command(monkeypatch, capsys):
+    browser = _load_browser_module()
+    captured = {}
+
+    def _send(port, command, params):
+        captured["port"] = port
+        captured["command"] = command
+        captured["params"] = params
+        return {
+            "logs": [
+                {"seq": 4, "timestamp": "2026-05-29T20:00:00Z", "type": "warn", "text": "careful"}
+            ]
+        }
+
+    monkeypatch.setattr(browser, "ensure_server", lambda headless=False: 9999)
+    monkeypatch.setattr(browser, "send", _send)
+    monkeypatch.setattr(sys, "argv", ["browser.py", "get_console_logs", "sess-9", "--since-seq", "3", "--limit", "5", "--clear"])
+
+    browser.main()
+
+    output = capsys.readouterr().out
+    assert captured["command"] == "get_console_logs"
+    assert captured["params"] == {"session": "sess-9", "since_seq": 3, "limit": 5, "clear": True}
+    assert "[4] 2026-05-29T20:00:00Z warn: careful" in output
