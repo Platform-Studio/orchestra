@@ -32,6 +32,9 @@ workstreams/**/.env.*
 # Allow artifacts data
 !artifacts/**
 
+# Ignore runtime and generated logs under artifacts.
+artifacts/logs/
+
 # Allow YAML files (used by workstreams)
 !*.yaml
 
