@@ -481,6 +481,22 @@ def _ensure_state_dirs(base_dir: str) -> None:
     os.makedirs(_agent_runs_dir(base_dir), exist_ok=True)
 
 
+def _first_existing_local_ref(repo_root: str, refs: list[str]) -> str | None:
+    """Return the first local branch ref that exists in the repository."""
+    for ref in refs:
+        try:
+            subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "--verify", f"refs/heads/{ref}"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return ref
+        except subprocess.CalledProcessError:
+            continue
+    return None
+
+
 def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".") -> dict:
     """Create a detached per-run worktree and return its resolved paths."""
     source_workspace_root = os.path.abspath(os.path.expanduser(workspace_root))
@@ -520,7 +536,11 @@ def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".
     except subprocess.CalledProcessError:
         has_head = False
 
+    preferred_ref = _first_existing_local_ref(repo_root, ["main", "master"])
     worktree_command = ["git", "-C", repo_root, "worktree", "add", "--detach", worktree_root]
+    if preferred_ref:
+        # Prefer a stable integration branch over detached HEAD to reduce stale bases.
+        worktree_command.append(preferred_ref)
     if not has_head:
         branch_name = os.path.basename(worktree_root)
         worktree_command = ["git", "-C", repo_root, "worktree", "add", "--orphan", worktree_root]
@@ -2527,6 +2547,27 @@ def _workstream_context_prompt_section(ws) -> str:
     return "Workstream Operating Context:\n" + context
 
 
+def _apply_resolved_workstream_env(env: dict, workstream_id: str | None, base_dir: str) -> None:
+    """Overlay resolved workstream env layers into child env in-place.
+
+    Resolution is root -> child. Child values override parent values.
+    Empty values act as masks and remove keys from the child process env.
+    """
+    if not workstream_id:
+        return
+
+    from .workstreams import list_workstream_hierarchy_env
+
+    layers = list_workstream_hierarchy_env(workstream_id, base_dir=base_dir)
+    for layer in layers:
+        layer_env = layer.get("env", {}) or {}
+        for key, value in layer_env.items():
+            if value == "":
+                env.pop(key, None)
+            else:
+                env[key] = value
+
+
 def _should_inline_attachments(ws) -> bool:
     return bool(getattr(ws, "inline_attachments", False))
 
@@ -2776,6 +2817,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Prepare environment for subprocess
         env = os.environ.copy()
+        _apply_resolved_workstream_env(env, workstream_id, base_dir)
         env["ORCHESTRATION_AGENT_NAME"] = agent_def["name"]
         env["ORCHESTRATION_AGENT_RUN_ID"] = run_id if run_id else ""
         env["ORCHESTRATION_AGENT_TASK_IDS"] = _compact_json(task_ids)

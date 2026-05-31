@@ -14,7 +14,7 @@ from orchestration.agents import _classify_run_outcome, _compact_learnings_artif
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
 from orchestration.tasks import create_task, read_task, _save_task
-from orchestration.workstreams import create_workstream, save_workstream
+from orchestration.workstreams import create_workstream, save_workstream, set_workstream_env_key, unset_workstream_env_key
 from orchestration.models import RetryConfig
 
 
@@ -805,6 +805,48 @@ def test_provision_run_worktree_uses_orphan_branch_for_unborn_head(workspace):
     assert branch_check.returncode != 0
 
 
+def test_provision_run_worktree_prefers_local_main_over_detached_head(workspace):
+    repo_root = os.path.join(workspace, "repo_with_main")
+    os.makedirs(repo_root, exist_ok=True)
+    subprocess.run(["git", "init", repo_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.email", "tests@example.com"], check=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.name", "Test User"], check=True)
+
+    tracked = os.path.join(repo_root, "tracked.txt")
+    with open(tracked, "w", encoding="utf-8") as f:
+        f.write("base\n")
+    subprocess.run(["git", "-C", repo_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", repo_root, "commit", "-m", "base"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "checkout", "-B", "main"], check=True, capture_output=True, text=True)
+
+    main_commit = subprocess.run(
+        ["git", "-C", repo_root, "rev-parse", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subprocess.run(["git", "-C", repo_root, "checkout", "-b", "feature"], check=True, capture_output=True, text=True)
+    with open(tracked, "a", encoding="utf-8") as f:
+        f.write("feature\n")
+    subprocess.run(["git", "-C", repo_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", repo_root, "commit", "-m", "feature"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "checkout", "--detach"], check=True, capture_output=True, text=True)
+
+    run_id = "run-prefers-main"
+    worktree = agents_module._provision_run_worktree(repo_root, run_id, base_dir=workspace)
+    try:
+        worktree_head = subprocess.run(
+            ["git", "-C", worktree["worktree_root"], "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert worktree_head == main_commit
+    finally:
+        agents_module._deprovision_run_worktree(worktree, base_dir=workspace)
+
+
 def test_resolve_agent_file_falls_back_to_source_agents_for_mounted_workspace(tmp_path, monkeypatch):
     workspace_dir = tmp_path / "mounted"
     workspace_dir.mkdir()
@@ -947,6 +989,44 @@ def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which,
     popen_env = mock_popen.call_args.kwargs["env"]
     assert popen_env["WORKSPACE_ROOT"] == working_root
     assert popen_env["ORCHESTRATION_ROOT"] == os.path.abspath(workspace)
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_applies_workstream_env_overrides_to_child_process(mock_popen, mock_which, workspace, monkeypatch):
+    ws = create_workstream(name="Env WS", base_dir=workspace)
+    set_workstream_env_key(ws.id, "WS_ONLY", "from-workstream", base_dir=workspace)
+
+    monkeypatch.setenv("MASK_ME", "from-system")
+    unset_workstream_env_key(ws.id, "MASK_ME", base_dir=workspace)
+
+    run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
+
+    child_env = mock_popen.call_args.kwargs["env"]
+    assert child_env["WS_ONLY"] == "from-workstream"
+    assert "MASK_ME" not in child_env
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_applies_mounted_working_directory_env_to_child_process(mock_popen, mock_which, workspace, monkeypatch):
+    working_root = os.path.join(workspace, "mounted_repo")
+    os.makedirs(working_root, exist_ok=True)
+    with open(os.path.join(working_root, ".env"), "w", encoding="utf-8") as f:
+        f.write("QA_BYPASS_SECRET_STAGING=from-mounted-root\n")
+
+    monkeypatch.setenv("QA_BYPASS_SECRET_STAGING", "from-system")
+
+    parent = create_workstream(name="Mounted Parent", base_dir=workspace)
+    parent.working_directory = working_root
+    save_workstream(parent, workspace)
+
+    child = create_workstream(name="Mounted Child", parent_id=parent.id, base_dir=workspace)
+
+    run_agent("test_agent", workstream_id=child.id, base_dir=workspace)
+
+    child_env = mock_popen.call_args.kwargs["env"]
+    assert child_env["QA_BYPASS_SECRET_STAGING"] == "from-mounted-root"
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
