@@ -3247,7 +3247,19 @@ function renderCardProgress(progress) {
   const normalized = normalizeProgressSummary(progress);
   if (!normalized) return '';
   const currentId = normalized.current_item_id;
-  const rows = normalized.items.map(item => {
+  const orderedItems = normalized.items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const statusA = String(a.item.status || 'pending').toLowerCase();
+      const statusB = String(b.item.status || 'pending').toLowerCase();
+      const activeA = a.item.id === currentId && (statusA === 'active' || normalized.inferred_current);
+      const activeB = b.item.id === currentId && (statusB === 'active' || normalized.inferred_current);
+      const rankA = activeA ? 1 : (statusA === 'done' ? 0 : 2);
+      const rankB = activeB ? 1 : (statusB === 'done' ? 0 : 2);
+      return rankA - rankB || a.index - b.index;
+    })
+    .map(entry => entry.item);
+  const rows = orderedItems.map(item => {
     const status = String(item.status || 'pending').toLowerCase();
     const isCurrent = item.id === currentId && (status === 'active' || normalized.inferred_current);
     const visualStatus = isCurrent ? 'active' : status;

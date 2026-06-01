@@ -62,6 +62,8 @@ def test_board_cards_render_agent_progress_checklist() -> None:
     assert 'class="card-progress-list"' in html
     assert 'progress_summary: normalizeProgressSummary(run.progress_summary)' in html
     assert 'const progressHtml = renderCardProgress(cardRun && cardRun.progress_summary);' in html
+    assert "const orderedItems = normalized.items" in html
+    assert "const rankA = activeA ? 1 : (statusA === 'done' ? 0 : 2);" in html
     assert '@keyframes card-progress-spin' in html
 
 

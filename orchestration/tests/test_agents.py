@@ -1587,6 +1587,7 @@ def test_progress_prompt_pins_commands_to_current_run(workspace):
     assert "progress set-active <item_id> --run run-abc" in section
     assert "progress complete <item_id> --run run-abc" in section
     assert "progress block <item_id> --run run-abc --message" in section
+    assert "Before declaring the run done, make one final checklist pass" in section
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")

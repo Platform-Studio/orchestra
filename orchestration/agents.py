@@ -228,6 +228,7 @@ def _agent_progress_prompt_section(base_dir: str = None, run_id: str = None) -> 
         f"- Before starting a step, mark it active: {cli} progress set-active <item_id>{run_arg}\n"
         f"- When a step is finished, mark it done: {cli} progress complete <item_id>{run_arg}\n"
         f"- If a step is blocked, mark it blocked: {cli} progress block <item_id>{run_arg} --message '<blocker>'\n"
+        "- Before declaring the run done, make one final checklist pass: mark finished items done, and block or skip anything unresolved with a short message.\n"
         "Keep exactly one item active while work is in progress. Keep items concrete and user-visible, and update the checklist when the real work changes instead of treating the first draft as fixed."
     )
 
