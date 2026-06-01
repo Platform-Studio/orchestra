@@ -222,13 +222,15 @@ def _agent_progress_prompt_section(base_dir: str = None, run_id: str = None) -> 
     run_arg = f" --run {run_id}" if run_id else ""
     return (
         "=== RUN PROGRESS CHECKLIST ===\n"
+        "The progress checklist is user-visible and important: the user may watch it to understand whether the run is alive, focused, and making real progress. Maintain it carefully.\n"
         "After you have read the task payload, attachments, and enough surrounding context to understand the work, create a short progress checklist.\n"
         f"- Create it with: {cli} progress init{run_arg} --item '<step 1>' --item '<step 2>' --item '<step 3>'\n"
         f"- The checklist is allowed to stay fluid until the run is complete. If new necessary work appears, add it with: {cli} progress add{run_arg} --item '<new step>'\n"
         f"- Before starting a step, mark it active: {cli} progress set-active <item_id>{run_arg}\n"
         f"- When a step is finished, mark it done: {cli} progress complete <item_id>{run_arg}\n"
         f"- If a step is blocked, mark it blocked: {cli} progress block <item_id>{run_arg} --message '<blocker>'\n"
-        "- Before declaring the run done, make one final checklist pass: mark finished items done, and block or skip anything unresolved with a short message.\n"
+        "- Revisit the checklist whenever the work changes or you finish a meaningful chunk. It is fine, and often correct, to complete more than one finished item during a checklist review pass.\n"
+        "- Before declaring the run done, make one final checklist pass: mark every finished item done, and block or skip anything unresolved with a short message.\n"
         "Keep exactly one item active while work is in progress. Keep items concrete and user-visible, and update the checklist when the real work changes instead of treating the first draft as fixed."
     )
 
