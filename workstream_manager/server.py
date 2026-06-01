@@ -69,6 +69,7 @@ from orchestration.triggers import create_trigger, list_triggers, delete_trigger
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
 from orchestration.agents import get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, read_agent_run_context_file, retry_agent_run, set_global_sound_mute, tail_active_agent
+from orchestration.progress import read_progress_summary
 
 
 def set_workspace_dir(base_dir: str) -> None:
@@ -341,7 +342,7 @@ def _sort_agent_runs_for_display(runs: list[dict]) -> list[dict]:
 
 
 def _serialize_agent_run_summary(run: dict) -> dict:
-    return {
+    summary = {
         "run_id": run.get("run_id"),
         "agent": run.get("agent"),
         "agent_ref": run.get("agent_ref"),
@@ -360,6 +361,15 @@ def _serialize_agent_run_summary(run: dict) -> dict:
         "retried_from_run_id": run.get("retried_from_run_id"),
         "retried_to_run_ids": run.get("retried_to_run_ids") or [],
     }
+    run_id = summary.get("run_id")
+    if run_id:
+        try:
+            progress = read_progress_summary(run_id, base_dir=WORKSPACE_DIR)
+            if progress:
+                summary["progress_summary"] = progress
+        except Exception:
+            pass
+    return summary
 
 
 def _run_orchestration_cli(args: list[str]) -> dict:

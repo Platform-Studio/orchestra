@@ -727,6 +727,55 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+.card-progress-list {
+  margin: 6px 0 2px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(139,148,158,0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.card-progress-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #c9d1d9;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.card-progress-item.active { color: #e6edf3; font-weight: 600; }
+.card-progress-item.blocked { color: #f2cc60; }
+.card-progress-item.skipped { color: #8b949e; }
+.card-progress-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-progress-check {
+  width: 12px;
+  height: 12px;
+  border: 1px solid #6e7681;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: #0d1117;
+  font-size: 9px;
+  font-weight: 800;
+}
+.card-progress-check.done { background: #3fb950; border-color: #3fb950; }
+.card-progress-check.active {
+  border-color: #58a6ff;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: card-progress-spin 0.8s linear infinite;
+}
+.card-progress-check.blocked { border-color: #d29922; color: #d29922; }
+.card-progress-more { color: #8b949e; font-size: 11px; padding-left: 18px; }
+@keyframes card-progress-spin { to { transform: rotate(360deg); } }
 .card-schedule {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 11px; color: #bc8cff;
@@ -3101,6 +3150,24 @@ function buildBoardAgentRunMap() {
   return map;
 }
 
+function normalizeProgressSummary(progress) {
+  if (!progress || !Array.isArray(progress.items) || !progress.items.length) return null;
+  return {
+    run_id: progress.run_id || '',
+    total: Number(progress.total || progress.items.length || 0),
+    done: Number(progress.done || 0),
+    current_item_id: progress.current_item_id || '',
+    inferred_current: !!progress.inferred_current,
+    updated_at: progress.updated_at || '',
+    items: progress.items.map(item => ({
+      id: item.id || '',
+      text: item.text || item.title || '',
+      status: item.status || 'pending',
+      message: item.message || '',
+    })),
+  };
+}
+
 function normalizeBoardRun(run) {
   return {
     run_id: run.run_id || '',
@@ -3113,6 +3180,7 @@ function normalizeBoardRun(run) {
     runtime: run.runtime || '',
     model: run.model || '',
     effort: run.effort || '',
+    progress_summary: normalizeProgressSummary(run.progress_summary),
   };
 }
 
@@ -3173,6 +3241,30 @@ function syncBoardAgentTimer() {
     boardAgentTimer = null;
   }
   updateBoardAgentDurations();
+}
+
+function renderCardProgress(progress) {
+  const normalized = normalizeProgressSummary(progress);
+  if (!normalized) return '';
+  const currentId = normalized.current_item_id;
+  const visibleItems = normalized.items.slice(0, 5);
+  const rows = visibleItems.map(item => {
+    const status = String(item.status || 'pending').toLowerCase();
+    const isCurrent = item.id === currentId && (status === 'active' || normalized.inferred_current);
+    const visualStatus = isCurrent ? 'active' : status;
+    let mark = '';
+    if (visualStatus === 'done') mark = '&#10003;';
+    if (visualStatus === 'blocked') mark = '!';
+    const title = item.message ? `${item.text} - ${item.message}` : item.text;
+    return `<div class="card-progress-item ${esc(visualStatus)}" title="${esc(title)}">`
+      + `<span class="card-progress-check ${esc(visualStatus)}">${mark}</span>`
+      + `<span class="card-progress-text">${esc(item.text)}</span>`
+      + `</div>`;
+  }).join('');
+  const extra = normalized.items.length > visibleItems.length
+    ? `<div class="card-progress-more">+${normalized.items.length - visibleItems.length} more</div>`
+    : '';
+  return `<div class="card-progress-list" title="${esc(normalized.done)} of ${esc(normalized.total)} checklist items done">${rows}${extra}</div>`;
 }
 
 // ── Render board columns ────────────────────────────────────────
@@ -3380,10 +3472,12 @@ function renderCard(task, lock, state) {
     tagsHtml += '</div>';
   }
 
+  const cardRun = buildBoardAgentRunMap()[task.id] || null;
+
   // Meta line (lock, schedule — no tags here)
   let meta = '';
   if (lock && lock.locked) {
-    const run = buildBoardAgentRunMap()[task.id] || null;
+    const run = cardRun;
     const agentLabel = lock.agent_id || (run && (run.agent || run.agent_ref)) || 'agent';
     if (run && run.run_id) {
       const duration = formatRunDuration(run.started_at, run.ended_at);
@@ -3393,6 +3487,7 @@ function renderCard(task, lock, state) {
       meta += `<span class="card-lock">${ICON_AGENT} ${esc(agentLabel)}</span>`;
     }
   }
+  const progressHtml = renderCardProgress(cardRun && cardRun.progress_summary);
   if (task.scheduled_at) {
     const scheduleLabel = formatCardScheduleDate(task.scheduled_at);
     meta += `<span class="card-schedule">${ICON_SCHEDULE} ${esc(scheduleLabel)}</span>`;
@@ -3415,6 +3510,7 @@ function renderCard(task, lock, state) {
   return `<div class="card${errorClass}" data-task-id="${task.id}" data-state="${esc(state)}" draggable="${canDrag ? 'true' : 'false'}">
     ${tagsHtml}
     <div class="card-title">${esc(task.title)}</div>
+    ${progressHtml}
     ${errorMsg}
     ${failedInfo}
     ${meta ? `<div class="card-meta">${meta}</div>` : ''}
