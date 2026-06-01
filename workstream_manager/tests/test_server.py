@@ -147,6 +147,28 @@ def test_log_message_emits_api_logs_when_enabled(monkeypatch):
     write.assert_called_once_with('[API] "GET /api/poll/ws-1 HTTP/1.1" 200 -\n')
 
 
+def test_workspace_dir_default_uses_workstream_manager_base_dir_override(monkeypatch):
+    from workstream_manager import server
+
+    monkeypatch.setenv("WORKSTREAM_MANAGER_BASE_DIR", "~/custom-manager-root")
+    monkeypatch.setenv("WORKSTREAM_ROOT", "~/custom-workstream-root")
+
+    resolved = server._resolve_workspace_dir_default()
+
+    assert resolved == os.path.abspath(os.path.expanduser("~/custom-manager-root"))
+
+
+def test_workspace_dir_default_falls_back_to_workstream_root(monkeypatch):
+    from workstream_manager import server
+
+    monkeypatch.delenv("WORKSTREAM_MANAGER_BASE_DIR", raising=False)
+    monkeypatch.setenv("WORKSTREAM_ROOT", "~/custom-workstream-root")
+
+    resolved = server._resolve_workspace_dir_default()
+
+    assert resolved == os.path.abspath(os.path.expanduser("~/custom-workstream-root"))
+
+
 # ── Patched module names ────────────────────────────────────────
 
 _PATCHES = {

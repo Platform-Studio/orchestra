@@ -16,10 +16,17 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from orchestration.persistence import resolve_artifact_root
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from orchestration.persistence import resolve_artifact_root, resolve_workstream_root
 
 
 BASE_DIR = Path(__file__).resolve().parent
+ORCHESTRATION_BASE_DIR = Path(resolve_workstream_root(str(BASE_DIR))).resolve()
 
 WATCH_ROOTS = [
     BASE_DIR / "orchestration",
@@ -72,7 +79,7 @@ def _tail_log(path: Path, lines: int = 20) -> str:
 
 
 def _orchestration_cli_json(py_executable: str, args: list[str]) -> dict:
-    cmd = [py_executable, "-m", "orchestration.cli", "--base-dir", str(BASE_DIR)] + args
+    cmd = [py_executable, "-m", "orchestration.cli", "--base-dir", str(ORCHESTRATION_BASE_DIR)] + args
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(BASE_DIR))
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"command failed: {' '.join(cmd)}")
@@ -280,12 +287,12 @@ def main() -> int:
     processes = [
         ManagedProc(
             name="scheduler",
-            cmd=[py, "-m", "orchestration.cli", "scheduler", "run"],
+            cmd=[py, "-m", "orchestration.cli", "--base-dir", str(ORCHESTRATION_BASE_DIR), "scheduler", "run"],
             log_path=log_dir / "scheduler.log",
         ),
         ManagedProc(
             name="web",
-            cmd=[py, "-m", "workstream_manager", "--port", "8080"],
+            cmd=[py, "-m", "workstream_manager", "--port", "8080", "--base-dir", str(ORCHESTRATION_BASE_DIR)],
             log_path=log_dir / "workstream_manager.log",
         ),
     ]

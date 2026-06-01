@@ -37,7 +37,6 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 # Resolve paths
 SOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-WORKSPACE_DIR = os.path.abspath(os.environ.get("WORKSTREAM_MANAGER_BASE_DIR", SOURCE_DIR))
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 AUDIO_FILE_PATH_ENV_VAR = "AUDIO_FILE_PATH"
 API_REQUEST_LOG_ENV_VAR = "WORKSTREAM_MANAGER_LOG_API_REQUESTS"
@@ -45,6 +44,25 @@ API_REQUEST_LOG_ENV_VAR = "WORKSTREAM_MANAGER_LOG_API_REQUESTS"
 # Ensure workspace is on the Python path so orchestration imports work
 if SOURCE_DIR not in sys.path:
     sys.path.insert(0, SOURCE_DIR)
+
+from orchestration.persistence import resolve_workstream_root
+
+
+def _resolve_workspace_dir_default() -> str:
+    """Resolve managed workspace root.
+
+    Precedence:
+    1) WORKSTREAM_MANAGER_BASE_DIR (explicit override for web server)
+    2) WORKSTREAM_ROOT (global orchestration persistence root)
+    3) SOURCE_DIR (repository root fallback)
+    """
+    raw_manager_base = (os.environ.get("WORKSTREAM_MANAGER_BASE_DIR") or "").strip()
+    if raw_manager_base:
+        return os.path.abspath(os.path.expanduser(raw_manager_base))
+    return resolve_workstream_root(SOURCE_DIR)
+
+
+WORKSPACE_DIR = _resolve_workspace_dir_default()
 
 from orchestration.workstreams import (
     list_workstreams, read_workstream, create_workstream,
