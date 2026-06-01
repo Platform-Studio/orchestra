@@ -2,6 +2,7 @@
 
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 import yaml
 
@@ -104,9 +105,16 @@ def _normalize_items(items) -> list[dict]:
 
 def _write_progress(progress: dict, base_dir: str = ".") -> dict:
     path = progress_path(progress.get("run_id"), base_dir=base_dir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        yaml.safe_dump(progress, handle, sort_keys=False, default_flow_style=False)
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".progress.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(progress, handle, sort_keys=False, default_flow_style=False)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
     return progress
 
 
