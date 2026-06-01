@@ -62,9 +62,22 @@ def test_board_cards_render_agent_progress_checklist() -> None:
     assert 'class="card-progress-list"' in html
     assert 'progress_summary: normalizeProgressSummary(run.progress_summary)' in html
     assert 'const progressHtml = renderCardProgress(cardRun && cardRun.progress_summary);' in html
+    assert 'const checklistAgentSeparator = progressHtml && lock && lock.locked' in html
+    assert 'class="card-agent-separator"' in html
     assert "const orderedItems = normalized.items" in html
     assert "const rankA = activeA ? 1 : (statusA === 'done' ? 0 : 2);" in html
     assert '@keyframes card-progress-spin' in html
+
+
+def test_task_modal_renders_checklist_section_above_attachments() -> None:
+    html = _index_html()
+
+    assert 'function renderDetailChecklist(progress)' in html
+    assert 'class="detail-checklist-list"' in html
+    assert '<h4>Checklist</h4>' in html
+    assert '<h4>Attachments</h4>' in html
+    assert 'No active checklist available for this task.' in html
+    assert html.index('<h4>Checklist</h4>') < html.index('<h4>Attachments</h4>')
 
 
 def test_navigation_routes_sync_browser_url_and_restore_state() -> None:
