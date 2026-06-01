@@ -1693,6 +1693,8 @@ def test_progress_prompt_pins_commands_to_current_run(workspace):
     section = agents_module._agent_progress_prompt_section(workspace, run_id="run-abc")
 
     assert "progress init --run run-abc --item" in section
+    assert "aim for roughly 8-10 items unless the task is genuinely simple" in section
+    assert "Avoid generic items like 'read the docs', 'do the coding', or 'run tests and handoff'" in section
     assert "progress add --run run-abc --item" in section
     assert "progress set-active <item_id> --run run-abc" in section
     assert "progress complete <item_id> --run run-abc" in section

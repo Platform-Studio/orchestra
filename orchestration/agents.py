@@ -222,8 +222,10 @@ def _agent_progress_prompt_section(base_dir: str = None, run_id: str = None) -> 
     run_arg = f" --run {run_id}" if run_id else ""
     return (
         "=== RUN PROGRESS CHECKLIST ===\n"
-        "After you have read the task payload, attachments, and enough surrounding context to understand the work, create a short progress checklist.\n"
+        "After you have read the task payload, attachments, and enough surrounding context to understand the work, create a progress checklist that is meaningfully broken down into concrete steps.\n"
         f"- Create it with: {cli} progress init{run_arg} --item '<step 1>' --item '<step 2>' --item '<step 3>'\n"
+        "- Prefer a finer-grained checklist over a 3-step summary. When the task has multiple moving parts, aim for roughly 8-10 items unless the task is genuinely simple.\n"
+        "- Break work into concrete implementation and verification steps where possible. Avoid generic items like 'read the docs', 'do the coding', or 'run tests and handoff' when those can be decomposed into more specific actions.\n"
         f"- The checklist is allowed to stay fluid until the run is complete. If new necessary work appears, add it with: {cli} progress add{run_arg} --item '<new step>'\n"
         f"- Before starting a step, mark it active: {cli} progress set-active <item_id>{run_arg}\n"
         f"- When a step is finished, mark it done: {cli} progress complete <item_id>{run_arg}\n"
