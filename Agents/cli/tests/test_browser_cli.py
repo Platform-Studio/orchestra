@@ -38,12 +38,16 @@ class _FakeContext:
     def __init__(self):
         self.page = _FakePage()
         self.init_script = None
+        self.closed = False
 
     def add_init_script(self, script):
         self.init_script = script
 
     def new_page(self):
         return self.page
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeConsoleMessage:
@@ -56,6 +60,12 @@ class _FakeConsoleMessage:
 
     def text(self):
         return self._text
+
+
+class _FakeConsoleMessageProperties:
+    def __init__(self, msg_type, text):
+        self.type = msg_type
+        self.text = text
 
 
 def test_cmd_open_does_not_force_stale_user_agent():
@@ -194,6 +204,65 @@ def test_cmd_get_console_logs_returns_console_and_page_errors():
     assert [entry["type"] for entry in result["logs"]] == ["log", "pageerror"]
     assert [entry["text"] for entry in result["logs"]] == ["hello from browser", "boom"]
     assert [entry["seq"] for entry in result["logs"]] == [1, 2]
+
+
+def test_cmd_get_console_logs_supports_property_style_console_messages():
+    browser = _load_browser_module()
+    manager = browser.BrowserManager()
+    fake_context = _FakeContext()
+    manager.browser = SimpleNamespace(new_context=lambda **kwargs: fake_context)
+
+    opened = manager.cmd_open({"url": "https://example.com"})
+    session = opened["session"]
+
+    fake_context.page.emit("console", _FakeConsoleMessageProperties("warn", "property message"))
+
+    result = manager.cmd_get_console_logs({"session": session})
+
+    assert [entry["type"] for entry in result["logs"]] == ["warn"]
+    assert [entry["text"] for entry in result["logs"]] == ["property message"]
+
+
+def test_cmd_close_stops_runtime_when_last_session_closed():
+    browser = _load_browser_module()
+    manager = browser.BrowserManager()
+    fake_context = _FakeContext()
+    close_calls = []
+    stop_calls = []
+
+    manager.browser = SimpleNamespace(
+        new_context=lambda **kwargs: fake_context,
+        close=lambda: close_calls.append("browser-close"),
+    )
+    manager.pw = SimpleNamespace(stop=lambda: stop_calls.append("pw-stop"))
+
+    opened = manager.cmd_open({"url": "https://example.com"})
+    session = opened["session"]
+
+    result = manager.cmd_close({"session": session})
+
+    assert result == {"closed": session}
+    assert fake_context.closed is True
+    assert close_calls == ["browser-close"]
+    assert stop_calls == ["pw-stop"]
+    assert manager.browser is None
+    assert manager.pw is None
+
+
+def test_extract_playwright_orphan_pids_only_matches_playwright_marker():
+    browser = _load_browser_module()
+    ps_output = "\n".join(
+        [
+            "101 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --some-flag",
+            "202 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/playwright_chromiumdev_profile-abc",
+            "303 /Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=/tmp/playwright_chromiumdev_profile-def",
+            "404 /usr/libexec/other-process --no-browser",
+        ]
+    )
+
+    pids = browser._extract_playwright_orphan_pids(ps_output, exclude_pids=[303])
+
+    assert pids == [202]
 
 
 def test_main_get_console_logs_uses_server_command(monkeypatch, capsys):

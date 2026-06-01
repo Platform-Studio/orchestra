@@ -805,6 +805,36 @@ def test_provision_run_worktree_uses_orphan_branch_for_unborn_head(workspace):
     assert branch_check.returncode != 0
 
 
+def test_provision_run_worktree_roots_under_workspace_root_not_state_root(workspace):
+    repo_root = os.path.join(workspace, "code_repo")
+    state_root = os.path.join(workspace, "state_repo")
+    os.makedirs(repo_root, exist_ok=True)
+    os.makedirs(state_root, exist_ok=True)
+
+    subprocess.run(["git", "init", repo_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.email", "tests@example.com"], check=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.name", "Test User"], check=True)
+
+    tracked = os.path.join(repo_root, "tracked.txt")
+    with open(tracked, "w", encoding="utf-8") as f:
+        f.write("base\n")
+    subprocess.run(["git", "-C", repo_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", repo_root, "commit", "-m", "base"], check=True, capture_output=True, text=True)
+
+    run_id = "run-workspace-root"
+    worktree = agents_module._provision_run_worktree(repo_root, run_id, base_dir=state_root)
+    expected_managed_root = os.path.join(repo_root, ".orchestration", "run_worktrees")
+    legacy_managed_root = os.path.join(state_root, ".orchestration", "run_worktrees")
+
+    try:
+        assert worktree["managed_root"] == expected_managed_root
+        assert worktree["worktree_root"].startswith(expected_managed_root + os.sep)
+        assert not worktree["worktree_root"].startswith(legacy_managed_root + os.sep)
+        assert os.path.isdir(worktree["worktree_root"])
+    finally:
+        agents_module._deprovision_run_worktree(worktree, base_dir=state_root)
+
+
 def test_provision_run_worktree_prefers_local_main_over_detached_head(workspace):
     repo_root = os.path.join(workspace, "repo_with_main")
     os.makedirs(repo_root, exist_ok=True)

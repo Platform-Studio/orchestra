@@ -474,7 +474,10 @@ def _agent_runs_dir(base_dir: str) -> str:
     return os.path.join(_state_dir(base_dir), "agent_runs")
 
 
-def _agent_run_worktrees_dir(base_dir: str) -> str:
+def _agent_run_worktrees_dir(base_dir: str, workspace_root: str | None = None) -> str:
+    if workspace_root:
+        root = os.path.abspath(os.path.expanduser(workspace_root))
+        return os.path.join(root, ".orchestration", "run_worktrees")
     return os.path.join(_state_dir(base_dir), "run_worktrees")
 
 
@@ -536,7 +539,7 @@ def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".
     repo_root = os.path.abspath(repo_root_result.stdout.strip())
     relative_workspace = os.path.relpath(source_workspace_root, repo_root)
 
-    worktrees_dir = _agent_run_worktrees_dir(base_dir)
+    worktrees_dir = _agent_run_worktrees_dir(base_dir, workspace_root=source_workspace_root)
     os.makedirs(worktrees_dir, exist_ok=True)
     worktree_root = os.path.join(worktrees_dir, run_id)
     if os.path.exists(worktree_root):
@@ -586,6 +589,7 @@ def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".
         "worktree_root": worktree_root,
         "workspace_root": effective_workspace_root,
         "branch_name": branch_name,
+        "managed_root": worktrees_dir,
     }
 
 
@@ -600,7 +604,9 @@ def _deprovision_run_worktree(worktree: dict | None, base_dir: str = ".") -> Non
     if not worktree_root:
         return
 
-    managed_root = os.path.abspath(_agent_run_worktrees_dir(base_dir))
+    managed_root = os.path.abspath(
+        str(worktree.get("managed_root") or _agent_run_worktrees_dir(base_dir))
+    )
     safe_to_delete = False
     try:
         safe_to_delete = os.path.commonpath([worktree_root, managed_root]) == managed_root

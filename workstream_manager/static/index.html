@@ -705,6 +705,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .card-title { font-size: 14px; margin-bottom: 4px; color: #e6edf3; }
 .card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.card-agent-separator {
+  margin: 6px 0 4px;
+  border-top: 1px solid rgba(139,148,158,0.28);
+}
 .card-lock {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 11px; color: #58a6ff; font-weight: 600;
@@ -1198,6 +1202,41 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .detail-schedule {
   font-size: 13px; color: #bc8cff; line-height: 1.5;
+}
+
+/* ── Task checklist (modal) ─────────────────────────────────── */
+.detail-checklist-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.detail-checklist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.detail-checklist-item.active { color: #e6edf3; font-weight: 600; }
+.detail-checklist-item.blocked { color: #f2cc60; }
+.detail-checklist-item.skipped { color: #8b949e; }
+.detail-checklist-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.detail-checklist-message {
+  color: #8b949e;
+  margin-top: 2px;
+  font-size: 12px;
+}
+.detail-checklist-empty {
+  color: #8b949e;
+  font-size: 13px;
 }
 
 /* ── Attachments ─────────────────────────────────────────────── */
@@ -3275,6 +3314,43 @@ function renderCardProgress(progress) {
   return `<div class="card-progress-list" title="${esc(normalized.done)} of ${esc(normalized.total)} checklist items done">${rows}</div>`;
 }
 
+function renderDetailChecklist(progress) {
+  const normalized = normalizeProgressSummary(progress);
+  if (!normalized) {
+    return `<div class="detail-checklist-empty">No active checklist available for this task.</div>`;
+  }
+
+  const currentId = normalized.current_item_id;
+  const orderedItems = normalized.items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const statusA = String(a.item.status || 'pending').toLowerCase();
+      const statusB = String(b.item.status || 'pending').toLowerCase();
+      const activeA = a.item.id === currentId && (statusA === 'active' || normalized.inferred_current);
+      const activeB = b.item.id === currentId && (statusB === 'active' || normalized.inferred_current);
+      const rankA = activeA ? 1 : (statusA === 'done' ? 0 : 2);
+      const rankB = activeB ? 1 : (statusB === 'done' ? 0 : 2);
+      return rankA - rankB || a.index - b.index;
+    })
+    .map(entry => entry.item);
+
+  const rows = orderedItems.map(item => {
+    const status = String(item.status || 'pending').toLowerCase();
+    const isCurrent = item.id === currentId && (status === 'active' || normalized.inferred_current);
+    const visualStatus = isCurrent ? 'active' : status;
+    let mark = '';
+    if (visualStatus === 'done') mark = '&#10003;';
+    if (visualStatus === 'blocked') mark = '!';
+    const messageHtml = item.message ? `<div class="detail-checklist-message">${esc(item.message)}</div>` : '';
+    return `<li class="detail-checklist-item ${esc(visualStatus)}">`
+      + `<span class="card-progress-check ${esc(visualStatus)}">${mark}</span>`
+      + `<div class="detail-checklist-text">${esc(item.text)}${messageHtml}</div>`
+      + `</li>`;
+  }).join('');
+
+  return `<ul class="detail-checklist-list" title="${esc(normalized.done)} of ${esc(normalized.total)} checklist items done">${rows}</ul>`;
+}
+
 // ── Render board columns ────────────────────────────────────────
 function renderBoard(ws, tasks, lockMap) {
   const board = document.getElementById('board');
@@ -3496,6 +3572,9 @@ function renderCard(task, lock, state) {
     }
   }
   const progressHtml = renderCardProgress(cardRun && cardRun.progress_summary);
+  const checklistAgentSeparator = progressHtml && lock && lock.locked
+    ? '<div class="card-agent-separator"></div>'
+    : '';
   if (task.scheduled_at) {
     const scheduleLabel = formatCardScheduleDate(task.scheduled_at);
     meta += `<span class="card-schedule">${ICON_SCHEDULE} ${esc(scheduleLabel)}</span>`;
@@ -3521,7 +3600,7 @@ function renderCard(task, lock, state) {
     ${progressHtml}
     ${errorMsg}
     ${failedInfo}
-    ${meta ? `<div class="card-meta">${meta}</div>` : ''}
+    ${meta ? `${checklistAgentSeparator}<div class="card-meta">${meta}</div>` : ''}
   </div>`;
 }
 
@@ -3774,6 +3853,7 @@ async function showTaskDetail(taskId, opts = {}) {
 
   const modal = document.getElementById('task-modal');
   const content = document.getElementById('task-modal-content');
+  const detailRun = buildBoardAgentRunMap()[task.id] || null;
 
   // Get all possible states and categorize them
   const allStates = selectedWs && selectedWs.task_states ? Object.keys(selectedWs.task_states) : [];
@@ -3876,6 +3956,10 @@ async function showTaskDetail(taskId, opts = {}) {
       <div class="detail-description">${renderMarkdown(task.description)}</div>
     </div>`;
   }
+
+  // Attachments (artifact paths)
+  const checklistHtml = renderDetailChecklist(detailRun && detailRun.progress_summary);
+  main += `<div class="detail-section"><h4>Checklist</h4>${checklistHtml}</div>`;
 
   // Attachments (artifact paths)
   const attachments = Array.isArray(task.attachments) ? task.attachments : [];

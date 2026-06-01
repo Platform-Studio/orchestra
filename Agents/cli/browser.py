@@ -21,6 +21,7 @@ Usage:
     browser.py eval SESSION EXPRESSION              Run JavaScript
     browser.py close SESSION                        Close a session
     browser.py sessions                             List active sessions
+    browser.py cleanup-orphans [--force]           Terminate orphan Playwright Chromium processes
     browser.py auth-list                            List saved auth states
     browser.py auth-get SITE                        Get saved auth state for a site
     browser.py auth-save SESSION --site SITE        Save session auth state under a site key
@@ -59,6 +60,7 @@ DEFAULT_TIMEOUT = 30000  # ms
 AUTH_DIR = Path("playwright/.auth")
 AUTH_INDEX = AUTH_DIR / "index.json"
 MAX_CONSOLE_LOGS = 200
+PLAYWRIGHT_PROFILE_MARKER = "playwright_chromiumdev_profile"
 
 
 def _normalize_site_key(site: str) -> str:
@@ -110,6 +112,99 @@ def _save_auth_registry(registry: dict) -> None:
 
 def _default_auth_path(site_key: str) -> Path:
     return AUTH_DIR / f"{site_key}.json"
+
+
+def _extract_playwright_orphan_pids(ps_output: str, exclude_pids=None) -> list[int]:
+    excluded = set()
+    for pid in (exclude_pids or []):
+        try:
+            excluded.add(int(pid))
+        except (TypeError, ValueError):
+            continue
+
+    pids = []
+    for raw_line in ps_output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid in excluded:
+            continue
+        cmdline = parts[1] if len(parts) > 1 else ""
+        if PLAYWRIGHT_PROFILE_MARKER not in cmdline:
+            continue
+        pids.append(pid)
+
+    return sorted(set(pids))
+
+
+def _cleanup_playwright_orphan_processes(force=False) -> dict:
+    """Terminate orphan Playwright Chromium processes, never personal Chrome."""
+    found = []
+    terminated = []
+    term_failed = []
+
+    # Multiple passes handle delayed child teardown after parent exit.
+    for _ in range(3):
+        try:
+            ps_output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+        except Exception as exc:
+            return {"error": f"failed to inspect process list: {exc}"}
+
+        current = _extract_playwright_orphan_pids(ps_output, exclude_pids=[os.getpid(), os.getppid()])
+        if not current:
+            break
+
+        for pid in current:
+            if pid not in found:
+                found.append(pid)
+            try:
+                os.kill(pid, signal.SIGTERM)
+                if pid not in terminated:
+                    terminated.append(pid)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                if pid not in term_failed:
+                    term_failed.append(pid)
+
+        time.sleep(0.2)
+
+    try:
+        remaining_output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+        remaining = _extract_playwright_orphan_pids(remaining_output, exclude_pids=[os.getpid(), os.getppid()])
+    except Exception:
+        remaining = []
+
+    forced = []
+    if force and remaining:
+        for pid in list(remaining):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                forced.append(pid)
+            except OSError:
+                pass
+        time.sleep(0.15)
+        try:
+            remaining_output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+            remaining = _extract_playwright_orphan_pids(remaining_output, exclude_pids=[os.getpid(), os.getppid()])
+        except Exception:
+            remaining = []
+
+    return {
+        "marker": PLAYWRIGHT_PROFILE_MARKER,
+        "found": found,
+        "terminated": terminated,
+        "force_killed": forced,
+        "term_failed": term_failed,
+        "remaining": remaining,
+    }
 
 
 def _auth_registry_entry(site: str):
@@ -203,17 +298,42 @@ class BrowserManager:
         self.pw = None
         self.browser = None
         self.sessions = {}
+        self.headless = False
 
-    def start(self, headless=False):
+    def _ensure_runtime(self):
+        if self.browser is not None:
+            return
+
         from playwright.sync_api import sync_playwright
-        self.pw = sync_playwright().start()
+
+        if self.pw is None:
+            self.pw = sync_playwright().start()
+
         stealth_args = [
             "--disable-blink-features=AutomationControlled",
         ]
         try:
-            self.browser = self.pw.chromium.launch(channel="chrome", headless=headless, args=stealth_args)
+            self.browser = self.pw.chromium.launch(channel="chrome", headless=self.headless, args=stealth_args)
         except Exception:
-            self.browser = self.pw.chromium.launch(headless=headless, args=stealth_args)
+            self.browser = self.pw.chromium.launch(headless=self.headless, args=stealth_args)
+
+    def _stop_runtime(self):
+        if self.browser:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
+        if self.pw:
+            try:
+                self.pw.stop()
+            except Exception:
+                pass
+            self.pw = None
+
+    def start(self, headless=False):
+        self.headless = headless
+        self._ensure_runtime()
 
     def stop(self):
         for sid in list(self.sessions):
@@ -222,16 +342,7 @@ class BrowserManager:
             except Exception:
                 pass
         self.sessions.clear()
-        if self.browser:
-            try:
-                self.browser.close()
-            except Exception:
-                pass
-        if self.pw:
-            try:
-                self.pw.stop()
-            except Exception:
-                pass
+        self._stop_runtime()
 
     def handle(self, cmd, params):
         fn = getattr(self, f"cmd_{cmd}", None)
@@ -267,8 +378,27 @@ class BrowserManager:
         if len(entries) > MAX_CONSOLE_LOGS:
             del entries[:-MAX_CONSOLE_LOGS]
 
+    @staticmethod
+    def _console_message_field(msg, field_name):
+        """Read Playwright console-message fields across API variations.
+
+        Depending on the installed Playwright build, fields like `type` and
+        `text` can be exposed either as methods or as plain properties.
+        """
+        value = getattr(msg, field_name, None)
+        if callable(value):
+            value = value()
+        return "" if value is None else str(value)
+
     def _attach_console_capture(self, page, session_info):
-        page.on("console", lambda msg: self._record_console_log(session_info, msg.type(), msg.text()))
+        page.on(
+            "console",
+            lambda msg: self._record_console_log(
+                session_info,
+                self._console_message_field(msg, "type"),
+                self._console_message_field(msg, "text"),
+            ),
+        )
         page.on("pageerror", lambda err: self._record_console_log(session_info, "pageerror", str(err)))
 
     # ── Commands ──
@@ -288,6 +418,7 @@ class BrowserManager:
     """
 
     def cmd_open(self, params):
+        self._ensure_runtime()
         sid = uuid.uuid4().hex[:8]
         ctx_kwargs = dict(
             viewport={"width": 1280, "height": 800},
@@ -423,6 +554,10 @@ class BrowserManager:
         except Exception:
             pass
         del self.sessions[sid]
+        if not self.sessions:
+            # Tear down Chromium/Playwright when the last session closes so
+            # background browser processes do not linger with zero windows.
+            self._stop_runtime()
         return {"closed": sid}
 
     def cmd_sessions(self, _params):
@@ -639,6 +774,9 @@ def main():
     p = sub.add_parser("auth-delete", help="Delete saved auth state for a site")
     p.add_argument("site", help="Site key, e.g. linkedin")
 
+    p = sub.add_parser("cleanup-orphans", aliases=["cleanup"], help="Terminate orphan Playwright Chromium processes")
+    p.add_argument("--force", action="store_true", help="Also send SIGKILL to stubborn leftover processes")
+
     p = sub.add_parser("close", help="Close a session")
     p.add_argument("session", help="Session ID")
 
@@ -692,10 +830,34 @@ def main():
             print(f"No saved auth for {result['site']}.")
         return
 
+    if args.command in {"cleanup-orphans", "cleanup"}:
+        result = _cleanup_playwright_orphan_processes(force=args.force)
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return
+        if result.get("error"):
+            print(f"Error: {result['error']}", file=sys.stderr)
+            sys.exit(1)
+        if result["remaining"]:
+            print(
+                "Cleanup partial: "
+                f"found {len(result['found'])}, terminated {len(result['terminated'])}, "
+                f"remaining {len(result['remaining'])}."
+            )
+        else:
+            print(
+                "Cleanup complete: "
+                f"found {len(result['found'])}, terminated {len(result['terminated'])}."
+            )
+        return
+
     # ── server-stop ──
     if args.command == "server-stop":
         if not SERVER_INFO.exists():
             print("Server is not running.")
+            cleanup = _cleanup_playwright_orphan_processes(force=False)
+            if cleanup.get("terminated"):
+                print(f"Cleaned {len(cleanup['terminated'])} orphan Playwright Chromium process(es).")
             return
         try:
             info = json.loads(SERVER_INFO.read_text())
@@ -703,7 +865,11 @@ def main():
         except (OSError, KeyError):
             pass
         SERVER_INFO.unlink(missing_ok=True)
+        time.sleep(0.2)
+        cleanup = _cleanup_playwright_orphan_processes(force=False)
         print("Server stopped.")
+        if cleanup.get("terminated"):
+            print(f"Cleaned {len(cleanup['terminated'])} orphan Playwright Chromium process(es).")
         return
 
     # ── All other commands need a running server ──
