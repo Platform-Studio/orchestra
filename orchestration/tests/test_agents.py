@@ -1659,6 +1659,17 @@ def test_resolve_runtime_executable_falls_back_to_gh_for_copilot():
     assert resolved == "/usr/bin/gh"
 
 
+def test_progress_prompt_pins_commands_to_current_run(workspace):
+    section = agents_module._agent_progress_prompt_section(workspace, run_id="run-abc")
+
+    assert "progress init --run run-abc --item" in section
+    assert "progress add --run run-abc --item" in section
+    assert "progress set-active <item_id> --run run-abc" in section
+    assert "progress complete <item_id> --run run-abc" in section
+    assert "progress block <item_id> --run run-abc --message" in section
+    assert "Before declaring the run done, make one final checklist pass" in section
+
+
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
 def test_run_agent_gives_cline_timeout_cleanup_grace(mock_which, workspace):
     fake_proc = _FakeProc()

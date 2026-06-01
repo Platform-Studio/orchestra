@@ -93,6 +93,27 @@ def _fake_trigger(**kwargs):
     return obj
 
 
+def test_serialize_agent_run_summary_includes_progress(tmp_path):
+    from orchestration.progress import init_progress
+    import workstream_manager.server as server
+
+    old_workspace_dir = server.WORKSPACE_DIR
+    try:
+        server.set_workspace_dir(str(tmp_path))
+        init_progress(["Plan", "Build"], run_id="run-progress", base_dir=str(tmp_path))
+        summary = server._serialize_agent_run_summary({
+            "run_id": "run-progress",
+            "agent": "coder",
+            "task_ids": ["task-1"],
+            "status": "running",
+        })
+    finally:
+        server.set_workspace_dir(old_workspace_dir)
+
+    assert summary["progress_summary"]["total"] == 2
+    assert summary["progress_summary"]["current_item_id"] == "plan"
+
+
 def test_send_json_ignores_client_disconnect_during_headers():
     from workstream_manager.server import Handler
 

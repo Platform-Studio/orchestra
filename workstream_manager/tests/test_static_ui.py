@@ -55,6 +55,18 @@ def test_api_normalizes_fetch_abort_errors() -> None:
     assert "Request timed out after ${Math.round(timeoutMs / 1000)}s: /api/${path}" in html
 
 
+def test_board_cards_render_agent_progress_checklist() -> None:
+    html = _index_html()
+
+    assert 'function renderCardProgress(progress)' in html
+    assert 'class="card-progress-list"' in html
+    assert 'progress_summary: normalizeProgressSummary(run.progress_summary)' in html
+    assert 'const progressHtml = renderCardProgress(cardRun && cardRun.progress_summary);' in html
+    assert "const orderedItems = normalized.items" in html
+    assert "const rankA = activeA ? 1 : (statusA === 'done' ? 0 : 2);" in html
+    assert '@keyframes card-progress-spin' in html
+
+
 def test_navigation_routes_sync_browser_url_and_restore_state() -> None:
     html = _index_html()
 

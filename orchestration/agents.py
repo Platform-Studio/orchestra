@@ -217,6 +217,22 @@ def _agent_learning_prompt_section(agent_def: dict, workstream_id: str, base_dir
     )
 
 
+def _agent_progress_prompt_section(base_dir: str = None, run_id: str = None) -> str:
+    cli = _orchestration_cli_command(base_dir)
+    run_arg = f" --run {run_id}" if run_id else ""
+    return (
+        "=== RUN PROGRESS CHECKLIST ===\n"
+        "After you have read the task payload, attachments, and enough surrounding context to understand the work, create a short progress checklist.\n"
+        f"- Create it with: {cli} progress init{run_arg} --item '<step 1>' --item '<step 2>' --item '<step 3>'\n"
+        f"- The checklist is allowed to stay fluid until the run is complete. If new necessary work appears, add it with: {cli} progress add{run_arg} --item '<new step>'\n"
+        f"- Before starting a step, mark it active: {cli} progress set-active <item_id>{run_arg}\n"
+        f"- When a step is finished, mark it done: {cli} progress complete <item_id>{run_arg}\n"
+        f"- If a step is blocked, mark it blocked: {cli} progress block <item_id>{run_arg} --message '<blocker>'\n"
+        "- Before declaring the run done, make one final checklist pass: mark finished items done, and block or skip anything unresolved with a short message.\n"
+        "Keep exactly one item active while work is in progress. Keep items concrete and user-visible, and update the checklist when the real work changes instead of treating the first draft as fixed."
+    )
+
+
 def _learnings_compaction_threshold_bytes() -> int:
     """Resolve learnings compaction threshold from env with safe fallback."""
     raw = os.getenv(LEARNINGS_COMPACTION_THRESHOLD_ENV_VAR)
@@ -1382,6 +1398,7 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
     retry_info = _get_run_retry_info(run, base_dir)
     interruption_reason = _get_run_interruption_reason(run, base_dir)
     context_capture = get_agent_run_context(run_id, base_dir=base_dir)
+    from .progress import read_progress_summary
 
     return {
         "run": run,
@@ -1390,6 +1407,7 @@ def get_agent_run(run_id: str, base_dir: str = ".") -> dict:
         "retry": retry_info,
         "interruption_reason": interruption_reason,
         "context_capture": context_capture,
+        "progress": read_progress_summary(run_id, base_dir=base_dir),
     }
 
 
@@ -2403,6 +2421,7 @@ def _parse_agent_md(path: str) -> dict:
         "agent_type": _normalize_agent_role(header.get("x-role", header.get("x-agent-type", "worker"))),
         "tools": header.get("x-tools", []),
         "learning_enabled": _coerce_bool(header.get("x-learning", True), default=True),
+        "progress_checklist_enabled": _coerce_bool(header.get("x-progress-checklist", False), default=False),
         "own_worktree": _coerce_bool(header.get("x-own-worktree", False), default=False),
         "timeout": header.get("x-timeout"),
         "model": header.get("x-model"),
@@ -2798,6 +2817,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         # Append custom trigger prompt if provided
         if prompt:
             task_prompt += f"\n\nAdditional instructions:\n{prompt}"
+
+        if agent_def.get("progress_checklist_enabled"):
+            task_prompt += f"\n\n{_agent_progress_prompt_section(base_dir, run_id=run_id)}"
 
         # Log agent_started to audit trail for each task
         for t in tasks:

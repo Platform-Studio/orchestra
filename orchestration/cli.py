@@ -576,6 +576,58 @@ def cmd_agent_kill(args):
     _output(result)
 
 
+# ── Progress commands ────────────────────────────────────────────────
+
+def _parse_progress_items(args):
+    items = []
+    if getattr(args, "items_json", None):
+        loaded = json.loads(args.items_json)
+        if not isinstance(loaded, list):
+            raise ValueError("--items-json must be a JSON list")
+        items.extend(loaded)
+    for item in getattr(args, "item", None) or []:
+        items.append(item)
+    return items
+
+
+def cmd_progress_init(args):
+    from .progress import init_progress
+    result = init_progress(
+        _parse_progress_items(args),
+        run_id=args.run,
+        base_dir=args.base_dir,
+    )
+    _output(result)
+
+
+def cmd_progress_add(args):
+    from .progress import add_progress_items
+    result = add_progress_items(
+        _parse_progress_items(args),
+        run_id=args.run,
+        base_dir=args.base_dir,
+    )
+    _output(result)
+
+
+def cmd_progress_read(args):
+    from .progress import read_progress, read_progress_summary
+    result = read_progress_summary(args.run, base_dir=args.base_dir) if args.summary else read_progress(args.run, base_dir=args.base_dir)
+    _output(result or {"run_id": args.run, "items": [], "missing": True})
+
+
+def cmd_progress_set(args):
+    from .progress import update_progress_item
+    result = update_progress_item(
+        args.item_id,
+        args.status,
+        run_id=args.run,
+        message=args.message,
+        base_dir=args.base_dir,
+    )
+    _output(result)
+
+
 # ── Workstream pause/resume ──────────────────────────────────────────
 
 def cmd_workstream_pause(args):
@@ -1075,6 +1127,41 @@ def build_parser() -> argparse.ArgumentParser:
     p = agent_sub.add_parser("kill")
     p.add_argument("run_id")
     p.set_defaults(func=cmd_agent_kill)
+
+    # ── Progress ─────────────────────────────────────────────────────
+    progress_parser = subparsers.add_parser("progress")
+    progress_sub = progress_parser.add_subparsers(dest="method", required=True)
+
+    p = progress_sub.add_parser("init")
+    p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
+    p.add_argument("--item", action="append", help="Checklist item text (repeatable)")
+    p.add_argument("--items-json", help="JSON list of item strings or objects")
+    p.set_defaults(func=cmd_progress_init)
+
+    p = progress_sub.add_parser("add")
+    p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
+    p.add_argument("--item", action="append", help="Checklist item text to append (repeatable)")
+    p.add_argument("--items-json", help="JSON list of item strings or objects to append")
+    p.set_defaults(func=cmd_progress_add)
+
+    p = progress_sub.add_parser("read")
+    p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
+    p.add_argument("--summary", action="store_true", help="Return compact summary for UI display")
+    p.set_defaults(func=cmd_progress_read)
+
+    p = progress_sub.add_parser("set")
+    p.add_argument("item_id")
+    p.add_argument("status", choices=["pending", "active", "done", "blocked", "skipped"])
+    p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
+    p.add_argument("--message")
+    p.set_defaults(func=cmd_progress_set)
+
+    for method, status in (("set-active", "active"), ("complete", "done"), ("block", "blocked"), ("skip", "skipped")):
+        p = progress_sub.add_parser(method)
+        p.add_argument("item_id")
+        p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
+        p.add_argument("--message")
+        p.set_defaults(func=cmd_progress_set, status=status)
 
     # ── Scheduler ────────────────────────────────────────────────────
     sched_parser = subparsers.add_parser("scheduler")
