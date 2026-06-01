@@ -3247,8 +3247,7 @@ function renderCardProgress(progress) {
   const normalized = normalizeProgressSummary(progress);
   if (!normalized) return '';
   const currentId = normalized.current_item_id;
-  const visibleItems = normalized.items.slice(0, 5);
-  const rows = visibleItems.map(item => {
+  const rows = normalized.items.map(item => {
     const status = String(item.status || 'pending').toLowerCase();
     const isCurrent = item.id === currentId && (status === 'active' || normalized.inferred_current);
     const visualStatus = isCurrent ? 'active' : status;
@@ -3261,10 +3260,7 @@ function renderCardProgress(progress) {
       + `<span class="card-progress-text">${esc(item.text)}</span>`
       + `</div>`;
   }).join('');
-  const extra = normalized.items.length > visibleItems.length
-    ? `<div class="card-progress-more">+${normalized.items.length - visibleItems.length} more</div>`
-    : '';
-  return `<div class="card-progress-list" title="${esc(normalized.done)} of ${esc(normalized.total)} checklist items done">${rows}${extra}</div>`;
+  return `<div class="card-progress-list" title="${esc(normalized.done)} of ${esc(normalized.total)} checklist items done">${rows}</div>`;
 }
 
 // ── Render board columns ────────────────────────────────────────
