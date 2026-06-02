@@ -154,12 +154,17 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   top: calc(100% + 6px);
   left: 0;
   z-index: 25;
+  --tag-editor-options-max-height: 220px;
   width: min(320px, calc(100vw - 64px));
   padding: 12px;
   border-radius: 10px;
   border: 1px solid rgba(255,255,255,0.12);
   background: #11161d;
   box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+}
+.tag-editor-dropdown.tag-editor-dropdown-up {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 .tag-editor-dropdown.hidden {
   display: none;
@@ -168,7 +173,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 220px;
+  max-height: var(--tag-editor-options-max-height);
   overflow-y: auto;
 }
 .tag-editor-option {
@@ -2377,6 +2382,35 @@ function initTagEditor(editorEl, opts = {}) {
       }).join('');
   };
 
+  const syncDropdownPlacement = () => {
+    const dropdown = editorEl.querySelector('.tag-editor-dropdown');
+    const optionsEl = dropdown?.querySelector('.tag-editor-options');
+    if (!dropdown || !optionsEl || dropdown.classList.contains('hidden')) {
+      return;
+    }
+
+    dropdown.classList.remove('tag-editor-dropdown-up');
+    dropdown.style.removeProperty('--tag-editor-options-max-height');
+
+    const boundsEl = editorEl.closest('.modal');
+    const boundsRect = boundsEl
+      ? boundsEl.getBoundingClientRect()
+      : { top: 12, bottom: window.innerHeight - 12 };
+    const editorRect = editorEl.getBoundingClientRect();
+    const gutter = 12;
+    const spaceBelow = Math.max(0, Math.floor(boundsRect.bottom - editorRect.bottom - gutter));
+    const spaceAbove = Math.max(0, Math.floor(editorRect.top - boundsRect.top - gutter));
+    const chromeHeight = Math.max(72, dropdown.offsetHeight - optionsEl.offsetHeight);
+    const requiredHeight = dropdown.offsetHeight;
+    const openUp = spaceBelow < requiredHeight && spaceAbove > spaceBelow;
+    const availableSpace = Math.max(120, (openUp ? spaceAbove : spaceBelow) - chromeHeight);
+
+    if (openUp) {
+      dropdown.classList.add('tag-editor-dropdown-up');
+    }
+    dropdown.style.setProperty('--tag-editor-options-max-height', `${Math.min(220, availableSpace)}px`);
+  };
+
   const render = () => {
     const summary = renderTagEditorBadges(state.tags, wsId, disabled);
     const plusButton = disabled
@@ -2411,6 +2445,10 @@ function initTagEditor(editorEl, opts = {}) {
       + `</div>`
       + `</div>`
       + `</div>`;
+
+    if (state.pickerOpen && !disabled) {
+      requestAnimationFrame(syncDropdownPlacement);
+    }
   };
 
   const setTags = (nextTags) => {
@@ -3773,13 +3811,6 @@ function showTransitionConfirmation(fromState, toState, onConfirm, onCancel) {
   cancelBtn.addEventListener('click', () => {
     modal.classList.add('hidden');
     if (onCancel) onCancel();
-  });
-
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) {
-      modal.classList.add('hidden');
-      if (onCancel) onCancel();
-    }
   });
 
   modal.classList.remove('hidden');
@@ -5760,19 +5791,6 @@ async function refreshActiveAgentTail() {
     if (out) out.textContent = `Unable to read run output.\n\n${e.message || e}`;
   }
 }
-
-// Close modals on overlay click
-document.querySelectorAll('.modal-overlay').forEach(el => {
-  el.addEventListener('click', (e) => {
-    if (e.target === el) {
-      if (el.id === 'active-agents-modal') {
-        closeActiveAgentsModal();
-      } else {
-        el.classList.add('hidden');
-      }
-    }
-  });
-});
 
 // Close modals on Escape key
 document.addEventListener('keydown', (e) => {

@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,3 +57,32 @@ def test_display_path_falls_back_to_absolute_for_external_paths(tmp_path, monkey
     monkeypatch.setattr(dev_servers, "BASE_DIR", monkeypatch_base_dir)
 
     assert dev_servers._display_path(external_path) == str(external_path)
+
+
+def test_reload_dotenv_overrides_existing_values(monkeypatch, tmp_path):
+    base_dir = tmp_path / "foundation"
+    base_dir.mkdir()
+    (base_dir / ".env").write_text("COPILOT_CODING_LLM=gpt-5.4\n", encoding="utf-8")
+    monkeypatch.setattr(dev_servers, "BASE_DIR", base_dir)
+    monkeypatch.setattr(dev_servers, "load_dotenv", __import__("dotenv").load_dotenv)
+    monkeypatch.setenv("COPILOT_CODING_LLM", "gpt-5.3-codex")
+
+    dev_servers._reload_dotenv()
+
+    assert os.environ["COPILOT_CODING_LLM"] == "gpt-5.4"
+
+
+def test_build_processes_uses_current_workstream_root(monkeypatch, tmp_path):
+    base_dir = tmp_path / "foundation"
+    base_dir.mkdir()
+    workstream_root = tmp_path / "updated_root"
+    artifact_root = tmp_path / "artifacts_root"
+    monkeypatch.setattr(dev_servers, "BASE_DIR", base_dir)
+    monkeypatch.setattr(dev_servers, "resolve_workstream_root", lambda _: str(workstream_root))
+    monkeypatch.setattr(dev_servers, "resolve_artifact_root", lambda _: str(artifact_root))
+
+    processes = dev_servers._build_processes("/tmp/python")
+
+    assert processes[0].cmd[4] == str(workstream_root)
+    assert processes[1].cmd[-1] == str(workstream_root)
+    assert processes[0].log_path == artifact_root / "artifacts" / "logs" / "scheduler.log"

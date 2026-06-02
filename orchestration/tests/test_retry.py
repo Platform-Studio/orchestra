@@ -6,13 +6,13 @@ import yaml
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
-from orchestration.workstreams import create_workstream
+from orchestration.workstreams import create_workstream, save_workstream
 from orchestration.tasks import create_task, read_task, _save_task
 from orchestration.locks import (
     acquire_lock, lock_status, force_release_lock,
     find_expired_locks, find_orphaned_locks, update_lock_pid,
 )
-from orchestration.models import RetryConfig, Lock
+from orchestration.models import RetryConfig, Lock, Trigger
 from orchestration.retry import (
     handle_expired_lock, cleanup_expired_locks, manual_retry,
     cleanup_orphaned_locks,
@@ -339,6 +339,37 @@ class TestHandleExpiredLock:
         audit_types = [a.type for a in t.audit]
         assert "lock_expired" in audit_types
         assert "retry_scheduled" in audit_types
+
+    @patch("orchestration.retry._kill_process", return_value=None)
+    def test_matching_state_trigger_skips_task_schedule(self, mock_kill, workspace, ws):
+        ws.triggers = [
+            Trigger(id="trigger-1", action="run_agent", on_state="pending", agent="sorter")
+        ]
+        save_workstream(ws, workspace)
+
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        task.add_audit("agent_started", "Agent 'sorter' started processing")
+        _save_task(task, workspace)
+        _make_expired_lock(task.id, workspace)
+
+        expired = find_expired_locks(workspace)
+        lock = expired[0]["lock"]
+
+        result = handle_expired_lock(task.id, ws.id, lock, workspace)
+
+        assert "retry_available" in result["actions"]
+        assert "retry_scheduled" not in result["actions"]
+        assert result["retry_count"] == 1
+        assert "next_run_at" not in result
+
+        t = read_task(task.id, workspace)
+        assert t.retry_count == 1
+        assert t.scheduled_at is None
+        assert t.scheduled_action is None
+
+        audit_types = [a.type for a in t.audit]
+        assert "retry_available" in audit_types
+        assert "retry_scheduled" not in audit_types
 
     @patch("orchestration.retry._kill_process", return_value=None)
     def test_max_retries_moves_to_failed(self, mock_kill, workspace, task, ws):

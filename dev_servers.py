@@ -18,15 +18,13 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
 except ImportError:
-    pass
+    load_dotenv = None
 
 from orchestration.persistence import resolve_artifact_root, resolve_workstream_root
 
 
 BASE_DIR = Path(__file__).resolve().parent
-ORCHESTRATION_BASE_DIR = Path(resolve_workstream_root(str(BASE_DIR))).resolve()
 
 WATCH_ROOTS = [
     BASE_DIR / "orchestration",
@@ -58,6 +56,16 @@ IGNORE_DIRS = {
 STARTUP_GRACE_SECONDS = 0.75
 
 
+def _reload_dotenv() -> None:
+    if load_dotenv is None:
+        return
+    load_dotenv(BASE_DIR / ".env", override=True)
+
+
+def _orchestration_base_dir() -> Path:
+    return Path(resolve_workstream_root(str(BASE_DIR))).resolve()
+
+
 @dataclass
 class ManagedProc:
     name: str
@@ -79,7 +87,7 @@ def _tail_log(path: Path, lines: int = 20) -> str:
 
 
 def _orchestration_cli_json(py_executable: str, args: list[str]) -> dict:
-    cmd = [py_executable, "-m", "orchestration.cli", "--base-dir", str(ORCHESTRATION_BASE_DIR)] + args
+    cmd = [py_executable, "-m", "orchestration.cli", "--base-dir", str(_orchestration_base_dir())] + args
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(BASE_DIR))
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"command failed: {' '.join(cmd)}")
@@ -252,13 +260,32 @@ def start_managed(proc: ManagedProc) -> None:
     _ensure_process_started(proc)
 
 
-def restart_all(processes: list[ManagedProc], reason: str) -> None:
+def _build_processes(py_executable: str) -> list[ManagedProc]:
+    orchestration_base_dir = _orchestration_base_dir()
+    log_dir = _log_dir()
+    return [
+        ManagedProc(
+            name="scheduler",
+            cmd=[py_executable, "-m", "orchestration.cli", "--base-dir", str(orchestration_base_dir), "scheduler", "run"],
+            log_path=log_dir / "scheduler.log",
+        ),
+        ManagedProc(
+            name="web",
+            cmd=[py_executable, "-m", "workstream_manager", "--port", "8080", "--base-dir", str(orchestration_base_dir)],
+            log_path=log_dir / "workstream_manager.log",
+        ),
+    ]
+
+
+def restart_all(processes: list[ManagedProc], py_executable: str, reason: str) -> list[ManagedProc]:
+    _reload_dotenv()
+    fresh_processes = _build_processes(py_executable)
     print(f"\n[dev-servers] restarting services ({reason})", flush=True)
     for proc in processes:
         stop_managed(proc)
     started: list[ManagedProc] = []
     try:
-        for proc in processes:
+        for proc in fresh_processes:
             start_managed(proc)
             started.append(proc)
             pid = proc.popen.pid if proc.popen else "?"
@@ -267,6 +294,7 @@ def restart_all(processes: list[ManagedProc], reason: str) -> None:
         for proc in started:
             stop_managed(proc)
         raise
+    return fresh_processes
 
 
 def parse_args() -> argparse.Namespace:
@@ -283,22 +311,11 @@ def main() -> int:
         print("[dev-servers] error: .venv Python not found. Create/activate .venv first.", file=sys.stderr)
         return 1
 
-    log_dir = _log_dir()
-    processes = [
-        ManagedProc(
-            name="scheduler",
-            cmd=[py, "-m", "orchestration.cli", "--base-dir", str(ORCHESTRATION_BASE_DIR), "scheduler", "run"],
-            log_path=log_dir / "scheduler.log",
-        ),
-        ManagedProc(
-            name="web",
-            cmd=[py, "-m", "workstream_manager", "--port", "8080", "--base-dir", str(ORCHESTRATION_BASE_DIR)],
-            log_path=log_dir / "workstream_manager.log",
-        ),
-    ]
+    _reload_dotenv()
+    processes = _build_processes(py)
 
     try:
-        restart_all(processes, "initial start")
+        processes = restart_all(processes, py, "initial start")
     except Exception as exc:
         print(f"[dev-servers] startup failed: {exc}", file=sys.stderr)
         return 1
@@ -314,7 +331,7 @@ def main() -> int:
                 preview = "; ".join(changes[:3])
                 more = f" (+{len(changes) - 3} more)" if len(changes) > 3 else ""
                 try:
-                    restart_all(processes, f"file changes: {preview}{more}")
+                    processes = restart_all(processes, py, f"file changes: {preview}{more}")
                 except Exception as exc:
                     print(f"[dev-servers] restart failed: {exc}", file=sys.stderr)
                 prev = now

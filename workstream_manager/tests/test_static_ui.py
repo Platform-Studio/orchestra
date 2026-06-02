@@ -99,6 +99,15 @@ def test_task_modal_close_restores_workstream_route() -> None:
     assert "await selectWorkstream(task.workstream_id, {" in html
 
 
+def test_modals_require_explicit_close_controls_instead_of_backdrop_clicks() -> None:
+    html = _index_html()
+
+    assert "modal.addEventListener('click', (e) => {" not in html
+    assert "if (e.target === el) {" not in html
+    assert "document.querySelectorAll('.modal-overlay').forEach(el => {" in html
+    assert "if (e.key === 'Escape') {" in html
+
+
 def test_triggers_modal_labels_state_task_selection_mode() -> None:
     html = _index_html()
 
@@ -344,6 +353,17 @@ def test_tag_editor_loads_workstream_catalog_and_can_create_colored_tags() -> No
     assert 'colorSelect.style.background = state.draftColor;' in html
     assert 'colorSelect.style.color = getTagColorText(state.draftColor);' in html
     assert '>${esc(option.label)}</option>' in html
+
+
+def test_tag_picker_repositions_within_modal_when_space_below_is_tight() -> None:
+    html = _index_html()
+
+    assert '.tag-editor-dropdown.tag-editor-dropdown-up {' in html
+    assert 'max-height: var(--tag-editor-options-max-height);' in html
+    assert 'const syncDropdownPlacement = () => {' in html
+    assert "const boundsEl = editorEl.closest('.modal');" in html
+    assert "dropdown.classList.add('tag-editor-dropdown-up');" in html
+    assert 'requestAnimationFrame(syncDropdownPlacement);' in html
     assert 'data-tag-option-checkbox="${encodeURIComponent(tag.name)}"' in html
     assert 'data-tag-create-input="true"' in html
     assert 'data-tag-create-color="true"' in html

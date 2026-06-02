@@ -108,6 +108,46 @@ def _find_last_agent(task) -> dict:
     return None
 
 
+def _state_trigger_can_retry_task(task, workstream, action, base_dir=".") -> bool:
+    """Return True when normal state triggers will re-dispatch this retry.
+
+    This keeps expired-lock cleanup from creating redundant one-shot schedules for
+    tasks that are already in a triggerable state for the same agent.
+    """
+    if not isinstance(action, dict) or action.get("type") != "run_agent":
+        return False
+    if getattr(workstream, "paused", False):
+        return False
+
+    task_state = str(getattr(task, "status", "") or "").strip()
+    action_agent = str(action.get("agent", "") or "").strip()
+    if not task_state or not action_agent:
+        return False
+
+    paused_states = {str(state or "").strip() for state in (getattr(workstream, "paused_states", []) or [])}
+    if task_state in paused_states:
+        return False
+
+    from .agents import _agent_identity_keys
+
+    action_keys = _agent_identity_keys(action_agent, base_dir=base_dir) or {action_agent.lower()}
+    for trigger in getattr(workstream, "triggers", []) or []:
+        if getattr(trigger, "paused", False):
+            continue
+        if str(getattr(trigger, "on_state", "") or "").strip() != task_state:
+            continue
+        if getattr(trigger, "action", None) != "run_agent":
+            continue
+
+        trigger_agent = str(getattr(trigger, "agent", "") or "").strip()
+        if not trigger_agent:
+            continue
+        trigger_keys = _agent_identity_keys(trigger_agent, base_dir=base_dir) or {trigger_agent.lower()}
+        if action_keys & trigger_keys:
+            return True
+    return False
+
+
 def handle_expired_lock(task_id, workstream_id, lock, base_dir="."):
     """Handle a single expired lock: kill process, clean up, decide retry.
 
@@ -194,15 +234,8 @@ def handle_expired_lock(task_id, workstream_id, lock, base_dir="."):
     task.last_failure_at = now_iso()
 
     if task.retry_count < retry_config.max_retries:
-        # Schedule retry with backoff
-        backoff = _compute_backoff(retry_config, task.retry_count)
-        retry_at = datetime.now(timezone.utc) + timedelta(seconds=backoff)
-
         # Find what agent to re-run
         action = _find_last_agent(task)
-
-        task.scheduled_at = retry_at.isoformat()
-        task.scheduled_action = action
 
         # Transition back to pending if currently in_progress
         if task.status == "in_progress" and ws.validate_transition(task.status, "pending"):
@@ -215,18 +248,43 @@ def handle_expired_lock(task_id, workstream_id, lock, base_dir="."):
                 task.status = initial
                 task.add_audit("status_change", f"Status changed from 'in_progress' to '{initial}'")
 
-        task.add_audit("retry_scheduled",
-            f"Retry {task.retry_count}/{retry_config.max_retries} "
-            f"scheduled for {retry_at.isoformat()} (backoff: {backoff}s)")
-        log_event("retry_scheduled",
-            f"Retry {task.retry_count}/{retry_config.max_retries} for task '{task.title}' in {backoff}s",
-            base_dir,
-            task_id=task_id, workstream_id=workstream_id,
-            retry_count=task.retry_count, max_retries=retry_config.max_retries,
-            next_run_at=retry_at.isoformat())
-        result["actions"].append("retry_scheduled")
+        if _state_trigger_can_retry_task(task, ws, action, base_dir=base_dir):
+            task.scheduled_at = None
+            task.scheduled_action = None
+            task.add_audit(
+                "retry_available",
+                f"Retry {task.retry_count}/{retry_config.max_retries} left to normal state triggers.",
+            )
+            log_event(
+                "retry_available",
+                f"Retry {task.retry_count}/{retry_config.max_retries} for task '{task.title}' left to state triggers",
+                base_dir,
+                task_id=task_id,
+                workstream_id=workstream_id,
+                retry_count=task.retry_count,
+                max_retries=retry_config.max_retries,
+            )
+            result["actions"].append("retry_available")
+        else:
+            # Schedule retry with backoff when no matching state trigger will pick it up.
+            backoff = _compute_backoff(retry_config, task.retry_count)
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=backoff)
+
+            task.scheduled_at = retry_at.isoformat()
+            task.scheduled_action = action
+            task.add_audit("retry_scheduled",
+                f"Retry {task.retry_count}/{retry_config.max_retries} "
+                f"scheduled for {retry_at.isoformat()} (backoff: {backoff}s)")
+            log_event("retry_scheduled",
+                f"Retry {task.retry_count}/{retry_config.max_retries} for task '{task.title}' in {backoff}s",
+                base_dir,
+                task_id=task_id, workstream_id=workstream_id,
+                retry_count=task.retry_count, max_retries=retry_config.max_retries,
+                next_run_at=retry_at.isoformat())
+            result["actions"].append("retry_scheduled")
+            result["next_run_at"] = retry_at.isoformat()
+
         result["retry_count"] = task.retry_count
-        result["next_run_at"] = retry_at.isoformat()
     else:
         # Max retries exceeded — move to failed
         if ws.validate_transition(task.status, "failed"):
