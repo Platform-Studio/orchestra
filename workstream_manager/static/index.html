@@ -4807,8 +4807,17 @@ async function showWorkstreamSettings() {
   const concurrencyPolicy = JSON.stringify(data.agent_concurrency || {}, null, 2);
   const concurrencyExample = JSON.stringify({
     default: 1,
-    overrides: {
-      'Coder': 2,
+    state_overrides: {
+      'Staging Deploy': {
+        overrides: {
+          devops: 1,
+        },
+      },
+      'Production Deploy': {
+        overrides: {
+          devops: 1,
+        },
+      },
     },
   }, null, 2);
   const workstreamName = selectedWs && selectedWs.id === selectedWsId ? selectedWs.name : selectedWsId;
@@ -4823,9 +4832,9 @@ async function showWorkstreamSettings() {
     <div class="ws-info-uid">${esc(workstreamName)} (${esc(selectedWsId)})</div>
     <div class="ws-sm-section" style="margin-top:0;">
       <h4>Concurrency Policy</h4>
-      <div class="ws-sm-note">Optional JSON policy for per-agent limits. Use <code>state_overrides</code> when the same agent should have separate slots in different states.</div>
-      <textarea id="workstream-concurrency-textarea" class="ws-context-textarea" placeholder='{"default":1,"state_overrides":{"Staging Deploy":{"overrides":{"DevOps Engineer":1}},"Production Deploy":{"overrides":{"DevOps Engineer":1}}}}'>${esc(concurrencyPolicy)}</textarea>
-      <div class="ws-sm-note" style="margin-top:10px; margin-bottom:6px;">Simple example</div>
+      <div class="ws-sm-note">Optional JSON policy for per-agent limits. Use <code>state_overrides</code> when the same agent should have separate slots in different states. Use agent refs such as <code>devops</code> for overrides.</div>
+      <textarea id="workstream-concurrency-textarea" class="ws-context-textarea" placeholder='{"default":1,"state_overrides":{"Staging Deploy":{"overrides":{"devops":1}},"Production Deploy":{"overrides":{"devops":1}}}}'>${esc(concurrencyPolicy)}</textarea>
+      <div class="ws-sm-note" style="margin-top:10px; margin-bottom:6px;">Example: separate DevOps slots per deploy state</div>
       <pre class="ws-sm-pre">${esc(concurrencyExample)}</pre>
       <div class="ws-context-actions">
         <button class="ws-context-save" onclick="saveWorkstreamConcurrency()">Save Concurrency Policy</button>

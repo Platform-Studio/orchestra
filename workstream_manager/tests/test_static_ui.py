@@ -272,10 +272,13 @@ def test_workstream_info_includes_agent_concurrency_editor() -> None:
 
     assert 'id="workstream-concurrency-textarea"' in html
     assert 'Concurrency Policy' in html
-    assert 'Simple example' in html
+    assert 'Example: separate DevOps slots per deploy state' in html
     assert 'saveWorkstreamConcurrency()' in html
     assert "api('workstream/concurrency/' + selectedWsId" in html
     assert 'state_overrides' in html
+    assert 'Staging Deploy' in html
+    assert 'Production Deploy' in html
+    assert 'devops' in html
 
 
 def test_sidebar_uses_separate_data_and_code_mount_badges() -> None:
