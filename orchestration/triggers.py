@@ -272,8 +272,8 @@ def resume_trigger(trigger_id: str, base_dir: str = ".") -> Trigger:
 def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
     """Kick off a trigger immediately in a background thread.
 
-    Schedule-based triggers can be run manually at any time. State-based
-    triggers can be force-run while a workstream is paused, which executes the
+    Schedule-based and state-based triggers can be run manually at any time,
+    including while a workstream is paused. State-based triggers execute the
     first currently eligible task in the trigger's state as if pause were not
     set. Results are visible in the audit log.
     """
@@ -286,8 +286,6 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                 continue
             if trigger.on_schedule is None and trigger.on_state is None:
                 raise ValueError("Run Now is only supported for schedule-based or state-based triggers")
-            if ws.paused and trigger.on_state is None:
-                raise RuntimeError(f"Workstream '{ws.name}' is paused")
             pause_reason = trigger_pause_reason(trigger, ws)
             if pause_reason:
                 raise RuntimeError(pause_reason)
@@ -301,9 +299,8 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                 from .locks import lock_status
                 try:
                     manual_task_ids = []
-                    ignore_paused = False
+                    ignore_paused = True
                     if _trigger.on_state is not None:
-                        ignore_paused = True
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
                         manual_task_ids = [
                             task.id for task in tasks
@@ -326,14 +323,26 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                                 ignore_paused=ignore_paused,
                             )
                     elif _trigger.filter is None:
-                        result = _lock_invoke_unlock(_trigger, [], _ws, base_dir)
+                        result = _lock_invoke_unlock(
+                            _trigger,
+                            [],
+                            _ws,
+                            base_dir,
+                            ignore_paused=ignore_paused,
+                        )
                     else:
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
                         matching_ids = [
                             t.id for t in tasks
                             if _task_matches_filter(t, _trigger.filter)
                         ]
-                        result = _lock_invoke_unlock(_trigger, matching_ids, _ws, base_dir)
+                        result = _lock_invoke_unlock(
+                            _trigger,
+                            matching_ids,
+                            _ws,
+                            base_dir,
+                            ignore_paused=ignore_paused,
+                        )
                     audit_ids = manual_task_ids if _trigger.on_state else (matching_ids if _trigger.filter else [])
                     if result.get("status") not in ("dispatched",):
                         _audit_trigger(_trigger, result, _ws, base_dir, task_ids=audit_ids)
