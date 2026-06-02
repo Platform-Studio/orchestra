@@ -125,7 +125,7 @@ class TestDeleteTrigger:
 
 
 class TestRunTriggerNow:
-    def test_schedule_trigger_run_now_rejects_paused_workstream(self, workspace, ws):
+    def test_schedule_trigger_run_now_allows_paused_workstream(self, workspace, ws):
         ws.paused = True
         save_workstream(ws, workspace)
         trigger = create_trigger(
@@ -136,8 +136,10 @@ class TestRunTriggerNow:
             base_dir=workspace,
         )
 
-        with pytest.raises(RuntimeError, match="paused"):
-            run_trigger_now(trigger.id, base_dir=workspace)
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
+        assert result["trigger_id"] == trigger.id
 
     def test_state_trigger_run_now_uses_first_matching_task_while_paused(self, workspace, ws, monkeypatch):
         ws.paused = True
@@ -1080,8 +1082,8 @@ class TestRunTriggerNow:
         assert result["status"] == "started"
         assert result["trigger_id"] == trigger.id
 
-    def test_run_now_rejects_paused_workstream(self, workspace, ws):
-        """Run Now should refuse to execute when workstream is paused."""
+    def test_run_now_allows_schedule_trigger_on_paused_workstream(self, workspace, ws):
+        """Run Now should execute schedule triggers even when the workstream is paused."""
         from orchestration.workstreams import save_workstream
 
         ws.paused = True
@@ -1091,8 +1093,11 @@ class TestRunTriggerNow:
             ws.id, on_schedule="0 9 * * *", action="run_command",
             command="echo nope", base_dir=workspace,
         )
-        with pytest.raises(RuntimeError, match="paused"):
-            run_trigger_now(trigger.id, base_dir=workspace)
+
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
+        assert result["trigger_id"] == trigger.id
 
     def test_run_now_not_found(self, workspace, ws):
         """Run Now raises FileNotFoundError for unknown trigger ID."""
