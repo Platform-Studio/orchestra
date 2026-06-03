@@ -520,3 +520,90 @@ class TestTick:
         assert dispatched == [("In Progress", [in_progress.id])]
         assert result["state_triggers_fired"][0]["task_ids"] == [in_progress.id]
         assert result["state_triggers_fired"][1]["result"]["reason"] == "agent_concurrency reached"
+
+
+# ── Paused tasks ────────────────────────────────────────────────────
+
+class TestPausedTasksAreNotPickedUp:
+    def test_task_filter_excludes_paused_task(self, workspace, ws):
+        from orchestration.tasks import pause_task
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        assert _task_matches_filter(task, {"state": "To Do"}) is True
+
+        paused = pause_task(task.id, base_dir=workspace)
+        assert _task_matches_filter(paused, {"state": "To Do"}) is False
+
+    def test_state_trigger_skips_paused_tasks(self, workspace, ws, monkeypatch):
+        from orchestration.tasks import pause_task
+
+        unpaused = create_task(ws.id, title="Pickable", base_dir=workspace)
+        paused = create_task(ws.id, title="Paused", base_dir=workspace)
+        pause_task(paused.id, base_dir=workspace)
+
+        create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_command",
+            command="echo go",
+            base_dir=workspace,
+        )
+
+        dispatched = []
+
+        def _fake_lock_invoke_unlock(trigger, task_ids, *_args, **_kwargs):
+            dispatched.append(list(task_ids))
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        tick(workspace)
+
+        assert dispatched == [[unpaused.id]]
+
+    def test_state_trigger_skips_when_only_paused_tasks(self, workspace, ws, monkeypatch):
+        from orchestration.tasks import pause_task
+
+        only_paused = create_task(ws.id, title="Only Paused", base_dir=workspace)
+        pause_task(only_paused.id, base_dir=workspace)
+
+        create_trigger(
+            ws.id,
+            on_state="To Do",
+            action="run_command",
+            command="echo go",
+            base_dir=workspace,
+        )
+
+        dispatched = []
+
+        def _fake_lock_invoke_unlock(trigger, task_ids, *_args, **_kwargs):
+            dispatched.append(list(task_ids))
+            return {"status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        result = tick(workspace)
+
+        assert dispatched == []
+        # No state trigger should have fired
+        assert result["state_triggers_fired"] == []
+
+    def test_tick_skips_due_task_schedule_when_task_paused(self, workspace, ws):
+        from orchestration.tasks import pause_task
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        task = create_task(
+            ws.id, title="Paused Schedule",
+            scheduled_at=past,
+            scheduled_action={"type": "run_command", "command": "echo no"},
+            base_dir=workspace,
+        )
+        pause_task(task.id, base_dir=workspace)
+
+        result = tick(workspace)
+
+        assert len(result["task_schedules_fired"]) == 0
+        reloaded = read_task(task.id, base_dir=workspace)
+        # schedule should still be set since the task was paused
+        assert reloaded.scheduled_at == past
+

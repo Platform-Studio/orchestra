@@ -369,6 +369,18 @@ def cmd_task_clear_schedule(args):
     _output(task.to_dict())
 
 
+def cmd_task_pause(args):
+    from .tasks import pause_task
+    task = pause_task(args.task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_resume(args):
+    from .tasks import resume_task
+    task = resume_task(args.task_id, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
 def cmd_task_reorder(args):
     from .tasks import reorder_tasks_in_workstream
     result = reorder_tasks_in_workstream(args.workstream_id, base_dir=args.base_dir)
@@ -968,6 +980,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = task_sub.add_parser("clear-schedule")
     p.add_argument("task_id")
     p.set_defaults(func=cmd_task_clear_schedule)
+
+    p = task_sub.add_parser("pause")
+    p.add_argument("task_id")
+    p.set_defaults(func=cmd_task_pause)
+
+    p = task_sub.add_parser("resume")
+    p.add_argument("task_id")
+    p.set_defaults(func=cmd_task_resume)
 
     p = task_sub.add_parser("move")
     p.add_argument("task_id")

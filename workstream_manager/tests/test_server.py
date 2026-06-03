@@ -225,6 +225,8 @@ _PATCHES = {
     "move_task_before":  "workstream_manager.server.move_task_before",
     "move_task_after":   "workstream_manager.server.move_task_after",
     "move_task_to_index": "workstream_manager.server.move_task_to_index",
+    "pause_task":        "workstream_manager.server.pause_task",
+    "resume_task":       "workstream_manager.server.resume_task",
     "_run_orchestration_cli": "workstream_manager.server._run_orchestration_cli",
     "lock_status":      "workstream_manager.server.lock_status",
     "lock_status_for_workstream": "workstream_manager.server.lock_status_for_workstream",
@@ -914,6 +916,22 @@ class TestTask:
         api.mocks["archive_task"].return_value = {"archived": True}
         code, body = api.post("/api/task/archive/t-1")
         assert code == 200
+
+    def test_pause(self, api):
+        api.mocks["pause_task"].return_value = _fake_task()
+        code, body = api.post("/api/task/pause/t-1")
+        assert code == 200
+        call = api.mocks["pause_task"].call_args
+        assert call.args == ("t-1",)
+        assert call.kwargs.get("base_dir")
+
+    def test_resume(self, api):
+        api.mocks["resume_task"].return_value = _fake_task()
+        code, body = api.post("/api/task/resume/t-1")
+        assert code == 200
+        call = api.mocks["resume_task"].call_args
+        assert call.args == ("t-1",)
+        assert call.kwargs.get("base_dir")
 
     def test_audit(self, api):
         api.mocks["get_audit"].return_value = [

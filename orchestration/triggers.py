@@ -304,7 +304,9 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
                         manual_task_ids = [
                             task.id for task in tasks
-                            if task.status == _trigger.on_state and lock_status(task.id, base_dir) is None
+                            if task.status == _trigger.on_state
+                            and not getattr(task, "paused", False)
+                            and lock_status(task.id, base_dir) is None
                         ]
                         if not manual_task_ids:
                             result = {
