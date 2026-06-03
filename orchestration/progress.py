@@ -303,3 +303,98 @@ def summarize_progress(progress: dict | None) -> dict | None:
 
 def read_progress_summary(run_id: str = None, base_dir: str = ".") -> dict | None:
     return summarize_progress(read_progress(run_id, base_dir=base_dir))
+
+
+def _seconds_since(iso_ts: str | None) -> float | None:
+    if not iso_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(iso_ts))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+
+
+def current_progress(run_id: str = None, base_dir: str = ".") -> dict:
+    """Return a compact view of the currently active checklist item.
+
+    Designed for cheap mid-run polling by agents. Always returns a dict so
+    the CLI never errors on a missing checklist.
+    """
+    resolved_run_id = run_id or _default_run_id()
+    progress = read_progress(resolved_run_id, base_dir=base_dir) if resolved_run_id else None
+    if not progress:
+        return {
+            "run_id": resolved_run_id,
+            "missing": True,
+            "current_item_id": None,
+            "current_item": None,
+        }
+    items = list(progress.get("items") or [])
+    active = next((item for item in items if item.get("status") == "active"), None)
+    inferred = False
+    current = active
+    if current is None:
+        current = next((item for item in items if item.get("status") == "pending"), None)
+        inferred = current is not None
+    counts = {status: 0 for status in sorted(VALID_STATUSES)}
+    for item in items:
+        counts[str(item.get("status") or "pending").lower()] = (
+            counts.get(str(item.get("status") or "pending").lower(), 0) + 1
+        )
+    age_seconds = _seconds_since(current.get("updated_at") if current else None)
+    return {
+        "run_id": progress.get("run_id"),
+        "current_item_id": current.get("id") if current else None,
+        "current_item": current,
+        "inferred_current": inferred,
+        "seconds_since_update": age_seconds,
+        "total": len(items),
+        "done": counts.get("done", 0),
+        "counts": counts,
+        "updated_at": progress.get("updated_at"),
+    }
+
+
+def advance_progress(
+    next_item_id: str,
+    *,
+    run_id: str = None,
+    message: str = None,
+    base_dir: str = ".",
+) -> dict:
+    """Complete the currently active item (if any) and activate next_item_id.
+
+    Convenience for the common 'finished one step, starting the next' rhythm,
+    so agents do not have to issue two separate CLI calls.
+    """
+    resolved_run_id = run_id or _default_run_id()
+    if not resolved_run_id:
+        raise ValueError("run_id is required outside an agent run")
+    target_id = str(next_item_id or "").strip()
+    if not target_id:
+        raise ValueError("next_item_id is required")
+    progress = read_progress(resolved_run_id, base_dir=base_dir)
+    if progress is None:
+        raise FileNotFoundError(f"Progress checklist for run '{resolved_run_id}' not found")
+
+    active = next(
+        (item for item in progress.get("items", []) if item.get("status") == "active"),
+        None,
+    )
+    if active and active.get("id") != target_id:
+        update_progress_item(
+            active["id"],
+            "done",
+            run_id=resolved_run_id,
+            base_dir=base_dir,
+        )
+    return update_progress_item(
+        target_id,
+        "active",
+        run_id=resolved_run_id,
+        message=message,
+        base_dir=base_dir,
+    )

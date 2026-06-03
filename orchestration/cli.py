@@ -640,6 +640,23 @@ def cmd_progress_set(args):
     _output(result)
 
 
+def cmd_progress_current(args):
+    from .progress import current_progress
+    result = current_progress(args.run, base_dir=args.base_dir)
+    _output(result)
+
+
+def cmd_progress_next(args):
+    from .progress import advance_progress
+    result = advance_progress(
+        args.item_id,
+        run_id=args.run,
+        message=args.message,
+        base_dir=args.base_dir,
+    )
+    _output(result)
+
+
 # ── Workstream pause/resume ──────────────────────────────────────────
 
 def cmd_workstream_pause(args):
@@ -1182,6 +1199,16 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
         p.add_argument("--message")
         p.set_defaults(func=cmd_progress_set, status=status)
+
+    p = progress_sub.add_parser("current", help="Show the currently active checklist item for this run")
+    p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
+    p.set_defaults(func=cmd_progress_current)
+
+    p = progress_sub.add_parser("next", help="Complete the currently active item (if any) and activate <item_id>")
+    p.add_argument("item_id")
+    p.add_argument("--run", default=None, help="Agent run ID; defaults to ORCHESTRATION_AGENT_RUN_ID")
+    p.add_argument("--message")
+    p.set_defaults(func=cmd_progress_next)
 
     # ── Scheduler ────────────────────────────────────────────────────
     sched_parser = subparsers.add_parser("scheduler")
