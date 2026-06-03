@@ -140,15 +140,19 @@ def test_board_columns_include_pause_controls() -> None:
 def test_task_cards_include_pause_controls() -> None:
     html = _index_html()
 
-    # Pause button is rendered inside each card.
+    # Pause button is rendered inside each card with an inline click handler
+    # that prevents the parent card's click from firing.
     assert 'data-task-pause-id="${esc(task.id)}"' in html
     assert 'class="card-pause-btn' in html
-    # Click handler wiring and async toggle function.
-    assert "board.querySelectorAll('[data-task-pause-id]')" in html
+    assert "onclick=\"event.stopPropagation(); toggleTaskPause('${esc(task.id)}', this)\"" in html
+    # Async toggle function calls the pause/resume API.
     assert 'async function toggleTaskPause(taskId, btn)' in html
     assert "api(`task/${action}/${taskId}`" in html
     # Paused-card visual styling.
     assert '.card.card-paused {' in html
+    # Button is positioned in the top-right corner of the card.
+    assert '.card-pause-btn {' in html
+    assert 'position: absolute;' in html
 
 
 def test_triggers_modal_includes_pause_controls_and_column_pause_badges() -> None:
