@@ -148,6 +148,8 @@ def test_task_cards_include_pause_controls() -> None:
     # Async toggle function calls the pause/resume API.
     assert 'async function toggleTaskPause(taskId, btn)' in html
     assert "api(`task/${action}/${taskId}`" in html
+    assert 'paused: !!t.paused' in html
+    assert 'const ICON_PLAY = \'<svg viewBox="0 0 24 24" fill="currentColor" stroke="none">' in html
     # Paused-card visual styling.
     assert '.card.card-paused {' in html
     # Button is positioned in the top-right corner of the card.
