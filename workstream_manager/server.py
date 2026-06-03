@@ -180,6 +180,8 @@ def _serialize_board_tasks(tasks):
             task_dict["retry_count"] = task.retry_count
         if getattr(task, "last_failure_at", None) is not None:
             task_dict["last_failure_at"] = task.last_failure_at
+        if getattr(task, "paused", False):
+            task_dict["paused"] = True
         if hasattr(task, "_parse_error"):
             task_dict["_error"] = task._parse_error
         task_dict["lock"] = {"locked": False}

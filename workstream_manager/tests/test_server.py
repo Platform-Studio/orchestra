@@ -570,6 +570,7 @@ class TestBoard:
             scheduled_at="2026-01-01T01:00:00",
             retry_count=2,
             last_failure_at="2026-01-01T02:00:00",
+            paused=True,
         )
         api.mocks["read_workstream"].return_value = ws
         api.mocks["list_tasks"].return_value = [t]
@@ -585,6 +586,7 @@ class TestBoard:
         assert task["scheduled_at"] == "2026-01-01T01:00:00"
         assert task["retry_count"] == 2
         assert task["last_failure_at"] == "2026-01-01T02:00:00"
+        assert task["paused"] is True
         assert "description" not in task
         assert "comments" not in task
         assert "audit" not in task
@@ -807,6 +809,14 @@ class TestTask:
         code, body = api.get("/api/task/list/ws-1")
         assert code == 200
         assert len(body["data"]) == 1
+
+    def test_list_includes_paused_state(self, api):
+        api.mocks["list_tasks"].return_value = [_fake_task(paused=True)]
+
+        code, body = api.get("/api/task/list/ws-1")
+
+        assert code == 200
+        assert body["data"][0]["paused"] is True
 
     def test_list_with_filters(self, api):
         api.mocks["list_tasks"].return_value = []
@@ -1229,7 +1239,7 @@ class TestSound:
 class TestPollBoard:
     def test_poll_with_board_id(self, api):
         ws = _fake_workstream()
-        t = _fake_task()
+        t = _fake_task(paused=True)
         api.mocks["list_workstreams"].return_value = [ws]
         api.mocks["_task_counts_by_workstream"].return_value = {"ws-1": 1}
         api.mocks["list_tasks"].return_value = [t]
@@ -1243,6 +1253,7 @@ class TestPollBoard:
         assert data["board"]["workstream"]["id"] == "ws-1"
         assert len(data["board"]["tasks"]) == 1
         assert data["board"]["tasks"][0]["lock"]["locked"] is False
+        assert data["board"]["tasks"][0]["paused"] is True
 
     def test_poll_status_skips_workstream_and_task_routes(self, api):
         api.mocks["scheduler_status"].return_value = {"running": False}
