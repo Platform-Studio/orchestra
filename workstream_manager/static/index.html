@@ -692,6 +692,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 
 /* ── Task cards ───────────────────────────────────────────────── */
 .card {
+  position: relative;
   background: #2d333b; border-radius: 4px; padding: 8px 10px;
   margin-bottom: 6px; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
   transition: background 0.12s;
@@ -708,7 +709,44 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   min-width: 40px; border-radius: 4px; padding: 2px 8px;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.card-title { font-size: 14px; margin-bottom: 4px; color: #e6edf3; }
+.card-title { font-size: 14px; margin-bottom: 4px; color: #e6edf3; padding-right: 22px; }
+.card-pause-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: rgba(13,17,23,0.35);
+  color: #c9d1d9;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  z-index: 2;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+  opacity: 0.85;
+}
+.card-pause-btn:hover {
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  opacity: 1;
+}
+.card-pause-btn.paused {
+  border-color: rgba(210,153,34,0.55);
+  background: rgba(210,153,34,0.18);
+  color: #d29922;
+  opacity: 1;
+}
+.card-pause-btn svg { width: 13px; height: 13px; pointer-events: none; }
+.card.card-paused {
+  opacity: 0.78;
+  border-left: 3px solid #d29922;
+  padding-left: 7px;
+}
+.card.card-paused:hover { opacity: 0.95; }
 .card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .card-agent-separator {
   margin: 6px 0 4px;
@@ -2627,7 +2665,7 @@ const ICON_LOCK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" s
 const ICON_SCHEDULE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>';
 const ICON_AGENT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><circle cx="15" cy="10" r="1.5"/><path d="M9 15h6"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
-const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M8 5v14l11-7z"/></svg>';
+const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>';
 
 function getPausedStates(ws = selectedWs) {
   return Array.isArray(ws && ws.paused_states) ? ws.paused_states : [];
@@ -3275,6 +3313,7 @@ function boardRenderKey(ws, tasks, lockMap) {
       id: t.id,
       title: t.title,
       status: t.status,
+      paused: !!t.paused,
       tags: t.tags || [],
       scheduled_at: t.scheduled_at || '',
       retry_count: t.retry_count || 0,
@@ -3632,7 +3671,14 @@ function renderCard(task, lock, state) {
   }
 
   const canDrag = !task._error && !(lock && lock.locked);
-  return `<div class="card${errorClass}" data-task-id="${task.id}" data-state="${esc(state)}" draggable="${canDrag ? 'true' : 'false'}">
+  const isPaused = !!task.paused;
+  const pauseTitle = isPaused ? 'Resume task (allow agent pickup)' : 'Pause task (prevent agent pickup)';
+  const pauseBtn = task._error
+    ? ''
+    : `<button class="card-pause-btn${isPaused ? ' paused' : ''}" type="button" data-task-pause-id="${esc(task.id)}" title="${esc(pauseTitle)}" aria-label="${esc(pauseTitle)}" aria-pressed="${isPaused ? 'true' : 'false'}" onclick="event.stopPropagation(); toggleTaskPause('${esc(task.id)}', this)">${isPaused ? ICON_PLAY : ICON_PAUSE}</button>`;
+  const pausedClass = isPaused ? ' card-paused' : '';
+  return `<div class="card${errorClass}${pausedClass}" data-task-id="${task.id}" data-state="${esc(state)}" draggable="${canDrag ? 'true' : 'false'}">
+    ${pauseBtn}
     ${tagsHtml}
     <div class="card-title">${esc(task.title)}</div>
     ${progressHtml}
@@ -4991,6 +5037,22 @@ async function toggleColumnPause(state, btn) {
     await Promise.all([loadWorkstreams(), loadBoard()]);
   } catch (e) {
     alert('Failed to update column pause state: ' + (e.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function toggleTaskPause(taskId, btn) {
+  if (!taskId) return;
+  const card = btn ? btn.closest('.card') : null;
+  const isPaused = card ? card.classList.contains('card-paused') : false;
+  const action = isPaused ? 'resume' : 'pause';
+  if (btn) btn.disabled = true;
+  try {
+    await api(`task/${action}/${taskId}`, { method: 'POST' });
+    await loadBoard();
+  } catch (e) {
+    alert('Failed to update task pause state: ' + (e.message || e));
   } finally {
     if (btn) btn.disabled = false;
   }

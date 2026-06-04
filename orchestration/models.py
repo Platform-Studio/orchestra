@@ -318,6 +318,7 @@ class Task:
     attachments: list = field(default_factory=list)  # artifact paths
     retry_count: int = 0
     last_failure_at: str = None
+    paused: bool = False
 
     def to_dict(self) -> dict:
         d = {
@@ -330,6 +331,8 @@ class Task:
             "audit": [a.to_dict() for a in self.audit],
             "attachments": self.attachments,
         }
+        if self.paused:
+            d["paused"] = True
         if self.description is not None:
             d["description"] = self.description
         if self.rank is not None:
@@ -371,6 +374,7 @@ class Task:
             attachments=data.get("attachments", []),
             retry_count=data.get("retry_count", 0),
             last_failure_at=data.get("last_failure_at"),
+            paused=bool(data.get("paused", False)),
         )
 
     def add_audit(self, event_type: str, description: str):

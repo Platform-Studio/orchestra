@@ -232,6 +232,9 @@ def _cron_matches_time(parts: list, dt: datetime) -> bool:
 
 def _task_matches_filter(task, filter_def: dict) -> bool:
     """Check if a task matches a trigger filter."""
+    # Paused tasks are never eligible for automatic pickup, regardless of filter.
+    if getattr(task, "paused", False):
+        return False
     # Accept both "state" and "status" as aliases for the task state field
     state_filter = filter_def.get("state") or filter_def.get("status")
     if state_filter is not None:
@@ -677,6 +680,8 @@ def tick(base_dir: str = ".") -> dict:
                 continue
             if task.status in paused_states:
                 continue
+            if getattr(task, "paused", False):
+                continue
             sched_time = datetime.fromisoformat(task.scheduled_at)
             if sched_time.tzinfo is None:
                 sched_time = sched_time.replace(tzinfo=timezone.utc)
@@ -807,9 +812,10 @@ def tick(base_dir: str = ".") -> dict:
                 continue
 
             # Find tasks in the trigger's target state that aren't already locked
+            # or paused.
             matching_ids = [
                 task.id for task in tasks_by_status.get(trigger.on_state, [])
-                if task.id not in active_locks
+                if task.id not in active_locks and not getattr(task, "paused", False)
             ]
             if not matching_ids:
                 continue

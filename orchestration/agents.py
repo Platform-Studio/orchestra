@@ -221,19 +221,38 @@ def _agent_progress_prompt_section(base_dir: str = None, run_id: str = None) -> 
     cli = _orchestration_cli_command(base_dir)
     run_arg = f" --run {run_id}" if run_id else ""
     return (
-        "=== RUN PROGRESS CHECKLIST ===\n"
-        "The progress checklist is user-visible and important: the user may watch it to understand whether the run is alive, focused, and making real progress. Maintain it carefully.\n"
-        "After you have read the task payload, attachments, and enough surrounding context to understand the work, create a progress checklist that is meaningfully broken down into concrete steps.\n"
-        f"- Create it with: {cli} progress init{run_arg} --item '<step 1>' --item '<step 2>' --item '<step 3>'\n"
-        "- Prefer a finer-grained checklist over a 3-step summary. When the task has multiple moving parts, aim for roughly 8-10 items unless the task is genuinely simple.\n"
-        "- Break work into concrete implementation and verification steps where possible. Avoid generic items like 'read the docs', 'do the coding', or 'run tests and handoff' when those can be decomposed into more specific actions.\n"
-        f"- The checklist is allowed to stay fluid until the run is complete. If new necessary work appears, add it with: {cli} progress add{run_arg} --item '<new step>'\n"
-        f"- Before starting a step, mark it active: {cli} progress set-active <item_id>{run_arg}\n"
-        f"- When a step is finished, mark it done: {cli} progress complete <item_id>{run_arg}\n"
-        f"- If a step is blocked, mark it blocked: {cli} progress block <item_id>{run_arg} --message '<blocker>'\n"
-        "- Revisit the checklist whenever the work changes or you finish a meaningful chunk. It is fine, and often correct, to complete more than one finished item during a checklist review pass.\n"
-        "- Before declaring the run done, make one final checklist pass: mark every finished item done, and block or skip anything unresolved with a short message.\n"
-        "Keep exactly one item active while work is in progress. Keep items concrete and user-visible, and update the checklist when the real work changes instead of treating the first draft as fixed."
+        "=== RUN PROGRESS CHECKLIST (MANDATORY) ===\n"
+        "The progress checklist is user-visible: the user watches it in real time to confirm the run is alive, focused, and actually advancing. It is not optional bookkeeping — it is how you report status. Treat every checklist call as a first-class part of doing the work, not as something to do at the end.\n"
+        "\n"
+        "FIRST ACTION AFTER READING CONTEXT:\n"
+        f"As soon as you have read the task payload and the attachments you need (and BEFORE you start any implementation work), you MUST call: {cli} progress init{run_arg} --item '<step 1>' --item '<step 2>' ...\n"
+        "- Aim for 6-10 concrete, verifiable items unless the task is genuinely trivial. Each item should name a specific action or output, not a phase. Bad: 'do the coding'. Good: 'add progress current CLI subcommand and parser wiring'.\n"
+        "- Decompose implementation and verification into separate items where reasonable (e.g. 'implement X', 'add tests for X', 'run pytest and confirm green').\n"
+        "\n"
+        "DURING WORK — bind every transition to real work:\n"
+        f"- BEFORE you take a meaningful action on an item (run a build, edit a file group, call a tool to do work), mark that item active: {cli} progress set-active <item_id>{run_arg}\n"
+        f"- AS SOON AS an item is actually finished (verified, not just attempted), in the same response, mark it done: {cli} progress complete <item_id>{run_arg}\n"
+        f"- If you start working on something the active item does not describe, STOP and either complete/skip the active item first, or add the new work as a new item: {cli} progress add{run_arg} --item '<new step>'\n"
+        f"- If you get blocked, mark the item blocked with a one-line reason: {cli} progress block <item_id>{run_arg} --message '<blocker>'\n"
+        f"- If you are unsure what is currently active, check: {cli} progress current{run_arg}\n"
+        f"- To complete the active item and start the next one in a single call: {cli} progress next <next_item_id>{run_arg}\n"
+        "- Keep EXACTLY ONE item active while work is in progress. Never leave the same item active across many tool calls without either completing it, splitting it, or blocking it.\n"
+        "\n"
+        "WORKED EXAMPLE (the rhythm you should follow):\n"
+        f"  1. {cli} progress init{run_arg} --item 'Read failing test and identify root cause' --item 'Patch parser to handle empty input' --item 'Run pytest suite and confirm green' --item 'Post summary comment on task'\n"
+        f"  2. {cli} progress set-active read-failing-test-and-identify-root-cause{run_arg}\n"
+        "     <read the test, inspect the code>\n"
+        f"  3. {cli} progress next patch-parser-to-handle-empty-input{run_arg}\n"
+        "     <edit the file>\n"
+        f"  4. {cli} progress next run-pytest-suite-and-confirm-green{run_arg}\n"
+        "     <run the tests>\n"
+        f"  5. {cli} progress next post-summary-comment-on-task{run_arg}\n"
+        "     <post the comment>\n"
+        f"  6. {cli} progress complete post-summary-comment-on-task{run_arg}\n"
+        "\n"
+        "BEFORE FINISHING THE RUN:\n"
+        "- Every item must be in a terminal state: done, blocked, or skipped. No item may be left active or pending.\n"
+        "- In your final message, include the rendered checklist (item text + status) so the human can see the trajectory at a glance. This is your status report — do not omit it."
     )
 
 
@@ -2824,12 +2843,12 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 f"Follow your instructions now."
             )
 
+        if agent_def.get("progress_checklist_enabled"):
+            task_prompt += f"\n\n{_agent_progress_prompt_section(base_dir, run_id=run_id)}"
+
         # Append custom trigger prompt if provided
         if prompt:
             task_prompt += f"\n\nAdditional instructions:\n{prompt}"
-
-        if agent_def.get("progress_checklist_enabled"):
-            task_prompt += f"\n\n{_agent_progress_prompt_section(base_dir, run_id=run_id)}"
 
         # Log agent_started to audit trail for each task
         for t in tasks:

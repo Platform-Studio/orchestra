@@ -78,6 +78,7 @@ from orchestration.tasks import (
     comment_task, delete_task_comment, edit_task_comment, archive_task, get_audit, clear_schedule,
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
+    pause_task, resume_task,
 )
 from orchestration.locks import (
     acquire_lock, release_lock, lock_status, lock_status_for_workstream,
@@ -179,6 +180,8 @@ def _serialize_board_tasks(tasks):
             task_dict["retry_count"] = task.retry_count
         if getattr(task, "last_failure_at", None) is not None:
             task_dict["last_failure_at"] = task.last_failure_at
+        if getattr(task, "paused", False):
+            task_dict["paused"] = True
         if hasattr(task, "_parse_error"):
             task_dict["_error"] = task._parse_error
         task_dict["lock"] = {"locked": False}
@@ -789,6 +792,12 @@ def handle_task(method, parts, params):
     elif m == "archive" and parts:
         result = archive_task(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(result)
+    elif m == "pause" and parts:
+        task = pause_task(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(task.to_dict())
+    elif m == "resume" and parts:
+        task = resume_task(parts[0], base_dir=WORKSPACE_DIR)
+        return _ok(task.to_dict())
     elif m == "audit" and parts:
         audit = get_audit(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(audit)

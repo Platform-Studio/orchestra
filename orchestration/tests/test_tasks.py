@@ -27,6 +27,8 @@ from orchestration.tasks import (
     attach_to_task,
     detach_from_task,
     reorder_tasks_in_workstream,
+    pause_task,
+    resume_task,
 )
 from orchestration.artifacts import create_artifact, copy_artifact_tree
 from orchestration.agents import _read_task_attachments_for_prompt
@@ -494,6 +496,41 @@ class TestArchiveTask:
     def test_archive_not_found(self, workspace):
         with pytest.raises(FileNotFoundError):
             archive_task("nonexistent-id", base_dir=workspace)
+
+
+class TestPauseTask:
+    def test_default_task_is_not_paused(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        assert task.paused is False
+        # `paused` should not be persisted in the YAML when falsy.
+        assert "paused" not in task.to_dict()
+
+    def test_pause_and_resume_round_trip(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        paused = pause_task(task.id, base_dir=workspace)
+        assert paused.paused is True
+
+        reread = read_task(task.id, base_dir=workspace)
+        assert reread.paused is True
+        assert reread.to_dict()["paused"] is True
+        assert any(a.type == "task_paused" for a in reread.audit)
+
+        resumed = resume_task(task.id, base_dir=workspace)
+        assert resumed.paused is False
+        reread2 = read_task(task.id, base_dir=workspace)
+        assert reread2.paused is False
+        assert any(a.type == "task_resumed" for a in reread2.audit)
+
+    def test_pause_when_already_paused_is_idempotent(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        pause_task(task.id, base_dir=workspace)
+        before = read_task(task.id, base_dir=workspace)
+        before_audit_len = len(before.audit)
+
+        pause_task(task.id, base_dir=workspace)
+        after = read_task(task.id, base_dir=workspace)
+        assert after.paused is True
+        assert len(after.audit) == before_audit_len
 
 
 class TestGetAudit:

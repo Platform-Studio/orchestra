@@ -749,6 +749,32 @@ def clear_schedule(task_id: str, base_dir: str = ".") -> Task:
     return task
 
 
+def set_task_paused(task_id: str, paused: bool, base_dir: str = ".") -> Task:
+    """Pause or resume a single task.
+
+    Paused tasks remain on the board but are excluded from automatic
+    pickup by state-based and schedule-based triggers.
+    """
+    task = read_task(task_id, base_dir)
+    if task.paused == paused:
+        return task
+    task.paused = paused
+    task.add_audit(
+        "task_paused" if paused else "task_resumed",
+        "Task paused" if paused else "Task resumed",
+    )
+    _save_task(task, base_dir)
+    return task
+
+
+def pause_task(task_id: str, base_dir: str = ".") -> Task:
+    return set_task_paused(task_id, True, base_dir=base_dir)
+
+
+def resume_task(task_id: str, base_dir: str = ".") -> Task:
+    return set_task_paused(task_id, False, base_dir=base_dir)
+
+
 def move_task(
     task_id: str,
     target_workstream_id: str,
