@@ -21,21 +21,26 @@ def get_active_triggers() -> list:
         return list(_active_triggers)
 
 
-def _trigger_filter_state(trigger: Trigger) -> str | None:
+def _trigger_filter_states(trigger: Trigger) -> list[str]:
     filter_def = getattr(trigger, "filter", None)
     if not isinstance(filter_def, dict):
-        return None
+        return []
     state = filter_def.get("state") or filter_def.get("status")
     if state is None:
-        return None
-    return str(state)
+        return []
+    if isinstance(state, (list, tuple, set)):
+        return [str(value) for value in state if value is not None]
+    return [str(state)]
 
 
 def trigger_column_state(trigger: Trigger) -> str | None:
     """Return the board column/state this trigger is scoped to, if any."""
     if getattr(trigger, "on_state", None) is not None:
         return str(trigger.on_state)
-    return _trigger_filter_state(trigger)
+    states = _trigger_filter_states(trigger)
+    if len(states) == 1:
+        return states[0]
+    return None
 
 
 def _current_trigger_for_workstream(trigger: Trigger, ws: Workstream) -> Trigger:
@@ -51,10 +56,20 @@ def trigger_pause_reason(trigger: Trigger, ws: Workstream) -> str | None:
     if getattr(current, "paused", False):
         return f"Trigger '{current.id}' is paused"
 
-    state = trigger_column_state(current)
     paused_states = set(getattr(ws, "paused_states", []) or [])
-    if state in paused_states:
-        return f"Column '{state}' is paused"
+    if getattr(current, "on_state", None) is not None:
+        state = str(current.on_state)
+        if state in paused_states:
+            return f"Column '{state}' is paused"
+        return None
+
+    states = _trigger_filter_states(current)
+    if states:
+        paused_filtered_states = [state for state in states if state in paused_states]
+        if len(paused_filtered_states) == len(states):
+            if len(states) == 1:
+                return f"Column '{states[0]}' is paused"
+            return f"All filtered columns are paused: {', '.join(paused_filtered_states)}"
     return None
 
 
@@ -336,7 +351,8 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
                         matching_ids = [
                             t.id for t in tasks
-                            if _task_matches_filter(t, _trigger.filter)
+                            if t.status not in set(getattr(_ws, "paused_states", []) or [])
+                            and _task_matches_filter(t, _trigger.filter)
                         ]
                         result = _lock_invoke_unlock(
                             _trigger,

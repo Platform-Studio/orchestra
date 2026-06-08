@@ -238,7 +238,10 @@ def _task_matches_filter(task, filter_def: dict) -> bool:
     # Accept both "state" and "status" as aliases for the task state field
     state_filter = filter_def.get("state") or filter_def.get("status")
     if state_filter is not None:
-        if task.status != state_filter:
+        if isinstance(state_filter, (list, tuple, set)):
+            if task.status not in state_filter:
+                return False
+        elif task.status != state_filter:
             return False
 
     if "tags" in filter_def:
@@ -270,7 +273,12 @@ def _group_tasks_by_status(tasks: list) -> dict[str, list]:
     return grouped
 
 
-def _matching_task_ids(tasks: list, filter_def: dict, tasks_by_status: dict[str, list] | None = None) -> list[str]:
+def _matching_task_ids(
+    tasks: list,
+    filter_def: dict,
+    tasks_by_status: dict[str, list] | None = None,
+    paused_states: set[str] | None = None,
+) -> list[str]:
     """Return matching task IDs, using status prefiltering when available."""
     if not filter_def:
         return [task.id for task in tasks]
@@ -278,7 +286,17 @@ def _matching_task_ids(tasks: list, filter_def: dict, tasks_by_status: dict[str,
     candidates = tasks
     state_filter = filter_def.get("state") or filter_def.get("status")
     if state_filter is not None and tasks_by_status is not None:
-        candidates = tasks_by_status.get(state_filter, [])
+        if isinstance(state_filter, (list, tuple, set)):
+            candidates = []
+            for state in state_filter:
+                if paused_states and state in paused_states:
+                    continue
+                candidates.extend(tasks_by_status.get(state, []))
+        else:
+            if paused_states and state_filter in paused_states:
+                candidates = []
+            else:
+                candidates = tasks_by_status.get(state_filter, [])
 
     return [task.id for task in candidates if _task_matches_filter(task, filter_def)]
 
@@ -742,7 +760,12 @@ def tick(base_dir: str = ".") -> dict:
                 })
             else:
                 # Find all tasks matching the filter, lock them all, invoke once
-                matching_ids = _matching_task_ids(tasks, trigger.filter, tasks_by_status)
+                matching_ids = _matching_task_ids(
+                    tasks,
+                    trigger.filter,
+                    tasks_by_status,
+                    paused_states,
+                )
                 if not matching_ids:
                     continue
                 result = _lock_invoke_unlock(

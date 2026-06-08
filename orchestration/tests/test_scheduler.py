@@ -84,6 +84,16 @@ class TestTaskFilterMatching:
         assert _task_matches_filter(task, {"state": "To Do"}) is True
         assert _task_matches_filter(task, {"state": "Done"}) is False
 
+    def test_matches_state_list(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        assert _task_matches_filter(task, {"state": ["To Do", "In Progress"]}) is True
+        assert _task_matches_filter(task, {"state": ["Done", "Blocked"]}) is False
+
+    def test_matches_status_list_alias(self, workspace, ws):
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        assert _task_matches_filter(task, {"status": ["To Do", "In Progress"]}) is True
+        assert _task_matches_filter(task, {"status": ["Done"]}) is False
+
     def test_matches_tags(self, workspace, ws):
         task = create_task(ws.id, title="T", tags=["urgent"], base_dir=workspace)
         assert _task_matches_filter(task, {"tags": ["urgent"]}) is True
@@ -461,6 +471,43 @@ class TestTick:
         assert result["trigger_schedules_fired"] == [{
             "trigger_id": trigger.id,
             "result": {"status": "skipped", "reason": "Column 'To Do' is paused"},
+        }]
+
+    def test_tick_schedule_trigger_with_multi_state_filter_skips_only_paused_states(self, workspace, ws, monkeypatch):
+        from orchestration.workstreams import pause_workstream_states
+
+        pause_workstream_states(ws.id, ["To Do"], base_dir=workspace)
+        paused_task = create_task(ws.id, title="Paused Waiting", base_dir=workspace)
+        active_task = create_task(ws.id, title="Active", base_dir=workspace)
+        update_task(active_task.id, status="In Progress", base_dir=workspace)
+
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="* * * * *",
+            filter={"state": ["To Do", "In Progress"]},
+            action="run_command",
+            command="echo ok",
+            base_dir=workspace,
+        )
+
+        captured = {}
+
+        def _fake_lock_invoke_unlock(trigger_obj, task_ids, ws_obj, base_dir, background=False, ignore_paused=False):
+            captured["trigger_id"] = trigger_obj.id
+            captured["task_ids"] = list(task_ids)
+            return {"trigger_id": trigger_obj.id, "status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+
+        result = tick(workspace)
+
+        assert captured["trigger_id"] == trigger.id
+        assert captured["task_ids"] == [active_task.id]
+        assert result["trigger_schedules_fired"] == [{
+            "trigger_id": trigger.id,
+            "task_ids": [active_task.id],
+            "result": {"trigger_id": trigger.id, "status": "dispatched"},
         }]
 
     def test_tick_updates_last_tick_at(self, workspace, ws):
