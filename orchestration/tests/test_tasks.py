@@ -151,6 +151,22 @@ class TestUpdateTask:
         updated = update_task(task.id, status="In Progress", base_dir=workspace)
         assert updated.status == "In Progress"
 
+    def test_update_status_uses_summary_rank_scan(self, workspace, ws, monkeypatch):
+        existing = create_task(ws.id, title="Existing", base_dir=workspace)
+        update_task(existing.id, status="In Progress", base_dir=workspace)
+
+        pending = create_task(ws.id, title="Pending", base_dir=workspace)
+
+        from orchestration import tasks as tasks_mod
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("full task scan should not be used for rank lookup")
+
+        monkeypatch.setattr(tasks_mod, "list_tasks", _boom)
+
+        updated = update_task(pending.id, status="In Progress", base_dir=workspace)
+        assert updated.status == "In Progress"
+
     def test_update_status_invalid(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         with pytest.raises(ValueError, match="Invalid state transition"):

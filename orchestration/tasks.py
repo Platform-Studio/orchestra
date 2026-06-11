@@ -293,6 +293,15 @@ def _task_sort_key(task: Task):
     return (1, Decimal("0"), _last_audit_ts(task), task.id)
 
 
+def _list_rank_summary_tasks(workstream_id: str, status: str = None, base_dir: str = ".") -> list:
+    return _list_tasks_from_dir(
+        _tasks_dir(base_dir, workstream_id),
+        workstream_id,
+        status=status,
+        summary_only=True,
+    )
+
+
 def _rebalance_state_ranks(workstream_id: str, status: str, base_dir: str = ".") -> None:
     tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
     for idx, task in enumerate(tasks):
@@ -303,7 +312,7 @@ def _rebalance_state_ranks(workstream_id: str, status: str, base_dir: str = ".")
 
 
 def _ensure_state_ranks(workstream_id: str, status: str, base_dir: str = ".") -> None:
-    tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    tasks = _list_rank_summary_tasks(workstream_id, status=status, base_dir=base_dir)
     if any(_parse_rank(getattr(t, "rank", None)) is None for t in tasks):
         _rebalance_state_ranks(workstream_id, status, base_dir=base_dir)
 
@@ -323,7 +332,7 @@ def _rank_between(lower: Decimal = None, upper: Decimal = None):
 
 
 def _next_rank_for_state(workstream_id: str, status: str, base_dir: str = ".") -> str:
-    state_tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    state_tasks = _list_rank_summary_tasks(workstream_id, status=status, base_dir=base_dir)
     parsed = [_parse_rank(getattr(t, "rank", None)) for t in state_tasks]
     parsed = [p for p in parsed if p is not None]
     if not parsed:
@@ -332,7 +341,7 @@ def _next_rank_for_state(workstream_id: str, status: str, base_dir: str = ".") -
 
 
 def _first_rank_for_state(workstream_id: str, status: str, base_dir: str = ".") -> str:
-    state_tasks = [t for t in list_tasks(workstream_id, base_dir=base_dir) if t.status == status]
+    state_tasks = _list_rank_summary_tasks(workstream_id, status=status, base_dir=base_dir)
     parsed = [_parse_rank(getattr(t, "rank", None)) for t in state_tasks]
     parsed = [p for p in parsed if p is not None]
     if not parsed:
