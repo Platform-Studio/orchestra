@@ -748,6 +748,14 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .card.card-paused:hover { opacity: 0.95; }
 .card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.card-token-usage {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(139,148,158,0.18);
+  color: #8b949e;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .card-agent-separator {
   margin: 6px 0 4px;
   border-top: 1px solid rgba(139,148,158,0.28);
@@ -3673,6 +3681,9 @@ function renderCard(task, lock, state) {
   const canDrag = !task._error && !(lock && lock.locked);
   const isPaused = !!task.paused;
   const pauseTitle = isPaused ? 'Resume task (allow agent pickup)' : 'Pause task (prevent agent pickup)';
+  const tokenUsage = !cardRun && task && task.token_usage && (Number(task.token_usage.input_tokens || 0) > 0 || Number(task.token_usage.output_tokens || 0) > 0)
+    ? `<div class="card-token-usage">Tokens: ${esc(Number(task.token_usage.input_tokens || 0).toLocaleString())} in ${esc(Number(task.token_usage.output_tokens || 0).toLocaleString())} out</div>`
+    : '';
   const pauseBtn = task._error
     ? ''
     : `<button class="card-pause-btn${isPaused ? ' paused' : ''}" type="button" data-task-pause-id="${esc(task.id)}" title="${esc(pauseTitle)}" aria-label="${esc(pauseTitle)}" aria-pressed="${isPaused ? 'true' : 'false'}" onclick="event.stopPropagation(); toggleTaskPause('${esc(task.id)}', this)">${isPaused ? ICON_PLAY : ICON_PAUSE}</button>`;
@@ -3685,6 +3696,7 @@ function renderCard(task, lock, state) {
     ${errorMsg}
     ${failedInfo}
     ${meta ? `${checklistAgentSeparator}<div class="card-meta">${meta}</div>` : ''}
+    ${tokenUsage}
   </div>`;
 }
 

@@ -6,6 +6,7 @@ import re
 import threading
 import yaml
 
+from ._atomic import atomic_write_text, atomic_write_yaml
 from .models import Workstream, RetryConfig, new_id, normalize_agent_concurrency_policy
 from .persistence import resolve_artifact_root, resolve_workstream_root
 
@@ -187,8 +188,10 @@ def _list_local_workstreams(workspace_root: str) -> list:
 
 def _write_workstream_to_root(ws: Workstream, state_root: str) -> None:
     os.makedirs(_local_ws_dir(state_root), exist_ok=True)
-    with open(_ws_path(state_root, ws.id), "w") as f:
-        yaml.dump(ws.to_dict(include_transient=False), f, default_flow_style=False, sort_keys=False)
+    atomic_write_yaml(
+        _ws_path(state_root, ws.id),
+        ws.to_dict(include_transient=False),
+    )
     clear_workstream_cache()
 
 
@@ -429,10 +432,14 @@ def write_workstream_env(ws_id: str, values: dict, base_dir: str = ".") -> None:
     ws_data_dir = os.path.join(_ws_dir(ws_root), ws_id)
     os.makedirs(ws_data_dir, exist_ok=True)
     env_path = _ws_env_path(ws_root, ws_id)
-    with open(env_path, "w") as f:
-        for key in sorted(values):
-            _validate_env_key(key)
-            f.write(f"{key}={values[key]}\n")
+    # Build the full text in memory first so the file write is a single
+    # atomic rename — a SIGKILL mid-write can't leave a half-written
+    # .env with some keys but not others.
+    lines = []
+    for key in sorted(values):
+        _validate_env_key(key)
+        lines.append(f"{key}={values[key]}\n")
+    atomic_write_text(env_path, "".join(lines))
 
 
 def set_workstream_env_key(ws_id: str, key: str, value: str, base_dir: str = ".") -> dict:

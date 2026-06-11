@@ -15,9 +15,13 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 import yaml
+from ._atomic import atomic_write_json, atomic_write_yaml
 from .image_validation import validate_task_image_attachments
 from .persistence import resolve_workstream_root
 
@@ -43,6 +47,13 @@ COPILOT_CONTEXT_DIRS_ENV_VAR = "ORCHESTRATION_COPILOT_CONTEXT_DIRS"
 CLINE_DEFAULT_MODEL_ENV_VAR = "CLINE_DEFAULT_LLM"
 CLINE_VERBOSE_ENV_VAR = "ORCHESTRATION_CLINE_VERBOSE"
 COPILOT_DEFAULT_MODEL_ENV_VAR = "COPILOT_MODEL"
+BEANS_PROXY_ENABLED_ENV_VAR = "BEANS_PROXY"
+BEANS_PROXY_HOST_ENV_VAR = "BEANS_PROXY_HOST"
+BEANS_PROXY_PORT_ENV_VAR = "BEANS_PROXY_PORT"
+COPILOT_PROVIDER_BASE_URL_ENV_VAR = "COPILOT_PROVIDER_BASE_URL"
+COPILOT_PROVIDER_TYPE_ENV_VAR = "COPILOT_PROVIDER_TYPE"
+COPILOT_PROVIDER_API_KEY_ENV_VAR = "COPILOT_PROVIDER_API_KEY"
+CLINE_DATA_DIR_ENV_VAR = "CLINE_DATA_DIR"
 GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
 AGENTS_DIR_ENV_VAR = "ORCHESTRATION_AGENTS_DIR"
 SOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -63,6 +74,7 @@ COPILOT_MODEL_LEVEL_DEFAULTS = {
 }
 
 _ACTIVE_AGENTS_LOCK = threading.Lock()
+BEANS_PROXY_CLINE_PROVIDER = "openai-compatible"
 
 # Compile once for efficiency — matches complete and bare ANSI escape sequences.
 _ANSI_ESCAPE_RE = re.compile(
@@ -114,6 +126,141 @@ def _orchestration_cli_command(base_dir: str = None) -> str:
     if base_dir:
         command += f" --base-dir {shlex.quote(os.path.abspath(base_dir))}"
     return command
+
+
+def _beans_proxy_enabled() -> bool:
+    """Return whether agent runs should be routed through Beans Proxy."""
+    return _coerce_bool(os.getenv(BEANS_PROXY_ENABLED_ENV_VAR), default=False)
+
+
+def _beans_proxy_base_url() -> str:
+    """Return the local Beans Proxy URL."""
+    host = str(os.getenv(BEANS_PROXY_HOST_ENV_VAR) or "127.0.0.1").strip() or "127.0.0.1"
+    port = str(os.getenv(BEANS_PROXY_PORT_ENV_VAR) or "8000").strip() or "8000"
+    return f"http://{host}:{port}"
+
+
+def _beans_proxy_pseudo_key(task_ids: list[str]) -> str | None:
+    """Return the task-scoped pseudo key when a run targets a single task."""
+    if len(task_ids) != 1:
+        return None
+    return f"task-{task_ids[0]}"
+
+
+def _configure_runtime_proxy(
+    runtime: str,
+    runtime_path: str,
+    env: dict,
+    task_ids: list[str],
+    model: str,
+    working_dir: str,
+) -> dict:
+    """Configure a child runtime to use Beans Proxy when possible."""
+    runtime_norm = _normalize_agent_runtime(runtime)
+    pseudo_key = _beans_proxy_pseudo_key(task_ids)
+    if not _beans_proxy_enabled() or not pseudo_key:
+        return {"enabled": False, "pseudo_key": pseudo_key}
+
+    proxy_url = _beans_proxy_base_url()
+    if runtime_norm == "copilot":
+        env[COPILOT_PROVIDER_BASE_URL_ENV_VAR] = proxy_url
+        env[COPILOT_PROVIDER_TYPE_ENV_VAR] = "openai"
+        env[COPILOT_PROVIDER_API_KEY_ENV_VAR] = pseudo_key
+        env[COPILOT_DEFAULT_MODEL_ENV_VAR] = model
+        return {
+            "enabled": True,
+            "proxy_url": proxy_url,
+            "pseudo_key": pseudo_key,
+            "provider": "openai",
+        }
+
+    if runtime_norm == "cline":
+        cline_data_dir = tempfile.mkdtemp(prefix=f"cline_proxy_{task_ids[0][:8]}_")
+        env[CLINE_DATA_DIR_ENV_VAR] = cline_data_dir
+        auth_cmd = [
+            runtime_path,
+            "auth",
+            "--provider",
+            BEANS_PROXY_CLINE_PROVIDER,
+            "--apikey",
+            pseudo_key,
+            "--modelid",
+            model,
+            "--baseurl",
+            proxy_url,
+        ]
+        try:
+            subprocess.run(
+                auth_cmd,
+                cwd=working_dir,
+                env=env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            shutil.rmtree(cline_data_dir, ignore_errors=True)
+            stderr = (exc.stderr or "").strip()
+            raise RuntimeError(
+                f"Failed to configure Cline Beans Proxy provider: {stderr or exc}"
+            ) from exc
+        return {
+            "enabled": True,
+            "proxy_url": proxy_url,
+            "pseudo_key": pseudo_key,
+            "provider": BEANS_PROXY_CLINE_PROVIDER,
+            "cline_data_dir": cline_data_dir,
+        }
+
+    return {
+        "enabled": False,
+        "pseudo_key": pseudo_key,
+        "unsupported_runtime": runtime_norm,
+    }
+
+
+def _fetch_beans_proxy_usage_records(pseudo_key: str, timeout_seconds: float = 5.0) -> list[dict]:
+    """Fetch all recorded usage records for a pseudo key from Beans Proxy."""
+    proxy_url = _beans_proxy_base_url().rstrip("/")
+    encoded_key = urllib.parse.quote(str(pseudo_key), safe="")
+    url = f"{proxy_url}/usage/{encoded_key}"
+    with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+        payload = response.read().decode("utf-8")
+    records = json.loads(payload or "[]")
+    if isinstance(records, dict) and "usage" in records:
+        records = records.get("usage")
+    if not isinstance(records, list):
+        raise ValueError(f"Beans Proxy usage response for {pseudo_key} was not a list")
+    return records
+
+
+def _summarize_beans_proxy_usage(records: list[dict], *, pseudo_key: str) -> dict:
+    """Convert Beans Proxy per-call records into running task totals."""
+    input_tokens = 0
+    output_tokens = 0
+    request_count = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("error"):
+            continue
+        request_count += 1
+        try:
+            input_tokens += max(0, int(record.get("input_tokens", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            output_tokens += max(0, int(record.get("output_tokens", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+    return {
+        "pseudo_key": pseudo_key,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "request_count": request_count,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 def _audio_file_root(base_dir: str) -> str:
     """Resolve the root directory for agent sound assets."""
@@ -688,8 +835,10 @@ def set_global_sound_mute(muted: bool, base_dir: str) -> bool:
 def _write_run_meta(base_dir: str, run_id: str, data: dict) -> None:
     _ensure_state_dirs(base_dir)
     path = _agent_run_meta_path(base_dir, run_id)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    # Atomic: a truncated run_meta file would make the orchestrator think
+    # the run never started (or finished), and would then start a duplicate
+    # run on next scheduler tick.
+    atomic_write_json(path, data)
 
 
 def _read_run_meta(path: str) -> dict:
@@ -849,8 +998,11 @@ def _write_context_manifest(base_dir: str, run_id: str, manifest: dict) -> str:
     context_dir = _agent_run_context_dir(base_dir, run_id)
     os.makedirs(context_dir, exist_ok=True)
     path = _agent_run_context_manifest_path(base_dir, run_id)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
+    # Atomic: the context manifest is used by the reviewer/follow-up
+    # agents to reconstruct what the previous run saw. A truncated file
+    # would force the next run to rebuild context from scratch (best
+    # case) or to mis-attribute state (worst case).
+    atomic_write_json(path, manifest)
     return os.path.relpath(path, base_dir)
 
 
@@ -1190,8 +1342,11 @@ def _write_active_agents(base_dir: str, runs: list) -> None:
     _ensure_state_dirs(base_dir)
     path = _active_agents_path(base_dir)
     payload = {"runs": runs}
-    with open(path, "w") as f:
-        yaml.safe_dump(payload, f, sort_keys=False)
+    # Atomic: active_agents.yaml is the orchestrator's "who is running right
+    # now" index. A truncated file would make the orchestrator think no
+    # agents are running, which can lead to starting duplicate runs and
+    # losing the ability to deliver completion sounds to in-flight runs.
+    atomic_write_yaml(path, payload, sort_keys=False)
 
 
 def _register_active_agent(base_dir: str, run: dict) -> None:
@@ -2291,6 +2446,7 @@ def _build_runtime_command(
     effort,
     timeout_seconds: int,
     task_cwd: str,
+    proxy_provider: str | None = None,
 ):
     """Build the subprocess command and effective prompt for the selected runtime."""
     runtime_norm = _normalize_agent_runtime(runtime)
@@ -2301,11 +2457,15 @@ def _build_runtime_command(
             runtime_path,
             "-c",
             task_cwd,
+        ]
+        if proxy_provider:
+            cmd.extend(["-P", proxy_provider])
+        cmd.extend([
             "-m",
             model,
             "--timeout",
             str(timeout_seconds),
-        ]
+        ])
         cmd.extend(["--auto-approve", "true"])
         if _cline_verbose_enabled():
             cmd.append("--verbose")
@@ -2705,12 +2865,13 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 details.append(
                     f"- task {task_obj.id} ({task_obj.title}): {issue['path']} -> {issue['reason']}"
                 )
-            task_obj.add_audit(
+            task_current = read_task(task_obj.id, base_dir)
+            task_current.add_audit(
                 "agent_failed",
                 "Agent preflight failed due to invalid image attachments. "
                 "Fix or detach invalid image files before retry."
             )
-            _save_task(task_obj, base_dir)
+            _save_task(task_current, base_dir)
 
         _play_agent_sound(agent_def, "error", base_dir)
         raise RuntimeError(
@@ -2725,6 +2886,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     run_meta = None
     provider_context_snapshot = None
     owned_worktree = None
+    proxy_context = {"enabled": False}
     fd, task_file_path = tempfile.mkstemp(suffix=".json", prefix="agent_tasks_")
     with os.fdopen(fd, "w") as f:
         json.dump({"task_ids": task_ids, "workstream_id": workstream_id}, f)
@@ -2852,8 +3014,9 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         # Log agent_started to audit trail for each task
         for t in tasks:
-            t.add_audit("agent_started", f"Agent '{agent_def['name']}' started processing")
-            _save_task(t, base_dir)
+            task_current = read_task(t.id, base_dir)
+            task_current.add_audit("agent_started", f"Agent '{agent_def['name']}' started processing")
+            _save_task(task_current, base_dir)
 
         # Resolve model and effort for CLI and for run metadata
         model = _resolve_agent_model(agent_def, runtime=runtime)
@@ -2923,6 +3086,25 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         process_cwd = workspace_root if owned_worktree else abs_base
         task_cwd = workspace_root if runtime == "cline" else process_cwd
+        proxy_context = _configure_runtime_proxy(
+            runtime,
+            runtime_path,
+            env,
+            list(task_ids),
+            model,
+            process_cwd,
+        )
+        if proxy_context.get("enabled"):
+            run_meta["beans_proxy"] = {
+                "proxy_url": proxy_context.get("proxy_url"),
+                "pseudo_key": proxy_context.get("pseudo_key"),
+            }
+        elif proxy_context.get("pseudo_key") and proxy_context.get("unsupported_runtime"):
+            run_meta["beans_proxy"] = {
+                "proxy_url": None,
+                "pseudo_key": proxy_context.get("pseudo_key"),
+                "unsupported_runtime": proxy_context.get("unsupported_runtime"),
+            }
         cmd, effective_prompt = _build_runtime_command(
             runtime=runtime,
             runtime_path=runtime_path,
@@ -2932,6 +3114,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             effort=effort,
             timeout_seconds=effective_timeout,
             task_cwd=task_cwd,
+            proxy_provider=proxy_context.get("provider"),
         )
         process_timeout = _runtime_process_timeout_seconds(runtime, effective_timeout)
         command_line = shlex.join(cmd)
@@ -3089,6 +3272,17 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = final_status
         run_meta["exit_code"] = returncode
+        task_token_usage = None
+        if proxy_context.get("enabled") and proxy_context.get("pseudo_key") and len(task_ids) == 1:
+            try:
+                usage_records = _fetch_beans_proxy_usage_records(proxy_context["pseudo_key"])
+                task_token_usage = _summarize_beans_proxy_usage(
+                    usage_records,
+                    pseudo_key=proxy_context["pseudo_key"],
+                )
+                run_meta.setdefault("beans_proxy", {})["task_totals"] = task_token_usage
+            except Exception as exc:
+                run_meta.setdefault("beans_proxy", {})["sync_error"] = str(exc)
         try:
             run_meta["context_capture"] = _capture_provider_context(
                 base_dir,
@@ -3126,6 +3320,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' was killed.\n\nError:\n{error_msg}")
                 else:
                     t.add_audit("agent_failed", f"Agent '{agent_def['name']}' failed (exit {returncode}).\n\nError:\n{error_msg}")
+            if task_token_usage is not None and tid == task_ids[0]:
+                t.token_usage = dict(task_token_usage)
             _save_task(t, base_dir)
 
         # Best-effort learnings compaction to keep artifacts concise over time.
@@ -3167,6 +3363,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         raise
 
     finally:
+        if proxy_context.get("cline_data_dir"):
+            shutil.rmtree(proxy_context["cline_data_dir"], ignore_errors=True)
         if owned_worktree is not None:
             _deprovision_run_worktree(owned_worktree, base_dir=base_dir)
         # Clean up temp file

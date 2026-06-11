@@ -216,6 +216,7 @@ _PATCHES = {
     "read_task_from_workstream": "workstream_manager.server.read_task_from_workstream",
     "update_task":       "workstream_manager.server.update_task",
     "list_tasks":        "workstream_manager.server.list_tasks",
+    "list_board_tasks":  "workstream_manager.server.list_board_tasks",
     "comment_task":      "workstream_manager.server.comment_task",
     "delete_task_comment": "workstream_manager.server.delete_task_comment",
     "edit_task_comment": "workstream_manager.server.edit_task_comment",
@@ -265,6 +266,7 @@ def api(tmp_path):
     # Default return values for list endpoints (so board etc. don't crash)
     mocks["list_workstreams"].return_value = []
     mocks["list_tasks"].return_value = []
+    mocks["list_board_tasks"].return_value = []
     mocks["list_triggers"].return_value = []
     mocks["lock_status"].return_value = None
     mocks["lock_status_for_workstream"].return_value = None
@@ -547,10 +549,12 @@ class TestAudioFiles:
 
 class TestBoard:
     def test_board_returns_workstream_and_tasks(self, api):
+        from workstream_manager.server import WORKSPACE_DIR
+
         ws = _fake_workstream()
         t = _fake_task()
         api.mocks["read_workstream"].return_value = ws
-        api.mocks["list_tasks"].return_value = [t]
+        api.mocks["list_board_tasks"].return_value = [t]
 
         code, body = api.get("/api/board/ws-1")
         assert code == 200
@@ -559,6 +563,8 @@ class TestBoard:
         assert len(data["tasks"]) == 1
         assert data["tasks"][0]["lock"]["locked"] is False
         assert "revision" in data
+        api.mocks["list_board_tasks"].assert_called_once_with("ws-1", base_dir=WORKSPACE_DIR)
+        api.mocks["list_tasks"].assert_not_called()
 
     def test_board_returns_summary_tasks_only(self, api):
         ws = _fake_workstream()
@@ -571,9 +577,10 @@ class TestBoard:
             retry_count=2,
             last_failure_at="2026-01-01T02:00:00",
             paused=True,
+            token_usage={"input_tokens": 321, "output_tokens": 123},
         )
         api.mocks["read_workstream"].return_value = ws
-        api.mocks["list_tasks"].return_value = [t]
+        api.mocks["list_board_tasks"].return_value = [t]
 
         code, body = api.get("/api/board/ws-1")
 
@@ -587,10 +594,12 @@ class TestBoard:
         assert task["retry_count"] == 2
         assert task["last_failure_at"] == "2026-01-01T02:00:00"
         assert task["paused"] is True
+        assert task["token_usage"] == {"input_tokens": 321, "output_tokens": 123}
         assert "description" not in task
         assert "comments" not in task
         assert "audit" not in task
         assert "attachments" not in task
+        api.mocks["list_tasks"].assert_not_called()
 
     def test_board_meta_skips_task_yaml_load(self, api):
         ws = _fake_workstream()
@@ -601,6 +610,7 @@ class TestBoard:
         assert code == 200
         assert body["data"]["workstream"]["id"] == "ws-1"
         assert "revision" in body["data"]
+        api.mocks["list_board_tasks"].assert_not_called()
         api.mocks["list_tasks"].assert_not_called()
 
     def test_board_meta_can_include_locks_without_task_yaml_load(self, api):
@@ -614,19 +624,21 @@ class TestBoard:
 
         assert code == 200
         assert body["data"]["locks"]["task-1"]["locked"] is True
+        api.mocks["list_board_tasks"].assert_not_called()
         api.mocks["list_tasks"].assert_not_called()
 
     def test_board_does_not_wait_on_lock_lookup(self, api):
         ws = _fake_workstream()
         t = _fake_task()
         api.mocks["read_workstream"].return_value = ws
-        api.mocks["list_tasks"].return_value = [t]
+        api.mocks["list_board_tasks"].return_value = [t]
         api.mocks["_run_orchestration_cli"].side_effect = AssertionError("board should not load locks")
 
         code, body = api.get("/api/board/ws-1")
         assert code == 200
         task_data = body["data"]["tasks"][0]
         assert task_data["lock"]["locked"] is False
+        api.mocks["list_tasks"].assert_not_called()
         api.mocks["_run_orchestration_cli"].side_effect = None
 
     def test_board_missing_id(self, api):

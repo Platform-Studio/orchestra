@@ -75,6 +75,7 @@ from orchestration.workstreams import (
 )
 from orchestration.tasks import (
     CorruptTaskError, create_task, read_task, read_task_from_workstream, update_task, list_tasks,
+    list_board_tasks,
     comment_task, delete_task_comment, edit_task_comment, archive_task, get_audit, clear_schedule,
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
@@ -182,6 +183,8 @@ def _serialize_board_tasks(tasks):
             task_dict["last_failure_at"] = task.last_failure_at
         if getattr(task, "paused", False):
             task_dict["paused"] = True
+        if getattr(task, "token_usage", None) is not None:
+            task_dict["token_usage"] = task.token_usage
         if hasattr(task, "_parse_error"):
             task_dict["_error"] = task._parse_error
         task_dict["lock"] = {"locked": False}
@@ -534,7 +537,7 @@ def handle_board(parts, params):
         if _truthy_param(params.get("locks")):
             meta["locks"] = list_workstream_locks_for_workstream(ws, base_dir=WORKSPACE_DIR)
         return _ok(meta)
-    tasks = list_tasks(ws_id, base_dir=WORKSPACE_DIR)
+    tasks = list_board_tasks(ws_id, base_dir=WORKSPACE_DIR)
     meta = _board_meta(ws, task_count=len(tasks))
     return _ok({
         "workstream": ws.to_dict(),

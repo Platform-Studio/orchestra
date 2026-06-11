@@ -17,6 +17,8 @@ import yaml
 import threading
 import copy
 
+from ._atomic import atomic_write_yaml
+
 from datetime import datetime, timezone
 
 from .models import now_iso
@@ -28,6 +30,19 @@ from .triggers import execute_trigger, trigger_pause_reason
 
 SCHEDULER_STATE_FILE = "scheduler_state.yaml"
 TICK_INTERVAL = 60  # seconds
+DEFAULT_TICK_TIMEOUT = 600  # seconds (10 min) — soft timeout for a stuck tick
+
+
+def _resolve_tick_timeout() -> int:
+    """Resolve the per-tick soft timeout from SCHEDULER_TICK_TIMEOUT env var."""
+    raw = os.environ.get("SCHEDULER_TICK_TIMEOUT")
+    if not raw:
+        return DEFAULT_TICK_TIMEOUT
+    try:
+        value = int(raw)
+        return value if value > 0 else DEFAULT_TICK_TIMEOUT
+    except (TypeError, ValueError):
+        return DEFAULT_TICK_TIMEOUT
 
 
 def _state_path(base_dir: str) -> str:
@@ -44,8 +59,10 @@ def _load_state(base_dir: str) -> dict:
 
 def _save_state(state: dict, base_dir: str) -> None:
     path = _state_path(base_dir)
-    with open(path, "w") as f:
-        yaml.dump(state, f, default_flow_style=False, sort_keys=False)
+    # Atomic: scheduler_state.yaml is the source of truth for "what ran last
+    # and when" — a truncated file would make the next tick re-run completed
+    # triggers and double-fire side effects.
+    atomic_write_yaml(path, state)
 
 
 def _trigger_state_path(ws_id: str, trigger_id: str, base_dir: str) -> str:
@@ -66,26 +83,54 @@ def _load_trigger_state(ws_id: str, trigger_id: str, base_dir: str) -> dict:
 def _save_trigger_state(ws_id: str, trigger_id: str, trigger_state: dict, base_dir: str) -> None:
     path = _trigger_state_path(ws_id, trigger_id, base_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        yaml.dump(trigger_state, f, default_flow_style=False, sort_keys=False)
+    # Atomic: trigger state files track last-fired time + count. A truncated
+    # file would let a trigger fire repeatedly after a crash.
+    atomic_write_yaml(path, trigger_state)
+
+
+def _is_live_non_zombie(pid: int) -> bool:
+    """True if `pid` is alive and not a zombie (`<defunct>`) process.
+
+    `os.kill(pid, 0)` returns success for zombies, so it cannot be used
+    alone to decide whether the scheduler is genuinely running.
+    """
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # If we can't determine state, fall back to "alive" — safer to
+        # refuse to start a duplicate than to clear a lock the wrong way.
+        return True
+    stat = result.stdout.strip()
+    if not stat:
+        # ps returned nothing — process disappeared between kill(0) and ps
+        return False
+    return not stat.startswith("Z")
 
 
 def _existing_running_pid(base_dir: str):
     """Return an existing live scheduler PID from state, else None.
 
-    Also cleans up stale PID entries when the process is no longer alive.
+    Also cleans up stale PID entries when the process is no longer alive
+    (including zombie/defunct entries that linger after SIGKILL).
     """
     state = _load_state(base_dir)
     pid = state.get("pid")
     if pid is None:
         return None
-    try:
-        os.kill(pid, 0)
+    if _is_live_non_zombie(pid):
         return pid
-    except OSError:
-        state.pop("pid", None)
-        _save_state(state, base_dir)
-        return None
+    state.pop("pid", None)
+    _save_state(state, base_dir)
+    return None
 
 
 def run(base_dir: str = ".") -> None:
@@ -124,12 +169,73 @@ def run(base_dir: str = ".") -> None:
     log_event("scheduler_started", f"Scheduler process started (pid={os.getpid()})", abs_dir)
     print(f"Scheduler running (pid={os.getpid()}), ticking every {TICK_INTERVAL}s. Ctrl+C to stop.")
 
+    tick_timeout = _resolve_tick_timeout()
+    tick_thread_state = {"in_tick": False, "tick_started_at": None, "last_heartbeat": None}
+
+    def _watchdog_loop():
+        """Periodically check if the main tick is stuck and emit a heartbeat.
+
+        The watchdog runs in a separate daemon thread. If the main tick exceeds
+        tick_timeout seconds, we log a warning and update last_tick_at to the
+        current time so the UI can show that the scheduler is still alive even
+        if the previous tick is hung. The main tick is NOT killed — soft timeout.
+        """
+        check_interval = 30  # seconds between watchdog checks
+        while True:
+            time.sleep(check_interval)
+            if not tick_thread_state["in_tick"]:
+                continue
+            started = tick_thread_state["tick_started_at"]
+            if started is None:
+                continue
+            elapsed = time.time() - started
+            if elapsed <= tick_timeout:
+                continue
+            # Tick is stuck. Log a warning and emit a heartbeat update.
+            last_hb = tick_thread_state.get("last_heartbeat")
+            # Only log + heartbeat once per stuck-tick episode
+            if last_hb is None or (time.time() - last_hb) >= tick_timeout:
+                from .workspace_audit import log_event as _log_warn
+                _log_warn(
+                    "tick_stuck",
+                    f"Scheduler tick has been running for {int(elapsed)}s "
+                    f"(timeout={tick_timeout}s). Heartbeat updated; tick will "
+                    f"be allowed to complete but please investigate.",
+                    abs_dir,
+                    pid=os.getpid(),
+                    elapsed_seconds=int(elapsed),
+                    timeout_seconds=tick_timeout,
+                    status="warning",
+                )
+                print(
+                    f"[scheduler] WARN: tick stuck for {int(elapsed)}s "
+                    f"(timeout={tick_timeout}s); emitting heartbeat",
+                    file=sys.stderr,
+                )
+                # Update last_tick_at so the UI can show the scheduler is still alive
+                try:
+                    s = _load_state(abs_dir)
+                    s["last_tick_at"] = datetime.now(timezone.utc).isoformat()
+                    _save_state(s, abs_dir)
+                except Exception as e:
+                    print(f"[scheduler] heartbeat update failed: {e}", file=sys.stderr)
+                tick_thread_state["last_heartbeat"] = time.time()
+
+    watchdog = threading.Thread(target=_watchdog_loop, daemon=True, name="scheduler-watchdog")
+    watchdog.start()
+
     try:
         while running:
+            tick_thread_state["in_tick"] = True
+            tick_thread_state["tick_started_at"] = time.time()
+            tick_thread_state["last_heartbeat"] = None
             try:
                 tick(abs_dir)
             except Exception as e:
                 print(f"[scheduler] tick error: {e}", file=sys.stderr)
+            finally:
+                tick_thread_state["in_tick"] = False
+                tick_thread_state["tick_started_at"] = None
             # Sleep in small increments so we can respond to signals promptly
             for _ in range(TICK_INTERVAL):
                 if not running:

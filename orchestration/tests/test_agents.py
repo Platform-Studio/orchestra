@@ -13,7 +13,7 @@ from orchestration import agents as agents_module
 from orchestration.agents import _classify_run_outcome, _compact_learnings_artifact_if_needed, _configured_agent_sound_name, _parse_agent_md, _play_agent_sound, _resolve_agent_file, _resolve_agent_sound_file, _runtime_reported_timeout, _strip_ansi_escape_codes, count_active_agent_runs, get_agent_run, get_agent_run_context, get_global_sound_mute, list_agent_runs, read_agent_run_context_file, retry_agent_run, run_agent, set_global_sound_mute
 from orchestration.locks import acquire_lock, lock_status
 from orchestration.artifacts import create_artifact, list_artifacts, read_artifact
-from orchestration.tasks import create_task, read_task, _save_task
+from orchestration.tasks import create_task, pause_task, read_task, _save_task
 from orchestration.workstreams import create_workstream, save_workstream, set_workstream_env_key, unset_workstream_env_key
 from orchestration.models import RetryConfig
 
@@ -51,6 +51,13 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.delenv("COPILOT_MEDIUM_LLM", raising=False)
     monkeypatch.delenv("COPILOT_LOW_LLM", raising=False)
     monkeypatch.delenv("COPILOT_CODING_LLM", raising=False)
+    monkeypatch.delenv("BEANS_PROXY", raising=False)
+    monkeypatch.delenv("BEANS_PROXY_HOST", raising=False)
+    monkeypatch.delenv("BEANS_PROXY_PORT", raising=False)
+    monkeypatch.delenv("COPILOT_PROVIDER_BASE_URL", raising=False)
+    monkeypatch.delenv("COPILOT_PROVIDER_TYPE", raising=False)
+    monkeypatch.delenv("COPILOT_PROVIDER_API_KEY", raising=False)
+    monkeypatch.delenv("CLINE_DATA_DIR", raising=False)
     monkeypatch.setenv("WORKSTREAM_ROOT", "")
     monkeypatch.setenv("ARTIFACT_ROOT", "")
     monkeypatch.setenv("ARTICACT_ROOT", "")
@@ -1205,6 +1212,32 @@ def test_run_agent_allows_paused_workstream_when_explicitly_overridden(mock_pope
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_preserves_task_pause_set_after_task_load(mock_popen, mock_which, workspace, monkeypatch):
+    ws = create_workstream(name="Pause Race WS", base_dir=workspace)
+    task = create_task(ws.id, title="T", base_dir=workspace)
+
+    original_build_system_prompt = agents_module._build_system_prompt
+    pause_triggered = {"value": False}
+
+    def _pause_during_startup(agent_def, base_dir):
+        if not pause_triggered["value"]:
+            pause_task(task.id, base_dir=workspace)
+            pause_triggered["value"] = True
+        return original_build_system_prompt(agent_def, base_dir)
+
+    monkeypatch.setattr(agents_module, "_build_system_prompt", _pause_during_startup)
+
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    task_fresh = read_task(task.id, workspace)
+
+    assert task_fresh.paused is True
+    assert any(entry.type == "task_paused" for entry in task_fresh.audit)
+    assert not any(entry.type == "task_resumed" for entry in task_fresh.audit)
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_releases_matching_lock(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Lock WS", base_dir=workspace)
     task = create_task(ws.id, title="T", base_dir=workspace)
@@ -1614,6 +1647,73 @@ def test_run_agent_can_use_copilot_runtime(mock_popen, mock_which, workspace):
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_routes_copilot_through_beans_proxy(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("BEANS_PROXY", "true")
+    monkeypatch.setenv("BEANS_PROXY_HOST", "127.0.0.1")
+    monkeypatch.setenv("BEANS_PROXY_PORT", "8123")
+    monkeypatch.setenv("ORCHESTRATION_AGENT_RUNTIME", "copilot")
+    monkeypatch.setenv("COPILOT_MODEL", "gpt-5.4")
+    monkeypatch.setattr("orchestration.agents._fetch_beans_proxy_usage_records", lambda pseudo_key: [])
+
+    task = create_task(create_workstream(name="Proxy WS", base_dir=workspace).id, title="Track Me", base_dir=workspace)
+
+    run_agent("test_agent", task_ids=[task.id], base_dir=workspace)
+
+    child_env = mock_popen.call_args.kwargs["env"]
+    assert child_env["COPILOT_PROVIDER_BASE_URL"] == "http://127.0.0.1:8123"
+    assert child_env["COPILOT_PROVIDER_TYPE"] == "openai"
+    assert child_env["COPILOT_PROVIDER_API_KEY"] == f"task-{task.id}"
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "gpt-5.4"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+@patch("orchestration.agents.subprocess.run")
+def test_run_agent_routes_cline_through_beans_proxy(mock_run, mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("BEANS_PROXY", "true")
+    monkeypatch.setenv("BEANS_PROXY_HOST", "127.0.0.1")
+    monkeypatch.setenv("BEANS_PROXY_PORT", "8123")
+    monkeypatch.setenv("CLINE_DEFAULT_LLM", "anthropic/claude-sonnet-4-20250514")
+    monkeypatch.setattr("orchestration.agents._fetch_beans_proxy_usage_records", lambda pseudo_key: [])
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "cline_proxy_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Cline Proxy Agent\n"
+            "description: Runs with Cline via Beans\n"
+            "x-runtime: cline\n"
+            "---\n"
+            "You are runtime-aware.\n"
+        )
+
+    ws = create_workstream(name="Proxy WS", base_dir=workspace)
+    task = create_task(ws.id, title="Track Me", base_dir=workspace)
+
+    run_agent("Cline Proxy Agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    auth_cmd = mock_run.call_args.args[0]
+    assert auth_cmd[:4] == ["/usr/bin/cline", "auth", "--provider", "openai-compatible"]
+    assert "--baseurl" in auth_cmd
+    assert auth_cmd[auth_cmd.index("--baseurl") + 1] == "http://127.0.0.1:8123"
+    assert "--apikey" in auth_cmd
+    assert auth_cmd[auth_cmd.index("--apikey") + 1] == f"task-{task.id}"
+    assert auth_cmd[auth_cmd.index("--modelid") + 1] == "claude-sonnet-4-20250514"
+
+    cmd = mock_popen.call_args.args[0]
+    assert "-P" in cmd
+    assert cmd[cmd.index("-P") + 1] == "openai-compatible"
+    assert cmd[cmd.index("-m") + 1] == "claude-sonnet-4-20250514"
+
+    child_env = mock_popen.call_args.kwargs["env"]
+    assert "CLINE_DATA_DIR" in child_env
+    assert not os.path.exists(child_env["CLINE_DATA_DIR"])
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_copilot_runtime_strips_openai_key_from_child_env(mock_popen, mock_which, workspace, monkeypatch):
     monkeypatch.setenv("ORCHESTRATION_AGENT_RUNTIME", "copilot")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
@@ -1626,6 +1726,32 @@ def test_run_agent_copilot_runtime_strips_openai_key_from_child_env(mock_popen, 
     child_env = mock_popen.call_args.kwargs["env"]
     assert "OPENAI_API_KEY" not in child_env
     assert child_env["GH_TOKEN"] == "test-github-token"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_syncs_task_token_usage_from_beans_proxy(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("BEANS_PROXY", "true")
+    monkeypatch.setenv("ORCHESTRATION_AGENT_RUNTIME", "copilot")
+    monkeypatch.setattr(
+        "orchestration.agents._fetch_beans_proxy_usage_records",
+        lambda pseudo_key: [
+            {"input_tokens": 100, "output_tokens": 25},
+            {"input_tokens": 50, "output_tokens": 10},
+            {"input_tokens": 0, "output_tokens": 0, "error": "upstream_timeout"},
+        ],
+    )
+
+    ws = create_workstream(name="Proxy WS", base_dir=workspace)
+    task = create_task(ws.id, title="Track Me", base_dir=workspace)
+
+    run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
+
+    task_obj = read_task(task.id, workspace)
+    assert task_obj.token_usage["pseudo_key"] == f"task-{task.id}"
+    assert task_obj.token_usage["input_tokens"] == 150
+    assert task_obj.token_usage["output_tokens"] == 35
+    assert task_obj.token_usage["request_count"] == 2
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")

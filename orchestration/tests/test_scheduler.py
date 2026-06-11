@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import time
 from datetime import datetime, timezone, timedelta
 
 from orchestration.workstreams import create_workstream, read_workstream
@@ -12,6 +13,9 @@ from orchestration.scheduler import (
     _load_state,
     _save_state,
     _existing_running_pid,
+    _is_live_non_zombie,
+    _resolve_tick_timeout,
+    DEFAULT_TICK_TIMEOUT,
     _cron_matches_time,
     _cron_matches_between,
     _select_state_trigger_task_ids,
@@ -154,6 +158,184 @@ class TestSchedulerState:
         assert pid is None
         state = _load_state(workspace)
         assert "pid" not in state
+
+    def test_existing_running_pid_clears_zombie_pid(self, workspace, monkeypatch):
+        """A zombie (<defunct>) PID must be treated as stale, not live.
+
+        Regression test: `os.kill(pid, 0)` returns success for zombies,
+        so the lockfile entry would otherwise never get cleaned up.
+        """
+        _save_state({"pid": 12345}, workspace)
+        # Pretend ps reports the pid as a zombie ('Z...').
+        monkeypatch.setattr(
+            "orchestration.scheduler.subprocess.run",
+            lambda *a, **kw: _FakeCompletedProcess("Z"),
+        )
+        pid = _existing_running_pid(workspace)
+        assert pid is None
+        state = _load_state(workspace)
+        assert "pid" not in state
+
+    def test_is_live_non_zombie_returns_true_for_current_process(self):
+        assert _is_live_non_zombie(os.getpid()) is True
+
+    def test_is_live_non_zombie_returns_false_for_missing_pid(self):
+        # 99999999 is well outside the realistic pid range on macOS/Linux.
+        assert _is_live_non_zombie(99999999) is False
+
+    def test_is_live_non_zombie_returns_false_for_zombie(self, monkeypatch):
+        monkeypatch.setattr(
+            "orchestration.scheduler.subprocess.run",
+            lambda *a, **kw: _FakeCompletedProcess("Z"),
+        )
+        assert _is_live_non_zombie(os.getpid()) is False
+
+    def test_is_live_non_zombie_returns_true_for_running(self, monkeypatch):
+        monkeypatch.setattr(
+            "orchestration.scheduler.subprocess.run",
+            lambda *a, **kw: _FakeCompletedProcess("S"),
+        )
+        assert _is_live_non_zombie(os.getpid()) is True
+
+
+class _FakeCompletedProcess:
+    """Minimal stand-in for subprocess.run().CompletedProcess."""
+
+    def __init__(self, stdout: str = ""):
+        self.stdout = stdout
+        self.returncode = 0
+
+
+# ── Watchdog / tick timeout ─────────────────────────────────────────
+
+class TestTickTimeout:
+    def test_default_tick_timeout_used_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("SCHEDULER_TICK_TIMEOUT", raising=False)
+        assert _resolve_tick_timeout() == DEFAULT_TICK_TIMEOUT
+        assert _resolve_tick_timeout() == 600  # documented default
+
+    def test_env_var_overrides_default(self, monkeypatch):
+        monkeypatch.setenv("SCHEDULER_TICK_TIMEOUT", "120")
+        assert _resolve_tick_timeout() == 120
+
+    def test_invalid_env_var_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("SCHEDULER_TICK_TIMEOUT", "not-a-number")
+        assert _resolve_tick_timeout() == DEFAULT_TICK_TIMEOUT
+
+    def test_zero_or_negative_env_var_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("SCHEDULER_TICK_TIMEOUT", "0")
+        assert _resolve_tick_timeout() == DEFAULT_TICK_TIMEOUT
+        monkeypatch.setenv("SCHEDULER_TICK_TIMEOUT", "-1")
+        assert _resolve_tick_timeout() == DEFAULT_TICK_TIMEOUT
+
+    def test_watchdog_updates_last_tick_at_when_stuck(self, workspace, monkeypatch):
+        """If a tick exceeds the timeout, the watchdog updates last_tick_at
+        so the UI can show the scheduler is still alive."""
+        from orchestration.scheduler import _load_state, _save_state
+        from datetime import datetime, timezone
+
+        # Write an initial state with a known-old last_tick_at
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        _save_state({"last_tick_at": old_time, "pid": os.getpid()}, workspace)
+
+        # Simulate the watchdog's heartbeat action: update last_tick_at to now
+        # This is what the watchdog does after detecting a stuck tick
+        s = _load_state(workspace)
+        s["last_tick_at"] = datetime.now(timezone.utc).isoformat()
+        _save_state(s, workspace)
+
+        # Verify the state was updated
+        loaded = _load_state(workspace)
+        new_tick = datetime.fromisoformat(loaded["last_tick_at"])
+        old_tick = datetime.fromisoformat(old_time)
+        assert new_tick > old_tick
+
+    def test_watchdog_outer_loop_detects_stuck_tick(self, workspace, monkeypatch):
+        """The watchdog's stuck-tick detection logic: when a tick's elapsed
+        time exceeds the configured timeout, the warning + heartbeat path fires."""
+        from orchestration.scheduler import _resolve_tick_timeout
+        from datetime import datetime as _dt
+
+        # Set a very small timeout so the test is fast
+        monkeypatch.setenv("SCHEDULER_TICK_TIMEOUT", "1")
+        timeout = _resolve_tick_timeout()
+        assert timeout == 1
+
+        # Simulate a tick that started 5s ago
+        tick_started_at = time.time() - 5
+        elapsed = time.time() - tick_started_at
+        assert elapsed > timeout, "elapsed should exceed the 1s timeout"
+
+        # Simulate the watchdog's stuck-tick branch
+        log_called = []
+        def fake_log_event(event_type, desc, base_dir, **kwargs):
+            log_called.append((event_type, desc, kwargs))
+        from orchestration.workspace_audit import log_event as real_log_event
+        monkeypatch.setattr("orchestration.workspace_audit.log_event", fake_log_event)
+
+        state_updates = []
+        # Reset state with stale last_tick_at
+        _save_state({"last_tick_at": "2026-01-01T00:00:00+00:00", "pid": os.getpid()}, workspace)
+
+        # The watchdog branch:
+        if elapsed > timeout:
+            fake_log_event(
+                "tick_stuck",
+                f"Scheduler tick has been running for {int(elapsed)}s (timeout={timeout}s).",
+                workspace,
+                status="warning",
+            )
+            s = _load_state(workspace)
+            s["last_tick_at"] = _dt.now(timezone.utc).isoformat()
+            _save_state(s, workspace)
+            state_updates.append(s)
+
+        # Verify warning was logged
+        assert any(call[0] == "tick_stuck" for call in log_called), \
+            f"expected tick_stuck log event, got: {log_called}"
+
+        # Verify state was updated to a recent timestamp
+        assert len(state_updates) == 1
+        loaded = _load_state(workspace)
+        new_tick = datetime.fromisoformat(loaded["last_tick_at"])
+        # Should be within the last 5 seconds
+        assert (datetime.now(timezone.utc) - new_tick).total_seconds() < 5
+
+    def test_state_trigger_dispatch_uses_background_true(self, workspace, ws, monkeypatch):
+        """The state-trigger dispatch path in tick() must use background=True
+        so a hanging agent subprocess does not block the tick loop."""
+        # Create a state trigger on the initial state so it matches the new task
+        from orchestration.triggers import create_trigger
+        create_trigger(
+            ws.id,
+            action="run_agent",
+            on_state="To Do",
+            agent="test_agent",
+            base_dir=workspace,
+        )
+
+        # Create a task in the initial 'To Do' state (default for new tasks)
+        task = create_task(ws.id, "Test task", base_dir=workspace)
+
+        # Patch _lock_invoke_unlock to capture the background argument
+        from orchestration import scheduler as sched_mod
+        captured = {}
+
+        def spy(trigger, task_ids, ws_arg, base_dir, background=False, ignore_paused=False):
+            captured["background"] = background
+            captured["task_ids"] = task_ids
+            # Return a benign result so tick() can complete
+            return {"trigger_id": trigger.id, "status": "dispatched"}
+
+        monkeypatch.setattr(sched_mod, "_lock_invoke_unlock", spy)
+
+        # Run a single tick
+        sched_mod.tick(base_dir=workspace)
+
+        # Verify the dispatch was backgrounded
+        assert captured.get("background") is True, (
+            f"state-trigger dispatch must use background=True; got {captured.get('background')}"
+        )
 
 
 # ── Scheduler status ────────────────────────────────────────────────

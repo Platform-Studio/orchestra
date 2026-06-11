@@ -4,6 +4,7 @@ import os
 import yaml
 from datetime import datetime, timezone, timedelta
 
+from ._atomic import atomic_write_yaml
 from .models import Lock, now_iso
 from .persistence import resolve_workstream_root
 from .tasks import _find_task_file, _tasks_dir, _tasks_dir_for_workstream
@@ -198,8 +199,11 @@ def update_lock_pid(task_id: str, subprocess_pid: int, base_dir: str = ".") -> N
     if data is None:
         return
     data["subprocess_pid"] = subprocess_pid
-    with open(lock_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    # Atomic: a SIGKILL between the read and the write would otherwise
+    # leave the lock file truncated to zero bytes, which the lock
+    # reader would then treat as "no lock" — silently allowing a second
+    # agent to acquire a lock the first agent still owns.
+    atomic_write_yaml(lock_path, data)
 
 
 def force_release_lock(task_id: str, base_dir: str = ".") -> bool:

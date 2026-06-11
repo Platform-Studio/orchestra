@@ -319,6 +319,7 @@ class Task:
     retry_count: int = 0
     last_failure_at: str = None
     paused: bool = False
+    token_usage: dict = None
 
     def to_dict(self) -> dict:
         d = {
@@ -349,6 +350,8 @@ class Task:
             d["retry_count"] = self.retry_count
         if self.last_failure_at is not None:
             d["last_failure_at"] = self.last_failure_at
+        if self.token_usage is not None:
+            d["token_usage"] = self.token_usage
         if hasattr(self, '_parse_error'):
             d["_error"] = self._parse_error
         return d
@@ -375,6 +378,7 @@ class Task:
             retry_count=data.get("retry_count", 0),
             last_failure_at=data.get("last_failure_at"),
             paused=bool(data.get("paused", False)),
+            token_usage=data.get("token_usage"),
         )
 
     def add_audit(self, event_type: str, description: str):

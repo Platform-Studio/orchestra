@@ -11,6 +11,7 @@ from orchestration.tasks import (
     read_task_from_workstream,
     update_task,
     list_tasks,
+    list_board_tasks,
     list_tasks_for_workstream,
     move_task_up,
     move_task_down,
@@ -97,6 +98,22 @@ class TestReadTask:
         loaded = read_task(task.id, base_dir=workspace)
         assert loaded.title == "Read Me"
         assert loaded.id == task.id
+
+    def test_read_preserves_token_usage(self, workspace, ws):
+        task = create_task(ws.id, title="Tokened", base_dir=workspace)
+        task.token_usage = {
+            "pseudo_key": f"task-{task.id}",
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "request_count": 2,
+            "updated_at": "2026-06-10T00:00:00+00:00",
+        }
+        from orchestration.tasks import _save_task
+        _save_task(task, base_dir=workspace)
+
+        loaded = read_task(task.id, base_dir=workspace)
+        assert loaded.token_usage["input_tokens"] == 120
+        assert loaded.token_usage["output_tokens"] == 45
 
     def test_read_task_uses_workspace_index_not_per_task_root_resolution(self, workspace, tmp_path, monkeypatch):
         working_root = tmp_path / "career_pivot_repo"
@@ -229,6 +246,70 @@ class TestListTasks:
 
         tasks = list_tasks_for_workstream(loaded_child, base_dir=workspace)
         assert [t.id for t in tasks] == [task.id]
+
+    def test_list_board_tasks_skips_heavy_fields_but_preserves_board_metadata(self, workspace, ws):
+        task = create_task(ws.id, title="Board task", base_dir=workspace)
+        task.description = "Long description"
+        task.comments = [{"message": "hello\nworld\nwith wrapped content"}]
+        task.attachments = ["foo/bar.md"]
+        task.token_usage = {"input_tokens": 123, "output_tokens": 45}
+        task.retry_count = 2
+        task.last_failure_at = "2026-06-10T00:00:00+00:00"
+        task.paused = True
+        task.add_audit("updated", "Added details")
+
+        from orchestration.tasks import _save_task
+
+        _save_task(task, base_dir=workspace)
+
+        loaded = list_board_tasks(ws.id, base_dir=workspace)
+
+        assert len(loaded) == 1
+        board_task = loaded[0]
+        assert board_task.title == "Board task"
+        assert board_task.description is None
+        assert board_task.comments == []
+        assert board_task.audit == []
+        assert board_task.attachments == []
+        assert board_task.token_usage == {"input_tokens": 123, "output_tokens": 45}
+        assert board_task.retry_count == 2
+        assert board_task.last_failure_at == "2026-06-10T00:00:00+00:00"
+        assert board_task.paused is True
+
+    def test_list_board_tasks_handles_wrapped_quoted_title(self, workspace, ws):
+        task = create_task(ws.id, title="placeholder", base_dir=workspace)
+
+        from orchestration.tasks import _task_path
+
+        title = 'Setup stepper shows "5First Meeting Type" — number badge and label run together with no space'
+        wrapped_title = (
+            'title: "Setup stepper shows \\\"5First Meeting Type\\\" \\u2014 number badge and label' + '\\'
+        )
+        task_path = Path(_task_path(workspace, ws.id, task.id))
+        task_path.write_text(
+            "\n".join(
+                [
+                    f"id: {task.id}",
+                    f"workstream_id: {ws.id}",
+                    wrapped_title,
+                    '  \\ run together with no space"',
+                    "status: To Do",
+                    "tags: []",
+                    "comments: []",
+                    "audit: []",
+                    "attachments: []",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        loaded = list_board_tasks(ws.id, base_dir=workspace)
+        board_task = next(item for item in loaded if item.id == task.id)
+
+        assert board_task.status == "To Do"
+        assert board_task.title == title
+        assert getattr(board_task, "_parse_error", None) is None
 
 
 class TestTaskOrdering:
@@ -761,3 +842,111 @@ class TestReorderTasksInWorkstream:
         create_task(prod_ws.id, title="T3", base_dir=workspace)
         result = reorder_tasks_in_workstream(prod_ws.id, base_dir=workspace)
         assert result["total_tasks"] == 3
+
+
+class TestAtomicSave:
+    """Regression tests for crash-safe task file writes.
+
+    These guard against the corruption pattern seen on 2026-06-10 where a laptop
+    restart mid-write left a task YAML truncated (an unterminated quoted
+    scalar in the last ``comments`` entry, which made the file unloadable
+    until it was patched by hand). The fix is to write task YAMLs to a
+    tempfile, ``fsync``, then ``os.replace`` into place — so a SIGKILL or
+    power loss mid-write leaves the previous good copy intact.
+    """
+
+    def _task_path(self, workspace, ws_id, task_id):
+        from orchestration.tasks import _task_path
+        return _task_path(workspace, ws_id, task_id)
+
+    def test_normal_save_writes_valid_yaml(self, workspace, ws):
+        # Baseline: a normal save produces a parseable file on disk.
+        from orchestration import tasks as tasks_mod
+        from orchestration.workstreams import resolve_workstream_state_root
+
+        task = create_task(ws.id, title="Baseline", base_dir=workspace)
+        path = self._task_path(workspace, ws.id, task.id)
+        assert os.path.exists(path)
+        # File parses and round-trips
+        import yaml
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        assert isinstance(data, dict)
+        assert data["id"] == task.id
+        assert data["title"] == "Baseline"
+
+    def test_interrupted_write_leaves_prior_file_intact(self, workspace, ws, monkeypatch):
+        # If yaml.dump raises mid-save, the *real* task file must remain the
+        # old valid version. Under the old (non-atomic) implementation this
+        # left a zero-byte or truncated file.
+        task = create_task(ws.id, title="Original title", base_dir=workspace)
+        path = self._task_path(workspace, ws.id, task.id)
+        original_bytes = open(path, "rb").read()
+        assert original_bytes  # non-empty
+
+        # Make yaml.dump explode the moment _save_task tries to serialize
+        # the updated task. This simulates a SIGKILL / OOM mid-write.
+        from orchestration import tasks as tasks_mod
+        import yaml as _yaml
+
+        real_dump = _yaml.dump
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated crash mid-dump")
+        monkeypatch.setattr(tasks_mod.yaml, "dump", boom)
+
+        with pytest.raises(RuntimeError, match="simulated crash mid-dump"):
+            update_task(task.id, description="This update should not land", base_dir=workspace)
+
+        # The on-disk file must still be the previous good version.
+        after_bytes = open(path, "rb").read()
+        assert after_bytes == original_bytes, (
+            "Atomic write failed: file content changed despite the dump raising. "
+            "A non-atomic implementation would have truncated or zeroed the file."
+        )
+        # And the task is still readable as the original.
+        reloaded = read_task(task.id, base_dir=workspace)
+        assert reloaded.title == "Original title"
+        assert reloaded.description != "This update should not land"
+
+    def test_interrupted_write_leaves_no_leftover_tempfile(self, workspace, ws, monkeypatch):
+        # If the save fails, the .tmp file in the tasks directory must be
+        # cleaned up so it doesn't accumulate cruft.
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        tasks_dir = os.path.dirname(self._task_path(workspace, ws.id, task.id))
+
+        from orchestration import tasks as tasks_mod
+        import yaml as _yaml
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated crash")
+        monkeypatch.setattr(tasks_mod.yaml, "dump", boom)
+
+        with pytest.raises(RuntimeError):
+            update_task(task.id, description="x", base_dir=workspace)
+
+        leftovers = [
+            name for name in os.listdir(tasks_dir)
+            if name.startswith(".atomic.") and name.endswith(".tmp")
+        ]
+        assert leftovers == [], f"Tempfile leak after failed write: {leftovers}"
+
+    def test_atomic_write_uses_os_replace(self, workspace, ws, monkeypatch):
+        # Sanity-check the mechanism: after a successful save, no .tmp file
+        # is left in the tasks directory (os.replace moved it into place).
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        tasks_dir = os.path.dirname(self._task_path(workspace, ws.id, task.id))
+        leftovers_before = [
+            n for n in os.listdir(tasks_dir)
+            if n.startswith(".atomic.") and n.endswith(".tmp")
+        ]
+        assert leftovers_before == []
+
+        update_task(task.id, description="updated", base_dir=workspace)
+
+        leftovers_after = [
+            n for n in os.listdir(tasks_dir)
+            if n.startswith(".atomic.") and n.endswith(".tmp")
+        ]
+        assert leftovers_after == [], (
+            f"atomic_write_yaml did not move the tempfile into place: {leftovers_after}"
+        )

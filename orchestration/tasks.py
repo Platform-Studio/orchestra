@@ -5,6 +5,7 @@ import re
 import yaml
 from decimal import Decimal, InvalidOperation
 
+from ._atomic import atomic_write_yaml
 from .artifacts import read_artifact, _resolve_artifact_root, _validate_path
 from .image_validation import _is_image_path, validate_image_artifact
 from .models import Task, RetryConfig, new_id, now_iso
@@ -15,6 +16,7 @@ RANK_GAP = Decimal("1024")
 
 
 COMMENT_DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})\]\s*")
+TOP_LEVEL_YAML_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):(.*)$")
 
 
 class CorruptTaskError(Exception):
@@ -129,9 +131,158 @@ def _format_rank(rank_value: Decimal) -> str:
 
 
 def _last_audit_ts(task: Task) -> str:
+    board_last_audit_ts = getattr(task, "_last_audit_ts", "") or ""
+    if board_last_audit_ts:
+        return board_last_audit_ts
     if not task.audit:
         return ""
     return getattr(task.audit[-1], "timestamp", "") or ""
+
+
+def _summary_task_from_data(data: dict, workstream_id: str) -> Task:
+    retry = RetryConfig.from_dict(data.get("retry"))
+    task = Task(
+        id=data["id"],
+        workstream_id=data.get("workstream_id") or workstream_id,
+        title=data["title"],
+        status=data.get("status", "pending"),
+        rank=data.get("rank"),
+        creator=data.get("creator"),
+        tags=data.get("tags", []),
+        retry=retry,
+        scheduled_at=data.get("scheduled_at"),
+        scheduled_action=data.get("scheduled_action"),
+        retry_count=data.get("retry_count", 0),
+        last_failure_at=data.get("last_failure_at"),
+        paused=bool(data.get("paused", False)),
+        token_usage=data.get("token_usage"),
+    )
+    audit = data.get("audit")
+    if isinstance(audit, list) and audit:
+        last_entry = audit[-1]
+        if isinstance(last_entry, dict):
+            task._last_audit_ts = str(last_entry.get("timestamp") or "")
+    return task
+
+
+def _parse_yaml_scalar(value: str):
+    text = str(value or "").strip()
+    if text == "":
+        return ""
+    return yaml.safe_load(text)
+
+
+def _parse_wrapped_top_level_scalar(lines: list[str], start_index: int, initial_value: str):
+    value_lines = [initial_value]
+    next_index = start_index + 1
+
+    while True:
+        try:
+            return _parse_yaml_scalar("\n".join(value_lines)), next_index
+        except yaml.YAMLError:
+            if next_index >= len(lines):
+                raise
+
+            continuation = lines[next_index].rstrip("\n")
+            if TOP_LEVEL_YAML_KEY_RE.match(continuation) or not continuation.startswith(" "):
+                raise
+
+            value_lines.append(continuation)
+            next_index += 1
+
+
+def _read_board_task_file(file_path: str, task_id: str, workstream_id: str) -> Task:
+    data = {
+        "id": task_id,
+        "workstream_id": workstream_id,
+        "tags": [],
+    }
+    current_section = None
+    token_usage_lines = []
+
+    try:
+        with open(file_path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+
+        line_index = 0
+        while line_index < len(lines):
+            line = lines[line_index].rstrip("\n")
+            match = TOP_LEVEL_YAML_KEY_RE.match(line)
+            if match:
+                key = match.group(1)
+                rest = match.group(2).strip()
+                current_section = None
+
+                if key in {
+                    "id",
+                    "workstream_id",
+                    "title",
+                    "status",
+                    "rank",
+                    "creator",
+                    "scheduled_at",
+                    "retry_count",
+                    "last_failure_at",
+                    "paused",
+                }:
+                    if rest:
+                        data[key], line_index = _parse_wrapped_top_level_scalar(lines, line_index, rest)
+                        continue
+                elif key == "tags":
+                    data["tags"] = []
+                    current_section = "tags"
+                elif key == "token_usage":
+                    if rest:
+                        data["token_usage"], line_index = _parse_wrapped_top_level_scalar(lines, line_index, rest)
+                        continue
+                    token_usage_lines = []
+                    current_section = "token_usage"
+                elif key == "audit":
+                    current_section = "audit"
+
+                line_index += 1
+                continue
+
+            if current_section == "tags":
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    data["tags"].append(_parse_yaml_scalar(stripped[2:]))
+                line_index += 1
+                continue
+
+            if current_section == "token_usage":
+                if line.startswith("  ") or not line.strip():
+                    token_usage_lines.append(line)
+                line_index += 1
+                continue
+
+            if current_section == "audit":
+                stripped = line.lstrip()
+                if stripped.startswith("timestamp:"):
+                    data["_last_audit_ts"] = str(_parse_yaml_scalar(stripped[len("timestamp:"):]) or "")
+                elif stripped.startswith("- timestamp:"):
+                    data["_last_audit_ts"] = str(_parse_yaml_scalar(stripped[len("- timestamp:"):]) or "")
+                line_index += 1
+                continue
+
+            line_index += 1
+    except Exception as e:
+        raise CorruptTaskError(f"Task file {task_id}.yaml contains invalid YAML: {e}") from e
+
+    if token_usage_lines:
+        try:
+            token_usage_data = yaml.safe_load("token_usage:\n" + "\n".join(token_usage_lines)) or {}
+        except Exception as e:
+            raise CorruptTaskError(f"Task file {task_id}.yaml is structurally invalid: {e}") from e
+        data["token_usage"] = token_usage_data.get("token_usage")
+
+    if not isinstance(data.get("title"), str) or not data["title"]:
+        raise CorruptTaskError(f"Task file {task_id}.yaml is structurally invalid: missing title")
+
+    task = _summary_task_from_data(data, workstream_id)
+    if data.get("_last_audit_ts"):
+        task._last_audit_ts = data["_last_audit_ts"]
+    return task
 
 
 def _task_sort_key(task: Task):
@@ -202,8 +353,7 @@ def _save_task(task: Task, base_dir: str = ".") -> None:
     tasks_dir = _tasks_dir(base_dir, task.workstream_id)
     os.makedirs(tasks_dir, exist_ok=True)
     path = _task_path(base_dir, task.workstream_id, task.id)
-    with open(path, "w") as f:
-        yaml.dump(task.to_dict(), f, default_flow_style=False, sort_keys=False)
+    atomic_write_yaml(path, task.to_dict())
 
 
 def _read_task_file(file_path: str, task_id: str) -> Task:
@@ -297,6 +447,7 @@ def _list_tasks_from_dir(
     workstream_id: str,
     status: str = None,
     tags: list = None,
+    summary_only: bool = False,
 ) -> list:
     if not os.path.exists(tasks_dir):
         return []
@@ -306,12 +457,33 @@ def _list_tasks_from_dir(
         if not fname.endswith(".yaml"):
             continue
         path = os.path.join(tasks_dir, fname)
+        task_id = fname.replace(".yaml", "")
+        if summary_only:
+            try:
+                task = _read_board_task_file(path, task_id, workstream_id)
+            except Exception as e:
+                broken = Task(
+                    id=task_id,
+                    workstream_id=workstream_id,
+                    title=f"[CORRUPT] {fname}",
+                    status="_error",
+                    tags=["_error"],
+                )
+                broken._parse_error = str(e)
+                result.append(broken)
+                continue
+            if status and task.status != status:
+                continue
+            if tags and not all(t in task.tags for t in tags):
+                continue
+            result.append(task)
+            continue
+
         try:
             with open(path) as f:
                 data = yaml.safe_load(f)
         except Exception as e:
             # Corrupt YAML — return a placeholder so the UI can show it
-            task_id = fname.replace(".yaml", "")
             broken = Task(
                 id=task_id,
                 workstream_id=workstream_id,
@@ -433,6 +605,21 @@ def list_tasks(
         workstream_id,
         status=status,
         tags=tags,
+    )
+
+
+def list_board_tasks(
+    workstream_id: str,
+    status: str = None,
+    tags: list = None,
+    base_dir: str = ".",
+) -> list:
+    return _list_tasks_from_dir(
+        _tasks_dir(base_dir, workstream_id),
+        workstream_id,
+        status=status,
+        tags=tags,
+        summary_only=True,
     )
 
 

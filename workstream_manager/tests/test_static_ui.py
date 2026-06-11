@@ -243,6 +243,15 @@ def test_board_agent_run_chips_include_model_metadata() -> None:
     assert 'runMeta.summaryText' in html
 
 
+def test_board_cards_render_token_usage_footer_when_present() -> None:
+    html = _index_html()
+
+    assert 'class="card-token-usage"' in html
+    assert '!cardRun && task && task.token_usage' in html
+    assert 'task.token_usage.input_tokens' in html
+    assert 'Tokens: ${esc(Number(task.token_usage.input_tokens || 0).toLocaleString())} in ${esc(Number(task.token_usage.output_tokens || 0).toLocaleString())} out' in html
+
+
 def test_agent_run_details_show_cli_flags_separately_from_prompt() -> None:
     html = _index_html()
 
