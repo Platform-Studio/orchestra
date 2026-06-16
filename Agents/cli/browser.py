@@ -317,19 +317,43 @@ class BrowserManager:
         except Exception:
             self.browser = self.pw.chromium.launch(headless=self.headless, args=stealth_args)
 
+        browser_on = getattr(self.browser, "on", None)
+        if callable(browser_on):
+            browser_on("disconnected", lambda: self._handle_browser_disconnected())
+
     def _stop_runtime(self):
-        if self.browser:
+        browser = self.browser
+        pw = self.pw
+        self.browser = None
+        self.pw = None
+
+        if browser:
             try:
-                self.browser.close()
+                browser.close()
             except Exception:
                 pass
-            self.browser = None
-        if self.pw:
+        if pw:
             try:
-                self.pw.stop()
+                pw.stop()
             except Exception:
                 pass
-            self.pw = None
+
+    def _remove_session(self, sid):
+        return self.sessions.pop(sid, None)
+
+    def _handle_session_context_closed(self, sid, context):
+        session_info = self.sessions.get(sid)
+        if session_info is None:
+            return
+        if context is not None and session_info.get("context") is not context:
+            return
+        self._remove_session(sid)
+        if not self.sessions:
+            self._stop_runtime()
+
+    def _handle_browser_disconnected(self):
+        self.sessions.clear()
+        self._stop_runtime()
 
     def start(self, headless=False):
         self.headless = headless
@@ -427,6 +451,9 @@ class BrowserManager:
         if auth_path and Path(auth_path).exists():
             ctx_kwargs["storage_state"] = auth_path
         context = self.browser.new_context(**ctx_kwargs)
+        context_on = getattr(context, "on", None)
+        if callable(context_on):
+            context_on("close", lambda: self._handle_session_context_closed(sid, context))
         context.add_init_script(self._STEALTH_INIT)
         page = context.new_page()
         session_info = {
@@ -549,11 +576,11 @@ class BrowserManager:
         sid = params.get("session")
         if sid not in self.sessions:
             return {"error": f"Unknown session: {sid}"}
+        session_info = self._remove_session(sid)
         try:
-            self.sessions[sid]["context"].close()
+            session_info["context"].close()
         except Exception:
             pass
-        del self.sessions[sid]
         if not self.sessions:
             # Tear down Chromium/Playwright when the last session closes so
             # background browser processes do not linger with zero windows.

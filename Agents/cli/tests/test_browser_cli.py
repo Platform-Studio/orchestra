@@ -39,12 +39,41 @@ class _FakeContext:
         self.page = _FakePage()
         self.init_script = None
         self.closed = False
+        self.handlers = {}
 
     def add_init_script(self, script):
         self.init_script = script
 
     def new_page(self):
         return self.page
+
+    def on(self, event_name, handler):
+        self.handlers.setdefault(event_name, []).append(handler)
+
+    def emit(self, event_name):
+        for handler in self.handlers.get(event_name, []):
+            handler()
+
+    def close(self):
+        self.closed = True
+        self.emit("close")
+
+
+class _FakeBrowser:
+    def __init__(self, context_factory):
+        self.context_factory = context_factory
+        self.handlers = {}
+        self.closed = False
+
+    def on(self, event_name, handler):
+        self.handlers.setdefault(event_name, []).append(handler)
+
+    def emit(self, event_name):
+        for handler in self.handlers.get(event_name, []):
+            handler()
+
+    def new_context(self, **kwargs):
+        return self.context_factory(**kwargs)
 
     def close(self):
         self.closed = True
@@ -247,6 +276,53 @@ def test_cmd_close_stops_runtime_when_last_session_closed():
     assert stop_calls == ["pw-stop"]
     assert manager.browser is None
     assert manager.pw is None
+
+
+def test_external_context_close_removes_session_and_stops_runtime():
+    browser = _load_browser_module()
+    manager = browser.BrowserManager()
+    fake_context = _FakeContext()
+    fake_browser = _FakeBrowser(lambda **kwargs: fake_context)
+    stop_calls = []
+
+    manager.browser = fake_browser
+    manager.pw = SimpleNamespace(stop=lambda: stop_calls.append("pw-stop"))
+
+    opened = manager.cmd_open({"url": "https://example.com"})
+    session = opened["session"]
+
+    fake_context.emit("close")
+
+    assert session not in manager.sessions
+    assert fake_browser.closed is True
+    assert stop_calls == ["pw-stop"]
+    assert manager.browser is None
+    assert manager.pw is None
+
+
+def test_browser_disconnect_clears_sessions_and_stops_runtime():
+    browser = _load_browser_module()
+    manager = browser.BrowserManager()
+    fake_context = _FakeContext()
+    fake_browser = _FakeBrowser(lambda **kwargs: fake_context)
+    stop_calls = []
+
+    manager.pw = SimpleNamespace(
+        chromium=SimpleNamespace(launch=lambda **kwargs: fake_browser),
+        stop=lambda: stop_calls.append("pw-stop"),
+    )
+
+    manager._ensure_runtime()
+    opened = manager.cmd_open({"url": "https://example.com"})
+
+    fake_browser.emit("disconnected")
+
+    assert manager.sessions == {}
+    assert fake_browser.closed is True
+    assert stop_calls == ["pw-stop"]
+    assert manager.browser is None
+    assert manager.pw is None
+    assert opened["session"] not in manager.sessions
 
 
 def test_extract_playwright_orphan_pids_only_matches_playwright_marker():
