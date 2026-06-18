@@ -8,17 +8,12 @@ python3 cli/gen_image.py --prompt "description" --source SOURCE --output "path/t
 
 **Sources** (pick based on need):
 - `openai` — GPT Image 2, best for illustrations and custom conceptual art
-- `fal` — Flux, fast photorealistic generation (~$0.003/image). Supports any fal.ai model.
 - `pexels` — Free stock photo search, good for lifestyle/workplace photography
 - `pixabay` — Free stock photo search, good for supplementary imagery
 
-**Model override:** Use `--model` to specify a model (fal or openai sources only). Defaults: fal → `fal-ai/flux/schnell`, openai → `gpt-image-2`.
-You can find the list of available fal models here: https://fal.ai/models
+**Model override:** Use `--model` to specify an OpenAI image model. Default: `gpt-image-2`.
 
 Examples:
-- `--source fal --model fal-ai/flux-pro/v1.1` — Flux Pro (higher quality, ~$0.05/image)
-- `--source fal --model fal-ai/flux/dev` — Flux Dev (balanced quality/cost)
-- `--source fal --model fal-ai/recraft-v3` — Recraft V3 (design-focused)
 - `--source openai --model gpt-image-2` — GPT Image 2 (default)
 
 **Common sizes:** 1200x628 (Facebook/LinkedIn), 1080x1080 (Instagram square), 1080x1920 (Stories/TikTok), 1280x720 (YouTube thumbnail)

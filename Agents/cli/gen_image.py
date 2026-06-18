@@ -6,11 +6,9 @@ Usage:
     python gen_image.py --prompt "A professional at a career crossroads" --source openai --output path/to/image.png
     python gen_image.py --prompt "career transition" --source pexels --output assets/hero.jpg --count 3
     python gen_image.py --prompt "welding sparks close-up" --source pixabay --output assets/welding.jpg
-    python gen_image.py --prompt "photorealistic office worker" --source fal --output assets/worker.png --size 1080x1080
 
 Sources:
     openai   - GPT Image generation (best for illustrations, conceptual art, custom scenes)
-    fal      - Flux generation via fal.ai (fast, photorealistic, cheaper)
     pexels   - Stock photo search (free, lifestyle/workplace photography)
     pixabay  - Stock photo search (free, supplementary imagery)
 
@@ -144,49 +142,6 @@ def generate_openai(prompt: str, width: int, height: int, output_path: Path, cou
         print(f"[openai] Saved: {out}")
         if revised_prompt and revised_prompt != prompt:
             print(f"  OpenAI revised prompt: {revised_prompt}")
-
-    return saved
-
-
-def generate_fal(prompt: str, width: int, height: int, output_path: Path, count: int, model: str | None = None) -> list[Path]:
-    """Generate images using fal.ai. Supports any fal.ai model identifier."""
-    import fal_client
-
-    api_key = os.environ.get("FAL_KEY")
-    if not api_key:
-        raise RuntimeError("FAL_KEY not set in .env")
-
-    os.environ["FAL_KEY"] = api_key  # fal_client reads from env
-
-    fal_model = model or "fal-ai/flux/schnell"
-
-    saved = []
-    result = fal_client.run(
-        fal_model,
-        arguments={
-            "prompt": prompt,
-            "image_size": {"width": width, "height": height},
-            "num_images": count,
-        },
-    )
-
-    for i, image_data in enumerate(result["images"]):
-        image_url = image_data["url"]
-        out = numbered_path(output_path, i, count)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        download_image(image_url, out)
-        ensure_image_format(out)
-
-        update_manifest(out, {
-            "file": str(out),
-            "source": "fal",
-            "model": fal_model,
-            "prompt": prompt,
-            "size": f"{width}x{height}",
-            "created": datetime.now(timezone.utc).isoformat(),
-        })
-        saved.append(out)
-        print(f"[fal] Saved: {out}")
 
     return saved
 
@@ -347,7 +302,6 @@ def resize_image(path: Path, width: int, height: int) -> None:
 
 SOURCE_HANDLERS = {
     "openai": generate_openai,
-    "fal": generate_fal,
     "pexels": search_pexels,
     "pixabay": search_pixabay,
 }
@@ -361,13 +315,12 @@ def main():
     )
     parser.add_argument("--prompt", required=True, help="Image description or search query")
     parser.add_argument("--source", required=True, choices=SOURCE_HANDLERS.keys(),
-                        help="Image source: openai, fal, pexels, pixabay")
+                        help="Image source: openai, pexels, pixabay")
     parser.add_argument("--output", required=True, help="Output file path (e.g. assets/hero.png)")
     parser.add_argument("--size", default="1024x1024", help="Image dimensions as WxH (default: 1024x1024)")
     parser.add_argument("--count", type=int, default=1, help="Number of images to generate/find (default: 1)")
     parser.add_argument("--model", default=None,
-                        help="Model to use (e.g. fal-ai/flux/schnell, fal-ai/flux-pro/v1.1, gpt-image-2). "
-                            "Defaults: fal → fal-ai/flux/schnell, openai → gpt-image-2")
+                        help="OpenAI image model to use (default: gpt-image-2). Applies only to --source openai")
 
     args = parser.parse_args()
 
@@ -375,9 +328,8 @@ def main():
     output_path = Path(args.output).resolve()
 
     handler = SOURCE_HANDLERS[args.source]
-    # Pass model to sources that support it
     handler_kwargs = {}
-    if args.model and args.source in ("fal", "openai"):
+    if args.model and args.source == "openai":
         handler_kwargs["model"] = args.model
     try:
         saved = handler(args.prompt, width, height, output_path, args.count, **handler_kwargs)
