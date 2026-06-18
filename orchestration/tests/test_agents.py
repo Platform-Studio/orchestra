@@ -61,6 +61,7 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.setenv("WORKSTREAM_ROOT", "")
     monkeypatch.setenv("ARTIFACT_ROOT", "")
     monkeypatch.setenv("ARTICACT_ROOT", "")
+    monkeypatch.setenv("ORCHESTRATION_BASE_ENV_PATH", "")
     monkeypatch.setenv("AUDIO_FILE_PATH", "")
     monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "")
     monkeypatch.setenv("DEFAULT_AGENT_FINISHED_SOUND", "")
@@ -360,6 +361,39 @@ def test_list_agent_runs_demotes_stale_running_status(workspace):
     runs = list_agent_runs(limit=20, base_dir=workspace)
     run = next(r for r in runs if r.get("run_id") == run_id)
     assert run["status"] == "stale"
+
+
+def test_list_agent_runs_reads_bounded_recent_metadata(workspace):
+    for index in range(80):
+        run_id = f"old-run-{index:02d}"
+        meta = _base_run(run_id, "ws-1", [])
+        meta["started_at"] = f"2026-01-01T00:{index:02d}:00+00:00"
+        _write_run_meta(workspace, run_id, meta)
+        path = agents_module._agent_run_meta_path(workspace, run_id)
+        os.utime(path, (index + 1, index + 1))
+
+    newest_ids = []
+    for index in range(10):
+        run_id = f"new-run-{index:02d}"
+        newest_ids.append(run_id)
+        meta = _base_run(run_id, "ws-1", [])
+        meta["started_at"] = f"2026-01-02T00:{index:02d}:00+00:00"
+        _write_run_meta(workspace, run_id, meta)
+        path = agents_module._agent_run_meta_path(workspace, run_id)
+        os.utime(path, (1_000 + index, 1_000 + index))
+
+    original_read_run_meta = agents_module._read_run_meta
+    read_paths = []
+
+    def tracking_read_run_meta(path):
+        read_paths.append(path)
+        return original_read_run_meta(path)
+
+    with patch("orchestration.agents._read_run_meta", side_effect=tracking_read_run_meta):
+        runs = list_agent_runs(limit=5, base_dir=workspace)
+
+    assert [run["run_id"] for run in runs] == list(reversed(newest_ids[-5:]))
+    assert len(read_paths) < 80
 
 
 def test_get_agent_run_demotes_stale_running_status(workspace):
@@ -1064,6 +1098,25 @@ def test_run_agent_applies_mounted_working_directory_env_to_child_process(mock_p
 
     child_env = mock_popen.call_args.kwargs["env"]
     assert child_env["QA_BYPASS_SECRET_STAGING"] == "from-mounted-root"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_applies_base_env_before_workstream_overrides(mock_popen, mock_which, workspace, tmp_path, monkeypatch):
+    base_env = tmp_path / "foundation.env"
+    base_env.write_text("FOUNDATION_ONLY=from-foundation\nOVERRIDE_ME=from-foundation\nMASK_ME=from-foundation\n")
+    monkeypatch.setenv("ORCHESTRATION_BASE_ENV_PATH", str(base_env))
+
+    ws = create_workstream(name="Env WS", base_dir=workspace)
+    set_workstream_env_key(ws.id, "OVERRIDE_ME", "from-workstream", base_dir=workspace)
+    unset_workstream_env_key(ws.id, "MASK_ME", base_dir=workspace)
+
+    run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
+
+    child_env = mock_popen.call_args.kwargs["env"]
+    assert child_env["FOUNDATION_ONLY"] == "from-foundation"
+    assert child_env["OVERRIDE_ME"] == "from-workstream"
+    assert "MASK_ME" not in child_env
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")

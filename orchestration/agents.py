@@ -1445,7 +1445,29 @@ def list_agent_runs(limit: int = 100, base_dir: str = ".") -> list:
         raise ValueError("limit must be > 0")
 
     _ensure_state_dirs(base_dir)
-    meta_paths = sorted(glob.glob(os.path.join(_agent_runs_dir(base_dir), "*.json")))
+
+    # Agent run metadata can grow into tens of thousands of JSON files. The UI
+    # only needs a recent window, so inspect a bounded set of newest candidates
+    # instead of deserializing every historical run before slicing.
+    candidate_count = max(limit * 4, limit + 25)
+    meta_entries = []
+    try:
+        with os.scandir(_agent_runs_dir(base_dir)) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                    stat = entry.stat()
+                except OSError:
+                    continue
+                meta_entries.append((stat.st_mtime_ns, entry.path))
+    except FileNotFoundError:
+        meta_entries = []
+
+    meta_entries.sort(key=lambda item: item[0], reverse=True)
+    meta_paths = [path for _mtime_ns, path in meta_entries[:candidate_count]]
     runs = []
     for path in meta_paths:
         try:

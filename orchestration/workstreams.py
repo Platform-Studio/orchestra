@@ -19,6 +19,7 @@ TAG_COLOR_PALETTE = (
 )
 _WORKSTREAM_CACHE = {}
 _WORKSTREAM_CACHE_LOCK = threading.RLock()
+BASE_ENV_PATH_ENV = "ORCHESTRATION_BASE_ENV_PATH"
 
 
 def _abs_base_dir(base_dir: str) -> str:
@@ -43,6 +44,26 @@ def _ws_path(base_dir: str, ws_id: str) -> str:
 
 def _ws_env_path(base_dir: str, ws_id: str) -> str:
     return os.path.join(_local_ws_dir(base_dir), ws_id, ".env")
+
+
+def _source_root_dir() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _base_env_path() -> str | None:
+    """Return the lowest-precedence env file shared by orchestration runs.
+
+    By default this is the repository/foundation `.env`, even when persisted
+    workstream state lives elsewhere. Set ORCHESTRATION_BASE_ENV_PATH to a
+    custom file path, or to an empty string to disable this base layer.
+    """
+    raw = os.environ.get(BASE_ENV_PATH_ENV)
+    if raw is not None:
+        stripped = raw.strip()
+        if not stripped:
+            return None
+        return os.path.abspath(os.path.expanduser(stripped))
+    return os.path.join(_source_root_dir(), ".env")
 
 
 def _workstream_home_dir(state_root: str, ws_id: str) -> str:
@@ -374,6 +395,7 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
     """Return env layers from root -> selected workstream.
 
     Layers include:
+    - orchestration-root `.env` from the foundation/repository root
     - workstream-local `.env` files
         - working-directory root `.env` files for nodes in the lineage,
             including the selected workstream itself when it defines one
@@ -383,6 +405,17 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
         raise FileNotFoundError(f"Workstream {ws_id} not found")
 
     layers = []
+    base_env_path = _base_env_path()
+    if base_env_path and os.path.exists(base_env_path):
+        layers.append({
+            "kind": "orchestration-root",
+            "id": "__orchestration_root__",
+            "name": "Orchestration root .env",
+            "parent_id": None,
+            "path": base_env_path,
+            "env": _read_env_file(base_env_path),
+        })
+
     lineage = list(reversed(_workstream_ancestry(ws_id, base_dir=base_dir)))
     for ws_level_id in lineage:
         ws = by_id[ws_level_id]

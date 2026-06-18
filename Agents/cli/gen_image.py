@@ -9,7 +9,7 @@ Usage:
     python gen_image.py --prompt "photorealistic office worker" --source fal --output assets/worker.png --size 1080x1080
 
 Sources:
-    openai   - DALL-E 3 generation (best for illustrations, conceptual art, custom scenes)
+    openai   - GPT Image generation (best for illustrations, conceptual art, custom scenes)
     fal      - Flux generation via fal.ai (fast, photorealistic, cheaper)
     pexels   - Stock photo search (free, lifestyle/workplace photography)
     pixabay  - Stock photo search (free, supplementary imagery)
@@ -20,10 +20,11 @@ Common ad sizes:
     1080x1920 - Instagram/TikTok story
     1200x900  - LinkedIn spotlight
     1280x720  - YouTube thumbnail
-    1024x1024 - Default square (DALL-E native)
+    1024x1024 - Default square
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -80,10 +81,10 @@ def update_manifest(output_path: Path, entry: dict) -> None:
 # --- Source implementations ---
 
 def generate_openai(prompt: str, width: int, height: int, output_path: Path, count: int, model: str | None = None) -> list[Path]:
-    """Generate images using OpenAI DALL-E 3."""
+    """Generate images using OpenAI image generation models."""
     from openai import OpenAI
 
-    model = model or "dall-e-3"
+    model = model or "gpt-image-2"
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -91,34 +92,40 @@ def generate_openai(prompt: str, width: int, height: int, output_path: Path, cou
 
     client = OpenAI(api_key=api_key)
 
-    # DALL-E 3 supports: 1024x1024, 1792x1024, 1024x1792
-    # Map requested size to nearest supported size
+    # Map requested size to the nearest supported landscape/portrait/square size
+    # and resize after download when the requested size differs.
     if width > height:
-        dalle_size = "1792x1024"
+        openai_size = "1536x1024"
     elif height > width:
-        dalle_size = "1024x1792"
+        openai_size = "1024x1536"
     else:
-        dalle_size = "1024x1024"
+        openai_size = "1024x1024"
 
     saved = []
     for i in range(count):
         response = client.images.generate(
             model=model,
             prompt=prompt,
-            size=dalle_size,
-            quality="standard",
+            size=openai_size,
+            quality="auto",
             n=1,
         )
         image_url = response.data[0].url
+        image_b64 = getattr(response.data[0], "b64_json", None)
         revised_prompt = response.data[0].revised_prompt
 
         out = numbered_path(output_path, i, count)
         out.parent.mkdir(parents=True, exist_ok=True)
-        download_image(image_url, out)
+        if image_url:
+            download_image(image_url, out)
+        elif image_b64:
+            out.write_bytes(base64.b64decode(image_b64))
+        else:
+            raise RuntimeError("OpenAI image response did not include a URL or base64 image bytes")
 
-        # Resize if requested size differs from DALL-E native
-        dalle_w, dalle_h = parse_size(dalle_size)
-        if (width, height) != (dalle_w, dalle_h):
+        # Resize if requested size differs from the downloaded image's native size
+        native_w, native_h = parse_size(openai_size)
+        if (width, height) != (native_w, native_h):
             resize_image(out, width, height)
         else:
             ensure_image_format(out)
@@ -130,13 +137,13 @@ def generate_openai(prompt: str, width: int, height: int, output_path: Path, cou
             "prompt": prompt,
             "revised_prompt": revised_prompt,
             "size": f"{width}x{height}",
-            "dalle_native_size": dalle_size,
+            "openai_native_size": openai_size,
             "created": datetime.now(timezone.utc).isoformat(),
         })
         saved.append(out)
         print(f"[openai] Saved: {out}")
         if revised_prompt and revised_prompt != prompt:
-            print(f"  DALL-E revised prompt: {revised_prompt}")
+            print(f"  OpenAI revised prompt: {revised_prompt}")
 
     return saved
 
@@ -359,8 +366,8 @@ def main():
     parser.add_argument("--size", default="1024x1024", help="Image dimensions as WxH (default: 1024x1024)")
     parser.add_argument("--count", type=int, default=1, help="Number of images to generate/find (default: 1)")
     parser.add_argument("--model", default=None,
-                        help="Model to use (e.g. fal-ai/flux/schnell, fal-ai/flux-pro/v1.1, dall-e-3). "
-                             "Defaults: fal → fal-ai/flux/schnell, openai → dall-e-3")
+                        help="Model to use (e.g. fal-ai/flux/schnell, fal-ai/flux-pro/v1.1, gpt-image-2). "
+                            "Defaults: fal → fal-ai/flux/schnell, openai → gpt-image-2")
 
     args = parser.parse_args()
 

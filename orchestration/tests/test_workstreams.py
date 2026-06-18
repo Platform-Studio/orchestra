@@ -302,6 +302,28 @@ class TestWorkstreamEnv:
         assert "MODEL" not in env_map
         assert env_map["TEMPERATURE"] == "0.1"
 
+    def test_base_env_is_lowest_precedence_layer(self, workspace, tmp_path, monkeypatch):
+        base_env = tmp_path / "foundation.env"
+        base_env.write_text("FOUNDATION_ONLY=from-foundation\nSHARED=from-foundation\nMASK_ME=from-foundation\n")
+        monkeypatch.setenv("ORCHESTRATION_BASE_ENV_PATH", str(base_env))
+
+        ws = create_workstream(name="WS", base_dir=workspace)
+        set_workstream_env_key(ws.id, "SHARED", "from-workstream", base_dir=workspace)
+        unset_workstream_env_key(ws.id, "MASK_ME", base_dir=workspace)
+
+        hierarchy = list_workstream_hierarchy_env(ws.id, base_dir=workspace)
+        assert hierarchy[0]["kind"] == "orchestration-root"
+        assert hierarchy[0]["path"] == str(base_env)
+
+        effective = list_effective_workstream_env(ws.id, base_dir=workspace)
+        assert effective["FOUNDATION_ONLY"] == "from-foundation"
+        assert effective["SHARED"] == "from-workstream"
+        assert "MASK_ME" not in effective
+
+        assert resolve_workstream_env_key(ws.id, "FOUNDATION_ONLY", base_dir=workspace) == "from-foundation"
+        assert resolve_workstream_env_key(ws.id, "SHARED", base_dir=workspace) == "from-workstream"
+        assert resolve_workstream_env_key(ws.id, "MASK_ME", base_dir=workspace) is None
+
     def test_working_directory_env_is_included_for_descendants(self, workspace, tmp_path):
         working_root = tmp_path / "career_pivot_repo"
         working_root.mkdir()

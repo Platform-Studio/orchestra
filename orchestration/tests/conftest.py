@@ -11,6 +11,7 @@ def _isolate_test_workspace_env(monkeypatch):
     monkeypatch.setenv("WORKSTREAM_ROOT", "")
     monkeypatch.setenv("ARTIFACT_ROOT", "")
     monkeypatch.setenv("ARTICACT_ROOT", "")
+    monkeypatch.setenv("ORCHESTRATION_BASE_ENV_PATH", "")
     monkeypatch.setenv("AUDIO_FILE_PATH", "")
     monkeypatch.setenv("DEFAULT_AGENT_START_SOUND", "")
     monkeypatch.setenv("DEFAULT_AGENT_FINISHED_SOUND", "")
