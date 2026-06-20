@@ -693,20 +693,38 @@ def find_workstreams(query: str, base_dir: str = ".") -> list:
 
 def get_workstream_tags(workstream_id: str, base_dir: str = ".") -> list[dict]:
     ws = read_workstream(workstream_id, base_dir=base_dir)
+    return _normalize_tag_definitions(getattr(ws, "tag_definitions", []))
+
+
+def ensure_workstream_tags(workstream_id: str, tags: list = None, base_dir: str = ".") -> list[dict]:
+    """Ensure task tags exist in the workstream tag catalog."""
+    ws = read_workstream(workstream_id, base_dir=base_dir)
     tag_definitions = _normalize_tag_definitions(getattr(ws, "tag_definitions", []))
     known_names = {entry["name"] for entry in tag_definitions}
+    changed = False
 
-    from .tasks import list_tasks
+    for raw_tag in tags or []:
+        name = _normalize_tag_name(raw_tag)
+        if not name or name in known_names:
+            continue
+        known_names.add(name)
+        tag_definitions.append({"name": name, "color": _default_tag_color(name)})
+        changed = True
 
-    for task in list_tasks(workstream_id, base_dir=base_dir):
-        for raw_tag in getattr(task, "tags", []) or []:
-            name = _normalize_tag_name(raw_tag)
-            if not name or name in known_names:
-                continue
-            known_names.add(name)
-            tag_definitions.append({"name": name, "color": _default_tag_color(name)})
-
+    if changed:
+        ws.tag_definitions = tag_definitions
+        save_workstream(ws, base_dir)
     return tag_definitions
+
+
+def rebuild_workstream_tag_catalog(workstream_id: str, base_dir: str = ".") -> list[dict]:
+    """Backfill the cached tag catalog from existing task YAML summaries."""
+    from .tasks import list_board_tasks
+
+    discovered = []
+    for task in list_board_tasks(workstream_id, base_dir=base_dir):
+        discovered.extend(getattr(task, "tags", []) or [])
+    return ensure_workstream_tags(workstream_id, discovered, base_dir=base_dir)
 
 
 def upsert_workstream_tag(workstream_id: str, name: str, color: str = None, base_dir: str = ".") -> dict:

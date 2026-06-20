@@ -4020,7 +4020,7 @@ async function showTaskDetail(taskId, opts = {}) {
 
   // Title
   main += `<h3>${esc(task.title)}</h3>`;
-  main += `<div class="task-uid">Task UID: ${esc(task.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(task.id)}', this)">Copy</button></div>`;
+  main += `<div class="task-uid">Task UID: ${esc(task.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(task.id)}', this)">Copy</button><button class="uid-copy-btn" type="button" data-open-task-file="${esc(task.id)}" title="Open task YAML in VS Code">Open in VS Code</button></div>`;
 
   // Tags (colored)
   const taskTags = Array.isArray(task.tags) ? task.tags : [];
@@ -4462,6 +4462,21 @@ async function showTaskDetail(taskId, opts = {}) {
       }
     });
   });
+
+  const openTaskFileBtn = content.querySelector('[data-open-task-file]');
+  if (openTaskFileBtn) {
+    openTaskFileBtn.addEventListener('click', async () => {
+      openTaskFileBtn.disabled = true;
+      try {
+        const qs = `?workstream_id=${encodeURIComponent(task.workstream_id || '')}`;
+        await api('task/open-file/' + encodeURIComponent(task.id) + qs);
+      } catch (e) {
+        alert('Open task YAML in VS Code failed: ' + (e.message || e));
+      } finally {
+        openTaskFileBtn.disabled = false;
+      }
+    });
+  }
 
   // ── Attachment preview wiring ─────────────────────────────────
   const previewEl = content.querySelector('#attachment-preview');

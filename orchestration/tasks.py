@@ -9,7 +9,7 @@ from ._atomic import atomic_write_yaml
 from .artifacts import read_artifact, _resolve_artifact_root, _validate_path
 from .image_validation import _is_image_path, validate_image_artifact
 from .models import Task, RetryConfig, new_id, now_iso
-from .workstreams import read_workstream, resolve_workstream_state_root, list_workstreams, workstream_workspace_index
+from .workstreams import ensure_workstream_tags, read_workstream, resolve_workstream_state_root, list_workstreams, workstream_workspace_index
 
 
 RANK_GAP = Decimal("1024")
@@ -432,6 +432,8 @@ def create_task(
     if scheduled_at:
         task.add_audit("scheduled", f"Scheduled action at {scheduled_at}")
     _save_task(task, base_dir)
+    if task.tags:
+        ensure_workstream_tags(workstream_id, task.tags, base_dir=base_dir)
 
     return task
 
@@ -599,6 +601,8 @@ def update_task(
         task.add_audit("attachments_updated", f"Attachments set to {task.attachments}")
 
     _save_task(task, base_dir)
+    if tags is not None and task.tags:
+        ensure_workstream_tags(task.workstream_id, task.tags, base_dir=base_dir)
 
     return task
 
@@ -1020,6 +1024,8 @@ def move_task(
         lock_path = src_path + ".lock"
         if os.path.exists(lock_path):
             os.remove(lock_path)
+        if task.tags:
+            ensure_workstream_tags(target_workstream_id, task.tags, base_dir=base_dir)
     else:
         task.add_audit(
             "status_change",
@@ -1177,4 +1183,6 @@ def duplicate_task(
         f"Duplicated from task '{task_id}' in workstream '{source.workstream_id}'",
     )
     _save_task(new_task, base_dir)
+    if new_task.tags:
+        ensure_workstream_tags(dest_ws_id, new_task.tags, base_dir=base_dir)
     return new_task

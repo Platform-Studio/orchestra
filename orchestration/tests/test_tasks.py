@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import pytest
-from orchestration.workstreams import create_workstream, list_workstreams, save_workstream
+from orchestration.workstreams import create_workstream, get_workstream_tags, list_workstreams, save_workstream
 from orchestration.tasks import (
     create_task,
     read_task,
@@ -684,6 +684,13 @@ class TestMoveTask:
         move_task(task.id, target_workstream_id=ws2.id, base_dir=workspace)
         assert not os.path.exists(src_path)
 
+    def test_move_cross_workstream_adds_tags_to_target_catalog(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="T", tags=["P1", "Ready"], base_dir=workspace)
+
+        move_task(task.id, target_workstream_id=ws2.id, base_dir=workspace)
+
+        assert {tag["name"] for tag in get_workstream_tags(ws2.id, base_dir=workspace)} == {"P1", "Ready"}
+
 
 class TestDuplicateTask:
     @pytest.fixture
@@ -711,6 +718,13 @@ class TestDuplicateTask:
         dup = duplicate_task(task.id, target_workstream_id=ws2.id, base_dir=workspace)
         assert dup.workstream_id == ws2.id
         assert dup.status == "Backlog"
+
+    def test_duplicate_cross_workstream_adds_tags_to_target_catalog(self, workspace, ws, ws2):
+        task = create_task(ws.id, title="Cross Dup", tags=["P1", "Ready"], base_dir=workspace)
+
+        duplicate_task(task.id, target_workstream_id=ws2.id, base_dir=workspace)
+
+        assert {tag["name"] for tag in get_workstream_tags(ws2.id, base_dir=workspace)} == {"P1", "Ready"}
 
     def test_duplicate_to_specific_state(self, workspace, ws, ws2):
         task = create_task(ws.id, title="T", base_dir=workspace)

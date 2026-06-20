@@ -686,6 +686,48 @@ def _first_existing_local_ref(repo_root: str, refs: list[str]) -> str | None:
     return None
 
 
+def _first_existing_ref(repo_root: str, refs: list[str]) -> str | None:
+    """Return the first ref that exists in the repository."""
+    for ref in refs:
+        try:
+            subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "--verify", ref],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return ref
+        except subprocess.CalledProcessError:
+            continue
+    return None
+
+
+def _fetch_remote_integration_refs(repo_root: str) -> None:
+    """Best-effort refresh of remote integration refs used for run worktrees."""
+    remote_check = subprocess.run(
+        ["git", "-C", repo_root, "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+    )
+    if remote_check.returncode != 0:
+        return
+
+    for branch in ("main", "master"):
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_root,
+                "fetch",
+                "--no-tags",
+                "origin",
+                f"{branch}:refs/remotes/origin/{branch}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+
 def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".") -> dict:
     """Create a detached per-run worktree and return its resolved paths."""
     source_workspace_root = os.path.abspath(os.path.expanduser(workspace_root))
@@ -725,7 +767,11 @@ def _provision_run_worktree(workspace_root: str, run_id: str, base_dir: str = ".
     except subprocess.CalledProcessError:
         has_head = False
 
-    preferred_ref = _first_existing_local_ref(repo_root, ["main", "master"])
+    _fetch_remote_integration_refs(repo_root)
+    preferred_ref = _first_existing_ref(
+        repo_root,
+        ["refs/remotes/origin/main", "refs/remotes/origin/master"],
+    ) or _first_existing_local_ref(repo_root, ["main", "master"])
     worktree_command = ["git", "-C", repo_root, "worktree", "add", "--detach", worktree_root]
     if preferred_ref:
         # Prefer a stable integration branch over detached HEAD to reduce stale bases.

@@ -918,6 +918,132 @@ def test_provision_run_worktree_prefers_local_main_over_detached_head(workspace)
         agents_module._deprovision_run_worktree(worktree, base_dir=workspace)
 
 
+def test_provision_run_worktree_prefers_fetched_origin_main_over_stale_local_main(workspace):
+    remote_root = os.path.join(workspace, "remote.git")
+    repo_root = os.path.join(workspace, "repo_with_stale_main")
+    updater_root = os.path.join(workspace, "repo_updater")
+
+    subprocess.run(["git", "init", "--bare", remote_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "clone", remote_root, repo_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.email", "tests@example.com"], check=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.name", "Test User"], check=True)
+
+    tracked = os.path.join(repo_root, "tracked.txt")
+    with open(tracked, "w", encoding="utf-8") as f:
+        f.write("base\n")
+    subprocess.run(["git", "-C", repo_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", repo_root, "commit", "-m", "base"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "checkout", "-B", "main"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
+    stale_local_main = subprocess.run(
+        ["git", "-C", repo_root, "rev-parse", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subprocess.run(["git", "clone", remote_root, updater_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", updater_root, "checkout", "main"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", updater_root, "config", "user.email", "tests@example.com"], check=True)
+    subprocess.run(["git", "-C", updater_root, "config", "user.name", "Test User"], check=True)
+    with open(os.path.join(updater_root, "tracked.txt"), "a", encoding="utf-8") as f:
+        f.write("remote update\n")
+    subprocess.run(["git", "-C", updater_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", updater_root, "commit", "-m", "remote update"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", updater_root, "push", "origin", "main"], check=True, capture_output=True, text=True)
+    remote_main = subprocess.run(
+        ["git", "-C", updater_root, "rev-parse", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subprocess.run(["git", "-C", repo_root, "checkout", "--detach"], check=True, capture_output=True, text=True)
+
+    run_id = "run-prefers-origin-main"
+    worktree = agents_module._provision_run_worktree(repo_root, run_id, base_dir=workspace)
+    try:
+        worktree_head = subprocess.run(
+            ["git", "-C", worktree["worktree_root"], "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        local_main_after = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        assert worktree_head == remote_main
+        assert local_main_after == stale_local_main
+    finally:
+        agents_module._deprovision_run_worktree(worktree, base_dir=workspace)
+
+
+def test_provision_run_worktree_from_origin_main_keeps_task_branches_available(workspace):
+    remote_root = os.path.join(workspace, "remote.git")
+    repo_root = os.path.join(workspace, "repo_with_task_branch")
+    updater_root = os.path.join(workspace, "repo_updater")
+
+    subprocess.run(["git", "init", "--bare", remote_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "clone", remote_root, repo_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.email", "tests@example.com"], check=True)
+    subprocess.run(["git", "-C", repo_root, "config", "user.name", "Test User"], check=True)
+
+    tracked = os.path.join(repo_root, "tracked.txt")
+    with open(tracked, "w", encoding="utf-8") as f:
+        f.write("base\n")
+    subprocess.run(["git", "-C", repo_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", repo_root, "commit", "-m", "base"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "checkout", "-B", "main"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", repo_root, "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
+
+    subprocess.run(["git", "-C", repo_root, "checkout", "-b", "task/example"], check=True, capture_output=True, text=True)
+    with open(tracked, "a", encoding="utf-8") as f:
+        f.write("task work\n")
+    subprocess.run(["git", "-C", repo_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", repo_root, "commit", "-m", "task work"], check=True, capture_output=True, text=True)
+    task_branch_commit = subprocess.run(
+        ["git", "-C", repo_root, "rev-parse", "task/example"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subprocess.run(["git", "clone", remote_root, updater_root], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", updater_root, "checkout", "main"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", updater_root, "config", "user.email", "tests@example.com"], check=True)
+    subprocess.run(["git", "-C", updater_root, "config", "user.name", "Test User"], check=True)
+    with open(os.path.join(updater_root, "tracked.txt"), "a", encoding="utf-8") as f:
+        f.write("remote main update\n")
+    subprocess.run(["git", "-C", updater_root, "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", updater_root, "commit", "-m", "remote main update"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", updater_root, "push", "origin", "main"], check=True, capture_output=True, text=True)
+
+    subprocess.run(["git", "-C", repo_root, "checkout", "main"], check=True, capture_output=True, text=True)
+
+    run_id = "run-origin-main-with-task-branch"
+    worktree = agents_module._provision_run_worktree(repo_root, run_id, base_dir=workspace)
+    try:
+        subprocess.run(
+            ["git", "-C", worktree["worktree_root"], "checkout", "task/example"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        worktree_head = subprocess.run(
+            ["git", "-C", worktree["worktree_root"], "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert worktree_head == task_branch_commit
+    finally:
+        agents_module._deprovision_run_worktree(worktree, base_dir=workspace)
+
+
 def test_resolve_agent_file_falls_back_to_source_agents_for_mounted_workspace(tmp_path, monkeypatch):
     workspace_dir = tmp_path / "mounted"
     workspace_dir.mkdir()
@@ -1872,13 +1998,13 @@ def test_progress_prompt_pins_commands_to_current_run(workspace):
     section = agents_module._agent_progress_prompt_section(workspace, run_id="run-abc")
 
     assert "progress init --run run-abc --item" in section
-    assert "aim for roughly 8-10 items unless the task is genuinely simple" in section
-    assert "Avoid generic items like 'read the docs', 'do the coding', or 'run tests and handoff'" in section
+    assert "Aim for 6-10 concrete, verifiable items unless the task is genuinely trivial" in section
+    assert "Bad: 'do the coding'. Good: 'add progress current CLI subcommand and parser wiring'" in section
     assert "progress add --run run-abc --item" in section
     assert "progress set-active <item_id> --run run-abc" in section
     assert "progress complete <item_id> --run run-abc" in section
     assert "progress block <item_id> --run run-abc --message" in section
-    assert "Before declaring the run done, make one final checklist pass" in section
+    assert "Every item must be in a terminal state: done, blocked, or skipped" in section
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")

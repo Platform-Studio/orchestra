@@ -851,6 +851,25 @@ class TestTask:
         api.mocks["read_task_from_workstream"].assert_called_once()
         api.mocks["read_task"].assert_not_called()
 
+    def test_open_file_opens_task_yaml_in_vscode(self, api):
+        task_file_path = "/tmp/workstreams/ws-1/tasks/t-99.yaml"
+        with patch("workstream_manager.server._task_path", return_value=task_file_path) as task_path, \
+             patch("workstream_manager.server.os.path.exists", return_value=True), \
+             patch("workstream_manager.server._open_file_in_vscode", return_value={"method": "code-cli"}) as open_file:
+            code, body = api.get("/api/task/open-file/t-99?workstream_id=ws-1")
+
+        assert code == 200
+        assert body["data"] == {
+            "opened": True,
+            "task_id": "t-99",
+            "workstream_id": "ws-1",
+            "path": task_file_path,
+            "resolved_path": task_file_path,
+            "method": "code-cli",
+        }
+        task_path.assert_called_once()
+        open_file.assert_called_once_with(task_file_path)
+
     def test_create(self, api):
         api.mocks["create_task"].return_value = _fake_task(title="Apple")
         code, body = api.post("/api/task/create/ws-1", {

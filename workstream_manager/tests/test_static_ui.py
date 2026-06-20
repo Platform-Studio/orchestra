@@ -80,6 +80,16 @@ def test_task_modal_renders_checklist_section_above_attachments() -> None:
     assert html.index('<h4>Checklist</h4>') < html.index('<h4>Attachments</h4>')
 
 
+def test_task_modal_can_open_task_yaml_in_vscode() -> None:
+    html = _index_html()
+
+    assert 'data-open-task-file="${esc(task.id)}"' in html
+    assert 'Open task YAML in VS Code' in html
+    assert '>Open in VS Code</button></div>`' in html
+    assert "api('task/open-file/' + encodeURIComponent(task.id) + qs)" in html
+    assert 'Open task YAML in VS Code failed:' in html
+
+
 def test_navigation_routes_sync_browser_url_and_restore_state() -> None:
     html = _index_html()
 

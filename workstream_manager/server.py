@@ -80,6 +80,7 @@ from orchestration.tasks import (
     move_task, duplicate_task, attach_to_task, detach_from_task,
     move_task_before, move_task_after, move_task_to_index,
     pause_task, resume_task,
+    _task_path,
 )
 from orchestration.locks import (
     acquire_lock, release_lock, lock_status, lock_status_for_workstream,
@@ -718,6 +719,24 @@ def handle_task(method, parts, params):
         else:
             task = read_task(parts[0], base_dir=WORKSPACE_DIR)
         return _ok(task.to_dict())
+    elif m == "open-file" and parts:
+        task_id = parts[0]
+        workstream_id = params.get("workstream_id") or None
+        if not workstream_id:
+            task = read_task(task_id, base_dir=WORKSPACE_DIR)
+            workstream_id = task.workstream_id
+        task_file_path = _task_path(WORKSPACE_DIR, workstream_id, task_id)
+        if not os.path.exists(task_file_path):
+            raise FileNotFoundError(f"Task file not found: {task_id}.yaml")
+        launch = _open_file_in_vscode(task_file_path)
+        return _ok({
+            "opened": True,
+            "task_id": task_id,
+            "workstream_id": workstream_id,
+            "path": task_file_path,
+            "resolved_path": task_file_path,
+            "method": launch["method"],
+        })
     elif m == "create" and parts:
         kwargs = {"workstream_id": parts[0], "title": params["title"], "base_dir": WORKSPACE_DIR}
         if "description" in params:
@@ -1036,6 +1055,27 @@ def handle_retry(method, parts, params):
     return _err(f"Unknown retry method: {method}")
 
 
+def _open_file_in_vscode(resolved_path: str) -> dict:
+    launch_errors = []
+
+    code_bin = shutil.which("code")
+    if code_bin:
+        try:
+            subprocess.Popen([code_bin, "-r", resolved_path], cwd=WORKSPACE_DIR)
+            return {"method": "code-cli"}
+        except Exception as e:
+            launch_errors.append(f"code-cli: {e}")
+
+    # macOS fallback: ask Finder/LaunchServices to open file in VS Code.
+    try:
+        subprocess.Popen(["open", "-a", "Visual Studio Code", resolved_path], cwd=WORKSPACE_DIR)
+        return {"method": "open-app"}
+    except Exception as e:
+        launch_errors.append(f"open-app: {e}")
+
+    raise RuntimeError("Failed to open file in VS Code. " + " | ".join(launch_errors))
+
+
 def handle_artifact(method, parts, params):
     m = method
     if m == "read":
@@ -1078,36 +1118,14 @@ def handle_artifact(method, parts, params):
         if not os.path.exists(resolved_path):
             raise FileNotFoundError(f"Artifact not found: {path}")
 
-        launch_errors = []
-
-        code_bin = shutil.which("code")
-        if code_bin:
-            try:
-                subprocess.Popen([code_bin, "-r", resolved_path], cwd=WORKSPACE_DIR)
-                return _ok({
-                    "opened": True,
-                    "path": path,
-                    "workstream_id": workstream_id,
-                    "resolved_path": resolved_path,
-                    "method": "code-cli",
-                })
-            except Exception as e:
-                launch_errors.append(f"code-cli: {e}")
-
-        # macOS fallback: ask Finder/LaunchServices to open file in VS Code.
-        try:
-            subprocess.Popen(["open", "-a", "Visual Studio Code", resolved_path], cwd=WORKSPACE_DIR)
-            return _ok({
-                "opened": True,
-                "path": path,
-                "workstream_id": workstream_id,
-                "resolved_path": resolved_path,
-                "method": "open-app",
-            })
-        except Exception as e:
-            launch_errors.append(f"open-app: {e}")
-
-        raise RuntimeError("Failed to open file in VS Code. " + " | ".join(launch_errors))
+        launch = _open_file_in_vscode(resolved_path)
+        return _ok({
+            "opened": True,
+            "path": path,
+            "workstream_id": workstream_id,
+            "resolved_path": resolved_path,
+            "method": launch["method"],
+        })
     return _err(f"Unknown artifact method: {m}")
 
 

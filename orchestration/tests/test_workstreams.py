@@ -8,11 +8,13 @@ import subprocess
 import sys
 from orchestration.workstreams import (
     create_workstream,
+    ensure_workstream_tags,
     list_workstreams,
     read_workstream,
     read_workstream_context,
     find_workstreams,
     get_workstream_tags,
+    rebuild_workstream_tag_catalog,
     save_workstream,
     resolve_workstream_workspace,
     set_workstream_env_key,
@@ -27,7 +29,7 @@ from orchestration.workstreams import (
     resolve_workstream_child_state_root,
     resolve_workstream_state_root,
 )
-from orchestration.tasks import create_task
+from orchestration.tasks import create_task, update_task
 
 
 class TestCreateWorkstream:
@@ -204,7 +206,7 @@ class TestFindWorkstreams:
 
 
 class TestWorkstreamTags:
-    def test_gettags_returns_catalog_and_task_tags(self, workspace):
+    def test_gettags_returns_catalog_and_task_tags_from_cached_definitions(self, workspace):
         ws = create_workstream(name="Tag WS", base_dir=workspace)
         upsert_workstream_tag(ws.id, "Urgent", "#eb5a46", base_dir=workspace)
         create_task(ws.id, title="T1", tags=["Urgent", "Needs Review"], base_dir=workspace)
@@ -214,6 +216,54 @@ class TestWorkstreamTags:
         assert {tag["name"] for tag in tags} == {"Urgent", "Needs Review"}
         assert next(tag for tag in tags if tag["name"] == "Urgent")["color"] == "#eb5a46"
         assert all(tag["color"].startswith("#") for tag in tags)
+
+    def test_gettags_does_not_scan_tasks(self, workspace, monkeypatch):
+        ws = create_workstream(name="Tag WS", base_dir=workspace)
+        upsert_workstream_tag(ws.id, "Urgent", "#eb5a46", base_dir=workspace)
+
+        def fail_scan(*args, **kwargs):
+            raise AssertionError("get_workstream_tags should not scan task YAML")
+
+        monkeypatch.setattr("orchestration.tasks.list_tasks", fail_scan)
+
+        assert get_workstream_tags(ws.id, base_dir=workspace) == [{"name": "Urgent", "color": "#eb5a46"}]
+
+    def test_task_create_adds_tags_to_workstream_catalog(self, workspace):
+        ws = create_workstream(name="Tag WS", base_dir=workspace)
+
+        create_task(ws.id, title="T1", tags=["Needs Review", "P1"], base_dir=workspace)
+
+        assert {tag["name"] for tag in get_workstream_tags(ws.id, base_dir=workspace)} == {"Needs Review", "P1"}
+
+    def test_task_update_adds_tags_to_workstream_catalog(self, workspace):
+        ws = create_workstream(name="Tag WS", base_dir=workspace)
+        task = create_task(ws.id, title="T1", base_dir=workspace)
+
+        update_task(task.id, tags=["Human Added"], base_dir=workspace)
+
+        assert get_workstream_tags(ws.id, base_dir=workspace)[0]["name"] == "Human Added"
+
+    def test_ensure_workstream_tags_dedupes_and_preserves_existing_color(self, workspace):
+        ws = create_workstream(name="Tag WS", base_dir=workspace)
+        upsert_workstream_tag(ws.id, "P1", "#eb5a46", base_dir=workspace)
+
+        ensure_workstream_tags(ws.id, ["P1", "P2", "P2", "  "], base_dir=workspace)
+
+        tags = get_workstream_tags(ws.id, base_dir=workspace)
+        assert [tag["name"] for tag in tags] == ["P1", "P2"]
+        assert tags[0]["color"] == "#eb5a46"
+
+    def test_rebuild_workstream_tag_catalog_backfills_existing_task_tags(self, workspace):
+        ws = create_workstream(name="Tag WS", base_dir=workspace)
+        create_task(ws.id, title="T1", tags=["Legacy", "P1"], base_dir=workspace)
+        loaded = read_workstream(ws.id, base_dir=workspace)
+        loaded.tag_definitions = []
+        save_workstream(loaded, base_dir=workspace)
+
+        rebuilt = rebuild_workstream_tag_catalog(ws.id, base_dir=workspace)
+
+        assert {tag["name"] for tag in rebuilt} == {"Legacy", "P1"}
+        assert {tag["name"] for tag in get_workstream_tags(ws.id, base_dir=workspace)} == {"Legacy", "P1"}
 
     def test_upsert_tag_updates_existing_definition(self, workspace):
         ws = create_workstream(name="Tag WS", base_dir=workspace)
