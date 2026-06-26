@@ -292,6 +292,58 @@ class TestCLIWorkstream:
         assert data["task_count"] == 1
         assert (tmp_path / f"tokens_{ws_id}.csv").exists()
 
+    def test_token_usage_recovers_placeholder_task_totals_from_agent_runs(self, workspace, tmp_path):
+        result = run_cli("workstream", "create", "--name", "Token Board", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+        task_id = "task-placeholder"
+        tasks_dir = Path(workspace) / "workstreams" / ws_id / "tasks"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        (tasks_dir / f"{task_id}.yaml").write_text(
+            "\n".join([
+                f"id: {task_id}",
+                f"workstream_id: {ws_id}",
+                "title: '[CORRUPT] Original task title'",
+                "status: _error",
+                "tags:",
+                "- _error",
+                "comments: []",
+                "audit: []",
+                "attachments: []",
+                "rank: '1024.0'",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        runs_dir = Path(workspace) / ".orchestration" / "agent_runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run.json").write_text(
+            json.dumps({
+                "beans_proxy": {
+                    "task_totals": {
+                        "pseudo_key": f"task-{task_id}",
+                        "input_tokens": 321,
+                        "output_tokens": 45,
+                        "updated_at": "2026-06-25T00:00:00+00:00",
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        output_path = tmp_path / "tokens.csv"
+        result = run_cli(
+            "workstream", "token-usage", ws_id,
+            "--output", str(output_path),
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+
+        with output_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+        assert rows == [
+            ["task ID", "task title", "input tokens", "output tokens"],
+            [task_id, "Original task title", "321", "45"],
+        ]
+
     def test_migrate_artifact_root_home(self, workspace, tmp_path):
         mount_root = tmp_path / "mounted_repo"
         mount_root.mkdir()

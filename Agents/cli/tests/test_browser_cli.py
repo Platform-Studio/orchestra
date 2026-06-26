@@ -40,6 +40,7 @@ class _FakeContext:
         self.init_script = None
         self.closed = False
         self.handlers = {}
+        self.service_workers = []
 
     def add_init_script(self, script):
         self.init_script = script
@@ -50,9 +51,17 @@ class _FakeContext:
     def on(self, event_name, handler):
         self.handlers.setdefault(event_name, []).append(handler)
 
-    def emit(self, event_name):
+    def emit(self, event_name, payload=None):
         for handler in self.handlers.get(event_name, []):
-            handler()
+            if payload is None:
+                handler()
+            else:
+                handler(payload)
+
+    def wait_for_event(self, event_name, timeout=None):
+        if event_name == "serviceworker" and self.service_workers:
+            return self.service_workers[0]
+        raise TimeoutError(event_name)
 
     def close(self):
         self.closed = True
@@ -95,6 +104,25 @@ class _FakeConsoleMessageProperties:
     def __init__(self, msg_type, text):
         self.type = msg_type
         self.text = text
+
+
+class _FakeWorker:
+    def __init__(self, url="chrome-extension://abc/static/background/index.js"):
+        self.url = url
+        self.evaluated = []
+
+    def evaluate(self, expression):
+        self.evaluated.append(expression)
+        return {"ok": True, "expression": expression}
+
+
+class _FakeConsoleMessageWithWorker(_FakeConsoleMessage):
+    def __init__(self, msg_type, text, worker):
+        super().__init__(msg_type, text)
+        self._worker = worker
+
+    def worker(self):
+        return self._worker
 
 
 def test_cmd_open_does_not_force_stale_user_agent():
@@ -250,6 +278,46 @@ def test_cmd_get_console_logs_supports_property_style_console_messages():
 
     assert [entry["type"] for entry in result["logs"]] == ["warn"]
     assert [entry["text"] for entry in result["logs"]] == ["property message"]
+
+
+def test_context_console_capture_records_service_worker_source():
+    browser = _load_browser_module()
+    manager = browser.BrowserManager()
+    fake_context = _FakeContext()
+    worker = _FakeWorker()
+    session_info = {"console_logs": [], "console_next_seq": 1}
+
+    manager._attach_context_console_capture(fake_context, session_info)
+    fake_context.emit("console", _FakeConsoleMessageWithWorker("info", "from worker", worker))
+
+    assert session_info["console_logs"] == [
+        {
+            "seq": 1,
+            "timestamp": session_info["console_logs"][0]["timestamp"],
+            "type": "info",
+            "text": "from worker",
+            "source": "service_worker",
+            "url": "chrome-extension://abc/static/background/index.js",
+        }
+    ]
+
+
+def test_cmd_service_worker_eval_uses_extension_service_worker():
+    browser = _load_browser_module()
+    manager = browser.BrowserManager()
+    fake_context = _FakeContext()
+    worker = _FakeWorker()
+    fake_context.service_workers = [worker]
+    manager.sessions["sess-1"] = {"context": fake_context, "page": fake_context.page}
+
+    result = manager.cmd_service_worker_eval({"session": "sess-1", "expression": "chrome.runtime.id"})
+
+    assert result == {
+        "session": "sess-1",
+        "worker_url": "chrome-extension://abc/static/background/index.js",
+        "result": {"ok": True, "expression": "chrome.runtime.id"},
+    }
+    assert worker.evaluated == ["chrome.runtime.id"]
 
 
 def test_cmd_close_stops_runtime_when_last_session_closed():

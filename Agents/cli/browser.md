@@ -48,6 +48,11 @@ python3 Agents/cli/browser.py open-extension \
 # Output includes extension_id when a Manifest V3 service worker is available.
 ```
 
+`open-extension` launches a persistent Chromium context with `--load-extension` and
+`--disable-extensions-except` for the unpacked directory. For Manifest V3
+extensions, the Browser CLI watches the extension service worker and includes
+its console output in `get_console_logs` with `source: service_worker`.
+
 ### Reuse saved auth
 
 Use the auth registry when multiple agents need isolated sessions against the same site. Sessions stay separate; only the stored cookies/local storage are reused.
@@ -174,6 +179,21 @@ python3 Agents/cli/browser.py get_console_logs a1b2c3d4 --limit 20 --clear
 
 The browser CLI captures `console.log`, `console.warn`, `console.error`, and uncaught page errors from the moment the session is opened. Logs are stored per session in a bounded in-memory buffer of the most recent 200 entries.
 
+For sessions opened with `open-extension`, this also captures Manifest V3 service
+worker console output when Playwright exposes it. Service-worker log entries are
+marked with `source: service_worker` in JSON output, and the human-readable output
+prints the service-worker URL.
+
+To deliberately run a quick probe inside the extension service worker and then read
+its console output:
+
+```bash
+python3 Agents/cli/browser.py service-worker-eval a1b2c3d4 \
+	"console.log('service worker probe', chrome.runtime.id); chrome.runtime.id"
+
+python3 Agents/cli/browser.py get_console_logs a1b2c3d4 --limit 20
+```
+
 ### Run JavaScript
 
 ```bash
@@ -182,6 +202,13 @@ python3 Agents/cli/browser.py eval a1b2c3d4 "document.querySelectorAll('a').leng
 
 # Get structured data:
 python3 Agents/cli/browser.py eval a1b2c3d4 "Array.from(document.querySelectorAll('h2')).map(h => h.textContent)"
+```
+
+For extension-runtime sessions, use `service-worker-eval` when you need to run an
+expression in the Manifest V3 service worker instead of the active page:
+
+```bash
+python3 Agents/cli/browser.py service-worker-eval a1b2c3d4 "chrome.runtime.getManifest().name"
 ```
 
 ### Session management

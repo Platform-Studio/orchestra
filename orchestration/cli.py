@@ -15,6 +15,7 @@ import argparse
 import csv
 import json
 import os
+from pathlib import Path
 import sys
 
 try:
@@ -204,6 +205,39 @@ def cmd_workstream_descendants(args):
 def cmd_workstream_token_usage(args):
     from .tasks import list_tasks
 
+    def clean_task_title(task):
+        title = str(task.title or "")
+        prefix = "[CORRUPT] "
+        if title.startswith(prefix):
+            title = title[len(prefix):]
+        if title == f"{task.id}.yaml":
+            title = task.id
+        return title
+
+    def latest_run_token_usage(task_id):
+        runs_dir = Path(args.base_dir) / ".orchestration" / "agent_runs"
+        best_updated_at = ""
+        best_usage = None
+        if not runs_dir.exists():
+            return None
+
+        for path in runs_dir.glob("*.json"):
+            try:
+                with path.open(encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            token_usage = (data.get("beans_proxy") or {}).get("task_totals")
+            if not isinstance(token_usage, dict):
+                continue
+            if token_usage.get("pseudo_key") != f"task-{task_id}":
+                continue
+            updated_at = str(token_usage.get("updated_at") or "")
+            if best_usage is None or updated_at > best_updated_at:
+                best_updated_at = updated_at
+                best_usage = token_usage
+        return best_usage
+
     output_path = args.output or f"tokens_{args.id}.csv"
     output_dir = os.path.dirname(os.path.abspath(output_path))
     if output_dir:
@@ -214,10 +248,10 @@ def cmd_workstream_token_usage(args):
         writer = csv.writer(f)
         writer.writerow(["task ID", "task title", "input tokens", "output tokens"])
         for task in tasks:
-            token_usage = task.token_usage or {}
+            token_usage = task.token_usage or latest_run_token_usage(task.id) or {}
             writer.writerow([
                 task.id,
-                task.title,
+                clean_task_title(task),
                 int(token_usage.get("input_tokens", 0) or 0),
                 int(token_usage.get("output_tokens", 0) or 0),
             ])

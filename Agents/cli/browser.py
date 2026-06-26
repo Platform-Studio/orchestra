@@ -20,6 +20,7 @@ Usage:
     browser.py get_console_logs SESSION             Get captured JS console output
     browser.py wait SESSION SELECTOR [--timeout MS] Wait for element
     browser.py eval SESSION EXPRESSION              Run JavaScript
+    browser.py service-worker-eval SESSION EXPR     Run JavaScript in a service worker
     browser.py close SESSION                        Close a session
     browser.py sessions                             List active sessions
     browser.py cleanup-orphans [--force]           Terminate orphan Playwright Chromium processes
@@ -391,14 +392,22 @@ class BrowserManager:
         return self.sessions[sid]
 
     def _record_console_log(self, session_info, log_type, text):
+        self._record_console_entry(session_info, log_type, text)
+
+    def _record_console_entry(self, session_info, log_type, text, source=None, url=None):
         entries = session_info.setdefault("console_logs", [])
         seq = session_info.setdefault("console_next_seq", 1)
-        entries.append({
+        entry = {
             "seq": seq,
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "type": log_type,
             "text": text,
-        })
+        }
+        if source:
+            entry["source"] = source
+        if url:
+            entry["url"] = url
+        entries.append(entry)
         session_info["console_next_seq"] = seq + 1
         if len(entries) > MAX_CONSOLE_LOGS:
             del entries[:-MAX_CONSOLE_LOGS]
@@ -415,6 +424,35 @@ class BrowserManager:
             value = value()
         return "" if value is None else str(value)
 
+    @staticmethod
+    def _console_message_object(msg, field_name):
+        value = getattr(msg, field_name, None)
+        if callable(value):
+            value = value()
+        return value
+
+    @staticmethod
+    def _playwright_object_url(obj):
+        if obj is None:
+            return None
+        value = getattr(obj, "url", None)
+        if callable(value):
+            value = value()
+        return None if value is None else str(value)
+
+    def _console_message_source(self, msg):
+        worker = self._console_message_object(msg, "worker")
+        if worker is not None:
+            url = self._playwright_object_url(worker)
+            source = "service_worker" if url and url.startswith("chrome-extension://") else "worker"
+            return source, url
+
+        page = self._console_message_object(msg, "page")
+        if page is not None:
+            return "page", self._playwright_object_url(page)
+
+        return None, None
+
     def _attach_console_capture(self, page, session_info):
         page.on(
             "console",
@@ -425,6 +463,17 @@ class BrowserManager:
             ),
         )
         page.on("pageerror", lambda err: self._record_console_log(session_info, "pageerror", str(err)))
+
+    def _attach_context_console_capture(self, context, session_info):
+        context.on(
+            "console",
+            lambda msg: self._record_console_entry(
+                session_info,
+                self._console_message_field(msg, "type"),
+                self._console_message_field(msg, "text"),
+                *self._console_message_source(msg),
+            ),
+        )
 
     # ── Commands ──
 
@@ -519,7 +568,8 @@ class BrowserManager:
             "extension_path": str(extension_path),
             "profile_dir": str(profile_dir),
         }
-        self._attach_console_capture(page, session_info)
+        self._attach_context_console_capture(context, session_info)
+        page.on("pageerror", lambda err: self._record_console_log(session_info, "pageerror", str(err)))
 
         extension_id = None
         workers = context.service_workers
@@ -544,6 +594,27 @@ class BrowserManager:
             "extension_id": extension_id,
             "extension_path": str(extension_path),
         }
+
+    def _service_worker(self, session_info):
+        context = session_info["context"]
+        workers = list(context.service_workers)
+        if not workers:
+            try:
+                workers = [context.wait_for_event("serviceworker", timeout=5000)]
+            except Exception:
+                workers = []
+        extension_workers = [worker for worker in workers if str(worker.url).startswith("chrome-extension://")]
+        if extension_workers:
+            return extension_workers[0]
+        if workers:
+            return workers[0]
+        raise ValueError("No service worker found for this session")
+
+    def cmd_service_worker_eval(self, params):
+        session_info = self._session(params)
+        worker = self._service_worker(session_info)
+        result = worker.evaluate(params["expression"])
+        return {"session": params["session"], "worker_url": worker.url, "result": result}
 
     def cmd_goto(self, params):
         page = self._page(params)
@@ -864,6 +935,10 @@ def main():
     p.add_argument("session", help="Session ID")
     p.add_argument("expression", help="JS expression to evaluate")
 
+    p = sub.add_parser("service-worker-eval", aliases=["service_worker_eval"], help="Run JavaScript in the session's service worker")
+    p.add_argument("session", help="Session ID")
+    p.add_argument("expression", help="JS expression to evaluate in the service worker")
+
     p = sub.add_parser("save-auth", help="Save auth state (cookies/storage) to file")
     p.add_argument("session", help="Session ID")
     p.add_argument("--path", default="playwright/.auth/x_auth.json", help="Output file path")
@@ -1073,6 +1148,11 @@ def main():
         params["session"] = args.session
         params["expression"] = args.expression
 
+    elif cmd in {"service-worker-eval", "service_worker_eval"}:
+        cmd = "service_worker_eval"
+        params["session"] = args.session
+        params["expression"] = args.expression
+
     elif cmd == "save-auth":
         cmd = "save_auth"
         params["session"] = args.session
@@ -1152,17 +1232,21 @@ def main():
             print("No console logs.")
         else:
             for entry in logs:
-                print(f"[{entry.get('seq')}] {entry.get('timestamp')} {entry.get('type')}: {entry.get('text')}")
+                source = f" {entry.get('source')}" if entry.get("source") else ""
+                url = f" {entry.get('url')}" if entry.get("url") else ""
+                print(f"[{entry.get('seq')}] {entry.get('timestamp')} {entry.get('type')}{source}{url}: {entry.get('text')}")
 
     elif cmd == "wait":
         print(f"Found: {result['found']}")
 
-    elif cmd == "eval":
+    elif cmd in {"eval", "service_worker_eval"}:
         r = result.get("result")
         if isinstance(r, (dict, list)):
             print(json.dumps(r, indent=2))
         else:
             print(f"Result: {r}")
+        if cmd == "service_worker_eval":
+            print(f"Worker: {result.get('worker_url')}")
 
     elif cmd == "save_auth":
         if args.command == "auth-save":
