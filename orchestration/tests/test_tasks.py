@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from orchestration.workstreams import create_workstream, get_workstream_tags, list_workstreams, save_workstream
 from orchestration.tasks import (
+    add_task_error,
+    clear_task_errors,
     create_task,
     read_task,
     read_task_from_workstream,
@@ -114,6 +116,26 @@ class TestReadTask:
         loaded = read_task(task.id, base_dir=workspace)
         assert loaded.token_usage["input_tokens"] == 120
         assert loaded.token_usage["output_tokens"] == 45
+
+    def test_read_preserves_task_errors(self, workspace, ws):
+        task = create_task(ws.id, title="Errored", base_dir=workspace)
+
+        add_task_error(
+            task.id,
+            message="Invalid image attachment",
+            error_type="preflight",
+            source="Coder",
+            base_dir=workspace,
+        )
+
+        loaded = read_task(task.id, base_dir=workspace)
+        assert loaded.task_errors[0]["type"] == "preflight"
+        assert loaded.task_errors[0]["message"] == "Invalid image attachment"
+        assert loaded.task_errors[0]["source"] == "Coder"
+
+        clear_task_errors(task.id, base_dir=workspace)
+        cleared = read_task(task.id, base_dir=workspace)
+        assert cleared.task_errors[0]["cleared_at"]
 
     def test_read_task_uses_workspace_index_not_per_task_root_resolution(self, workspace, tmp_path, monkeypatch):
         working_root = tmp_path / "career_pivot_repo"

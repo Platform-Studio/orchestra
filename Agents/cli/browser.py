@@ -7,6 +7,7 @@ CLI invocations. A lightweight background HTTP server manages browser state.
 
 Usage:
     browser.py open [URL]                           Open new session
+    browser.py open-extension --extension PATH [URL] Open new session with unpacked Chrome extension
     browser.py goto SESSION URL                     Navigate to URL
     browser.py status SESSION                       Get page load state
     browser.py html SESSION [--selector SEL]        Get page HTML
@@ -470,6 +471,80 @@ class BrowserManager:
         self.sessions[sid] = session_info
         return {"session": sid, "url": page.url, "title": page.title()}
 
+    def cmd_open_extension(self, params):
+        self._ensure_runtime()
+        extension_path = Path(params.get("extension") or "").expanduser().resolve()
+        if not extension_path.exists() or not extension_path.is_dir():
+            raise ValueError(f"Extension directory not found: {extension_path}")
+        manifest_path = extension_path / "manifest.json"
+        if not manifest_path.exists():
+            raise ValueError(f"Extension manifest not found: {manifest_path}")
+
+        sid = uuid.uuid4().hex[:8]
+        profile_dir = Path(tempfile.mkdtemp(prefix=f"{PLAYWRIGHT_PROFILE_MARKER}_extension_{sid}_"))
+        args = [
+            f"--disable-extensions-except={extension_path}",
+            f"--load-extension={extension_path}",
+        ]
+        headless = bool(params.get("headless", False))
+        try:
+            context = self.pw.chromium.launch_persistent_context(
+                str(profile_dir),
+                headless=headless,
+                viewport={"width": 1280, "height": 800},
+                args=args,
+                ignore_default_args=["--disable-extensions"],
+            )
+        except Exception:
+            context = self.pw.chromium.launch_persistent_context(
+                str(profile_dir),
+                channel="chrome",
+                headless=headless,
+                viewport={"width": 1280, "height": 800},
+                args=args,
+                ignore_default_args=["--disable-extensions"],
+            )
+
+        context_on = getattr(context, "on", None)
+        if callable(context_on):
+            context_on("close", lambda: self._handle_session_context_closed(sid, context))
+
+        page = context.pages[0] if context.pages else context.new_page()
+        session_info = {
+            "context": context,
+            "page": page,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "console_logs": [],
+            "console_next_seq": 1,
+            "extension_path": str(extension_path),
+            "profile_dir": str(profile_dir),
+        }
+        self._attach_console_capture(page, session_info)
+
+        extension_id = None
+        workers = context.service_workers
+        if not workers:
+            try:
+                workers = [context.wait_for_event("serviceworker", timeout=5000)]
+            except Exception:
+                workers = []
+        if workers:
+            worker_url = workers[0].url
+            if worker_url.startswith("chrome-extension://"):
+                extension_id = worker_url.split("/")[2]
+
+        target_url = params.get("url")
+        if target_url:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
+        self.sessions[sid] = session_info
+        return {
+            "session": sid,
+            "url": page.url,
+            "title": page.title(),
+            "extension_id": extension_id,
+            "extension_path": str(extension_path),
+        }
+
     def cmd_goto(self, params):
         page = self._page(params)
         page.goto(params["url"], wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
@@ -728,6 +803,11 @@ def main():
     p.add_argument("--auth", help="Path to saved auth state JSON file")
     p.add_argument("--site", help="Saved auth site key to preload, e.g. linkedin")
 
+    p = sub.add_parser("open-extension", help="Open a headed Chromium session with an unpacked Chrome extension")
+    p.add_argument("url", nargs="?", help="URL to navigate to")
+    p.add_argument("--extension", required=True, help="Path to unpacked extension directory containing manifest.json")
+    p.add_argument("--headless", action="store_true", help="Headless mode (not recommended for extension tests)")
+
     p = sub.add_parser("goto", help="Navigate to URL")
     p.add_argument("session", help="Session ID")
     p.add_argument("url", help="URL")
@@ -917,6 +997,14 @@ def main():
             if auth_info.get("found"):
                 params["auth"] = auth_info["path"]
                 params["site"] = auth_info["site"]
+
+    elif cmd == "open-extension":
+        cmd = "open_extension"
+        if args.url:
+            params["url"] = args.url
+        params["extension"] = args.extension
+        if args.headless:
+            params["headless"] = True
 
     elif cmd == "goto":
         params["session"] = args.session

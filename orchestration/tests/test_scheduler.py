@@ -55,6 +55,11 @@ class TestCronMatching:
         assert _cron_matches_time(["30", "*", "*", "*", "*"], dt) is True
         assert _cron_matches_time(["15", "*", "*", "*", "*"], dt) is False
 
+    def test_step_minute(self):
+        dt = datetime(2026, 4, 15, 10, 30, tzinfo=timezone.utc)
+        assert _cron_matches_time(["*/30", "*", "*", "*", "*"], dt) is True
+        assert _cron_matches_time(["*/20", "*", "*", "*", "*"], dt) is False
+
     def test_exact_hour(self):
         dt = datetime(2026, 4, 15, 10, 30, tzinfo=timezone.utc)
         assert _cron_matches_time(["*", "10", "*", "*", "*"], dt) is True
@@ -78,6 +83,11 @@ class TestCronMatching:
         base = datetime(2026, 4, 15, 10, 29, tzinfo=timezone.utc)
         now = datetime(2026, 4, 15, 10, 30, tzinfo=timezone.utc)
         assert _cron_matches_between("30 * * * *", base, now) is True
+
+    def test_matches_between_step_boundary(self):
+        base = datetime(2026, 4, 15, 10, 29, tzinfo=timezone.utc)
+        now = datetime(2026, 4, 15, 10, 30, tzinfo=timezone.utc)
+        assert _cron_matches_between("*/30 * * * *", base, now) is True
 
 
 # ── Task filter matching ────────────────────────────────────────────
@@ -106,6 +116,15 @@ class TestTaskFilterMatching:
     def test_empty_filter_matches_all(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         assert _task_matches_filter(task, {}) is True
+
+    def test_excludes_task_with_active_task_error(self, workspace, ws):
+        from orchestration.tasks import add_task_error, read_task
+
+        task = create_task(ws.id, title="T", base_dir=workspace)
+        add_task_error(task.id, message="preflight failed", base_dir=workspace)
+        errored = read_task(task.id, base_dir=workspace)
+
+        assert _task_matches_filter(errored, {}) is False
 
 
 class TestStateTriggerTaskSelection:
@@ -749,6 +768,83 @@ class TestTick:
         assert dispatched == [("In Progress", [in_progress.id])]
         assert result["state_triggers_fired"][0]["task_ids"] == [in_progress.id]
         assert result["state_triggers_fired"][1]["result"]["reason"] == "agent_concurrency reached"
+
+    def test_tick_skips_state_task_with_active_task_error(self, workspace, ws, monkeypatch):
+        from orchestration.tasks import add_task_error
+
+        errored = create_task(ws.id, title="Errored Task", base_dir=workspace)
+        ready = create_task(ws.id, title="Ready Task", base_dir=workspace)
+        update_task(errored.id, status="In Progress", base_dir=workspace)
+        update_task(ready.id, status="In Progress", base_dir=workspace)
+        add_task_error(errored.id, message="preflight failed", base_dir=workspace)
+
+        trigger = create_trigger(
+            ws.id,
+            on_state="In Progress",
+            action="run_agent",
+            agent="coder",
+            base_dir=workspace,
+        )
+
+        captured = {}
+
+        def _fake_lock_invoke_unlock(trigger_obj, task_ids, *_args, **_kwargs):
+            captured["trigger_id"] = trigger_obj.id
+            captured["task_ids"] = list(task_ids)
+            return {"trigger_id": trigger_obj.id, "status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+        monkeypatch.setattr("orchestration.agents.count_active_agent_runs", lambda *_args, **_kwargs: 0)
+
+        result = tick(workspace)
+
+        assert captured == {"trigger_id": trigger.id, "task_ids": [ready.id]}
+        assert result["state_triggers_fired"] == [{
+            "trigger_id": trigger.id,
+            "task_ids": [ready.id],
+            "result": {"trigger_id": trigger.id, "status": "dispatched"},
+        }]
+
+    def test_tick_email_trigger_failure_does_not_skip_state_triggers(self, workspace, ws, monkeypatch):
+        in_progress = create_task(ws.id, title="Active Task", base_dir=workspace)
+        update_task(in_progress.id, status="In Progress", base_dir=workspace)
+
+        email_trigger = create_trigger(
+            ws.id,
+            action="run_agent",
+            on_email={"recipient": "inbound@example.com", "event": "new_thread"},
+            agent="email_agent",
+            base_dir=workspace,
+        )
+        state_trigger = create_trigger(
+            ws.id,
+            on_state="In Progress",
+            action="run_agent",
+            agent="coder",
+            base_dir=workspace,
+        )
+
+        def _raise_email_error(*_args, **_kwargs):
+            raise RuntimeError("Mailgun API returned 429")
+
+        captured = {}
+
+        def _fake_lock_invoke_unlock(trigger, task_ids, *_args, **_kwargs):
+            captured["trigger_id"] = trigger.id
+            captured["task_ids"] = list(task_ids)
+            return {"trigger_id": trigger.id, "status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._poll_email_trigger_events", _raise_email_error)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+        monkeypatch.setattr("orchestration.agents.count_active_agent_runs", lambda *_args, **_kwargs: 0)
+
+        result = tick(workspace)
+
+        assert result["email_triggers_fired"] == [{
+            "trigger_id": email_trigger.id,
+            "result": {"status": "error", "message": "Mailgun API returned 429"},
+        }]
+        assert captured == {"trigger_id": state_trigger.id, "task_ids": [in_progress.id]}
 
 
 # ── Paused tasks ────────────────────────────────────────────────────

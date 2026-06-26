@@ -66,6 +66,88 @@ def _normalize_attachment_list(paths: list) -> list:
     return normalized
 
 
+def _active_task_errors(task: Task) -> list:
+    return [
+        item for item in (getattr(task, "task_errors", None) or [])
+        if isinstance(item, dict) and not item.get("cleared_at")
+    ]
+
+
+def has_active_task_errors(task: Task) -> bool:
+    return bool(_active_task_errors(task))
+
+
+def add_task_error(
+    task_id: str,
+    *,
+    message: str,
+    error_type: str = "preflight",
+    source: str = None,
+    run_id: str = None,
+    trigger_id: str = None,
+    base_dir: str = ".",
+) -> Task:
+    """Add or update an unresolved task error without moving the task state."""
+    task = read_task(task_id, base_dir=base_dir)
+    normalized_message = str(message or "").strip()
+    normalized_type = str(error_type or "preflight").strip() or "preflight"
+    now = now_iso()
+
+    errors = list(getattr(task, "task_errors", None) or [])
+    for item in errors:
+        if not isinstance(item, dict) or item.get("cleared_at"):
+            continue
+        if item.get("type") == normalized_type and item.get("message") == normalized_message:
+            item["last_seen_at"] = now
+            item["count"] = int(item.get("count") or 1) + 1
+            if source:
+                item["source"] = source
+            if run_id:
+                item["run_id"] = run_id
+            if trigger_id:
+                item["trigger_id"] = trigger_id
+            break
+    else:
+        item = {
+            "id": new_id(),
+            "type": normalized_type,
+            "message": normalized_message,
+            "created_at": now,
+            "last_seen_at": now,
+            "count": 1,
+        }
+        if source:
+            item["source"] = source
+        if run_id:
+            item["run_id"] = run_id
+        if trigger_id:
+            item["trigger_id"] = trigger_id
+        errors.append(item)
+
+    task.task_errors = errors
+    task.add_audit("task_error", f"Task error recorded ({normalized_type}): {normalized_message}")
+    _save_task(task, base_dir)
+    return task
+
+
+def clear_task_errors(task_id: str, error_id: str = None, base_dir: str = ".") -> Task:
+    """Mark unresolved task errors as cleared."""
+    task = read_task(task_id, base_dir=base_dir)
+    now = now_iso()
+    changed = False
+    for item in getattr(task, "task_errors", None) or []:
+        if not isinstance(item, dict) or item.get("cleared_at"):
+            continue
+        if error_id is not None and item.get("id") != error_id:
+            continue
+        item["cleared_at"] = now
+        changed = True
+    if changed:
+        task.add_audit("task_error_cleared", "Task error(s) cleared")
+        _save_task(task, base_dir)
+    return task
+
+
 def _validate_attachment_list(
     paths: list,
     *,
@@ -156,6 +238,7 @@ def _summary_task_from_data(data: dict, workstream_id: str) -> Task:
         last_failure_at=data.get("last_failure_at"),
         paused=bool(data.get("paused", False)),
         token_usage=data.get("token_usage"),
+        task_errors=data.get("task_errors", []) or [],
     )
     audit = data.get("audit")
     if isinstance(audit, list) and audit:
@@ -237,6 +320,11 @@ def _read_board_task_file(file_path: str, task_id: str, workstream_id: str) -> T
                         continue
                     token_usage_lines = []
                     current_section = "token_usage"
+                elif key == "task_errors":
+                    if rest:
+                        data["task_errors"], line_index = _parse_wrapped_top_level_scalar(lines, line_index, rest)
+                        continue
+                    current_section = "task_errors"
                 elif key == "audit":
                     current_section = "audit"
 
@@ -253,6 +341,10 @@ def _read_board_task_file(file_path: str, task_id: str, workstream_id: str) -> T
             if current_section == "token_usage":
                 if line.startswith("  ") or not line.strip():
                     token_usage_lines.append(line)
+                line_index += 1
+                continue
+
+            if current_section == "task_errors":
                 line_index += 1
                 continue
 

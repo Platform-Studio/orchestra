@@ -747,6 +747,22 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   padding-left: 7px;
 }
 .card.card-paused:hover { opacity: 0.95; }
+.card.card-task-error {
+  border-left: 3px solid #f85149;
+  box-shadow: inset 0 0 0 1px rgba(248,81,73,0.55);
+  padding-left: 7px;
+}
+.card-task-error-msg {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(248,81,73,0.28);
+  color: #ff7b72;
+  font-size: 11px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .card-token-usage {
   margin-top: 6px;
@@ -3667,6 +3683,13 @@ function renderCard(task, lock, state) {
 
   const errorClass = task._error ? ' card-error' : (task.status === 'failed' ? ' card-failed' : '');
   const errorMsg = task._error ? `<div class="card-error-msg" title="${esc(task._error)}">⚠ ${esc(task._error)}</div>` : '';
+  const taskErrors = Array.isArray(task.task_errors)
+    ? task.task_errors.filter(item => item && !item.cleared_at)
+    : [];
+  const taskErrorClass = taskErrors.length ? ' card-task-error' : '';
+  const taskErrorMsg = taskErrors.length
+    ? `<div class="card-task-error-msg" title="${esc(taskErrors[0].message || 'Task error')}">⚠ ${esc(taskErrors[0].type || 'error')}: ${esc(taskErrors[0].message || 'Task error')}</div>`
+    : '';
 
   let failedInfo = '';
   if (task.status === 'failed' && !task._error) {
@@ -3688,12 +3711,13 @@ function renderCard(task, lock, state) {
     ? ''
     : `<button class="card-pause-btn${isPaused ? ' paused' : ''}" type="button" data-task-pause-id="${esc(task.id)}" title="${esc(pauseTitle)}" aria-label="${esc(pauseTitle)}" aria-pressed="${isPaused ? 'true' : 'false'}" onclick="event.stopPropagation(); toggleTaskPause('${esc(task.id)}', this)">${isPaused ? ICON_PLAY : ICON_PAUSE}</button>`;
   const pausedClass = isPaused ? ' card-paused' : '';
-  return `<div class="card${errorClass}${pausedClass}" data-task-id="${task.id}" data-state="${esc(state)}" draggable="${canDrag ? 'true' : 'false'}">
+  return `<div class="card${errorClass}${pausedClass}${taskErrorClass}" data-task-id="${task.id}" data-state="${esc(state)}" draggable="${canDrag ? 'true' : 'false'}">
     ${pauseBtn}
     ${tagsHtml}
     <div class="card-title">${esc(task.title)}</div>
     ${progressHtml}
     ${errorMsg}
+    ${taskErrorMsg}
     ${failedInfo}
     ${meta ? `${checklistAgentSeparator}<div class="card-meta">${meta}</div>` : ''}
     ${tokenUsage}

@@ -186,6 +186,8 @@ def _serialize_board_tasks(tasks):
             task_dict["paused"] = True
         if getattr(task, "token_usage", None) is not None:
             task_dict["token_usage"] = task.token_usage
+        if getattr(task, "task_errors", None):
+            task_dict["task_errors"] = task.task_errors
         if hasattr(task, "_parse_error"):
             task_dict["_error"] = task._parse_error
         task_dict["lock"] = {"locked": False}

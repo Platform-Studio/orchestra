@@ -320,6 +320,7 @@ class Task:
     last_failure_at: str = None
     paused: bool = False
     token_usage: dict = None
+    task_errors: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
@@ -352,6 +353,8 @@ class Task:
             d["last_failure_at"] = self.last_failure_at
         if self.token_usage is not None:
             d["token_usage"] = self.token_usage
+        if self.task_errors:
+            d["task_errors"] = self.task_errors
         if hasattr(self, '_parse_error'):
             d["_error"] = self._parse_error
         return d
@@ -379,6 +382,7 @@ class Task:
             last_failure_at=data.get("last_failure_at"),
             paused=bool(data.get("paused", False)),
             token_usage=data.get("token_usage"),
+            task_errors=data.get("task_errors", []) or [],
         )
 
     def add_audit(self, event_type: str, description: str):

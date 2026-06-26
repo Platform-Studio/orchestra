@@ -1492,6 +1492,11 @@ def test_run_agent_rejects_invalid_image_attachments_preflight(mock_popen, mock_
     with pytest.raises(RuntimeError, match="Invalid image attachments"):
         run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
 
+    reloaded = read_task(task.id, base_dir=workspace)
+    assert reloaded.task_errors
+    assert reloaded.task_errors[0]["type"] == "preflight"
+    assert "assets/logo.png" in reloaded.task_errors[0]["message"]
+
     mock_popen.assert_not_called()
 
 

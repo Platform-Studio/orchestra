@@ -40,6 +40,12 @@ python3 Agents/cli/browser.py open --headless https://www.example.com
 
 # Open with saved auth for a known site key:
 python3 Agents/cli/browser.py open --site linkedin https://www.linkedin.com/feed/
+
+# Open with an unpacked Chrome extension loaded (headed Chromium):
+python3 Agents/cli/browser.py open-extension \
+	--extension /path/to/unpacked-extension \
+	https://example.com
+# Output includes extension_id when a Manifest V3 service worker is available.
 ```
 
 ### Reuse saved auth
@@ -76,6 +82,9 @@ python3 Agents/cli/browser.py auth-save a1b2c3d4 --site linkedin --account-label
 
 ```bash
 python3 Agents/cli/browser.py goto a1b2c3d4 https://www.google.com
+
+# Open an extension-owned page directly after open-extension returns extension_id:
+python3 Agents/cli/browser.py goto a1b2c3d4 chrome-extension://EXTENSION_ID/popup.html
 ```
 
 ### Get page status
@@ -243,6 +252,7 @@ python3 Agents/cli/browser.py close 7e2f9b01
 - **`type` clears the field first** (uses Playwright's `fill()`). Use `--keys` for fields that need keystroke events (autocomplete, search-as-you-type).
 - **The server persists until stopped.** If you restart your machine, the server will be gone. Just run any command and it auto-restarts.
 - **Each session is isolated.** Sessions don't share cookies or storage. If you need to log in, you log in per-session.
+- **Chrome extensions require `open-extension`.** Normal `open` sessions cannot install extensions after launch. `open-extension` starts a persistent Chromium context with `--load-extension` and `--disable-extensions-except`. It prefers Playwright's bundled Chromium because some local Google Chrome builds ignore unpacked extension loading under automation.
 - **Pop-ups / new tabs** opened by clicking links are not automatically tracked as new sessions. The original session stays on its page. Use `eval` to modify link targets if needed.
 - **The server is single-threaded.** It processes one command at a time. Don't send commands in parallel to the same server.
 - **Screenshots** are saved as PNG. Use the `view_image` tool to inspect them.

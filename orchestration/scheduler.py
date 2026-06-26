@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from .models import now_iso
 from .persistence import resolve_workstream_root
 from .workstreams import list_workstreams
-from .tasks import list_tasks, list_tasks_for_workstream, read_task, _save_task
+from .tasks import has_active_task_errors, list_tasks, list_tasks_for_workstream, read_task, _save_task
 from .triggers import execute_trigger, trigger_pause_reason
 
 
@@ -326,20 +326,33 @@ def _cron_matches_time(parts: list, dt: datetime) -> bool:
     """Check if a 5-field cron expression matches a specific datetime."""
     fields = [dt.minute, dt.hour, dt.day, dt.month, (dt.weekday() + 1) % 7]  # cron: 0=Sunday
     for field_val, pattern in zip(fields, parts):
-        if pattern == "*":
-            continue
-        try:
-            if int(pattern) != field_val:
-                return False
-        except ValueError:
+        if not _cron_field_matches(field_val, pattern):
             return False
     return True
+
+
+def _cron_field_matches(field_val: int, pattern: str) -> bool:
+    if pattern == "*":
+        return True
+    if pattern.startswith("*/"):
+        try:
+            step = int(pattern[2:])
+        except ValueError:
+            return False
+        return step > 0 and field_val % step == 0
+    try:
+        return int(pattern) == field_val
+    except ValueError:
+        return False
 
 
 def _task_matches_filter(task, filter_def: dict) -> bool:
     """Check if a task matches a trigger filter."""
     # Paused tasks are never eligible for automatic pickup, regardless of filter.
     if getattr(task, "paused", False):
+        return False
+    # Tasks with unresolved task errors require user/tooling action before pickup.
+    if has_active_task_errors(task):
         return False
     # Accept both "state" and "status" as aliases for the task state field
     state_filter = filter_def.get("state") or filter_def.get("status")
@@ -894,7 +907,24 @@ def tick(base_dir: str = ".") -> dict:
             if getattr(trigger, "on_email", None) is None:
                 continue
 
-            email_events, trigger_state = _poll_email_trigger_events(trigger, ws, base_dir)
+            try:
+                email_events, trigger_state = _poll_email_trigger_events(trigger, ws, base_dir)
+            except Exception as e:
+                from .workspace_audit import log_event as _log_event
+                message = str(e)
+                _log_event(
+                    "trigger_skipped",
+                    f"Email trigger '{trigger.id}' skipped — {message}",
+                    base_dir,
+                    trigger_id=trigger.id,
+                    workstream_id=ws.id,
+                    status="error",
+                )
+                results["email_triggers_fired"].append({
+                    "trigger_id": trigger.id,
+                    "result": {"status": "error", "message": message},
+                })
+                continue
             processed_keys = list(trigger_state.get("processed_keys") or [])
             processed_changed = False
 
@@ -944,7 +974,9 @@ def tick(base_dir: str = ".") -> dict:
             # or paused.
             matching_ids = [
                 task.id for task in tasks_by_status.get(trigger.on_state, [])
-                if task.id not in active_locks and not getattr(task, "paused", False)
+                if task.id not in active_locks
+                and not getattr(task, "paused", False)
+                and not has_active_task_errors(task)
             ]
             if not matching_ids:
                 continue

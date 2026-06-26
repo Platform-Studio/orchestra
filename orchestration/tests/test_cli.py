@@ -1,5 +1,6 @@
 """Tests for the CLI interface."""
 
+import csv
 import importlib
 import json
 import shutil
@@ -21,7 +22,7 @@ def _clear_persistence_root_env(monkeypatch):
     monkeypatch.setenv("ARTICACT_ROOT", "")
 
 
-def run_cli(*args, base_dir=None):
+def run_cli(*args, base_dir=None, cwd=None):
     """Run the CLI and capture output."""
     cmd_args = list(args)
     if base_dir:
@@ -33,13 +34,15 @@ def run_cli(*args, base_dir=None):
     env["WORKSTREAM_ROOT"] = ""
     env["ARTIFACT_ROOT"] = ""
     env["ARTICACT_ROOT"] = ""
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
 
     result = subprocess.run(
         [sys.executable, "-m", "orchestration.cli"] + cmd_args,
         capture_output=True,
         text=True,
         env=env,
-        cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        cwd=cwd or repo_root,
     )
     return result
 
@@ -247,6 +250,47 @@ class TestCLIWorkstream:
         depths = {r["id"]: r["depth"] for r in rows}
         assert depths[root_id] == 0
         assert depths[child_id] == 1
+
+    def test_token_usage_writes_csv_to_explicit_output(self, workspace, tmp_path):
+        from orchestration.tasks import create_task, _save_task
+
+        result = run_cli("workstream", "create", "--name", "Token Board", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+        first = create_task(ws_id, title="First, task", base_dir=workspace)
+        first.token_usage = {"input_tokens": 120, "output_tokens": 45}
+        _save_task(first, base_dir=workspace)
+        create_task(ws_id, title="No Tokens", base_dir=workspace)
+
+        output_path = tmp_path / "custom_tokens.csv"
+        result = run_cli(
+            "workstream", "token-usage", ws_id,
+            "--output", str(output_path),
+            base_dir=workspace,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["path"] == str(output_path)
+        assert data["task_count"] == 2
+
+        with output_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+
+        assert rows[0] == ["task ID", "task title", "input tokens", "output tokens"]
+        by_title = {row[1]: row for row in rows[1:]}
+        assert by_title["First, task"] == [first.id, "First, task", "120", "45"]
+        assert by_title["No Tokens"][1:] == ["No Tokens", "0", "0"]
+
+    def test_token_usage_default_output_filename(self, workspace, tmp_path):
+        result = run_cli("workstream", "create", "--name", "Token Board", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+        run_cli("task", "create", ws_id, "--title", "Card", base_dir=workspace)
+
+        result = run_cli("workstream", "token-usage", ws_id, base_dir=workspace, cwd=str(tmp_path))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["path"] == f"tokens_{ws_id}.csv"
+        assert data["task_count"] == 1
+        assert (tmp_path / f"tokens_{ws_id}.csv").exists()
 
     def test_migrate_artifact_root_home(self, workspace, tmp_path):
         mount_root = tmp_path / "mounted_repo"

@@ -2913,6 +2913,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             _play_agent_sound(agent_def, "error", base_dir)
             raise RuntimeError(f"Workstream '{ws.name}' is paused")
 
+    run_id = _run_id or str(uuid.uuid4())
+
     # Preflight: block obviously invalid image attachments before invoking the runtime.
     invalid_images = []
     for t in tasks:
@@ -2933,7 +2935,19 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 details.append(
                     f"- task {task_obj.id} ({task_obj.title}): {issue['path']} -> {issue['reason']}"
                 )
-            task_current = read_task(task_obj.id, base_dir)
+            from .tasks import add_task_error
+            task_current = add_task_error(
+                task_obj.id,
+                message="Invalid image attachments detected; refusing to start agent run. "
+                + "; ".join(
+                    f"{issue_item['path']} -> {issue_item['reason']}"
+                    for issue_item in item["issues"]
+                ),
+                error_type="preflight",
+                source=agent_def.get("name") or agent_name,
+                run_id=run_id,
+                base_dir=base_dir,
+            )
             task_current.add_audit(
                 "agent_failed",
                 "Agent preflight failed due to invalid image attachments. "
@@ -2949,7 +2963,6 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
     # Write task IDs to a temp file for the agent to reference (always, even for single task)
     task_file_path = None
-    run_id = _run_id or str(uuid.uuid4())
     log_path_rel = None
     run_meta = None
     provider_context_snapshot = None

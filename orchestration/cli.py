@@ -12,6 +12,7 @@ Examples:
 """
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -200,6 +201,30 @@ def cmd_workstream_descendants(args):
     _output(result)
 
 
+def cmd_workstream_token_usage(args):
+    from .tasks import list_tasks
+
+    output_path = args.output or f"tokens_{args.id}.csv"
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    tasks = list_tasks(args.id, base_dir=args.base_dir)
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["task ID", "task title", "input tokens", "output tokens"])
+        for task in tasks:
+            token_usage = task.token_usage or {}
+            writer.writerow([
+                task.id,
+                task.title,
+                int(token_usage.get("input_tokens", 0) or 0),
+                int(token_usage.get("output_tokens", 0) or 0),
+            ])
+
+    _output({"path": output_path, "task_count": len(tasks)})
+
+
 def cmd_workstream_migrate_artifact_root_home(args):
     from .migration import migrate_artifact_root_home
 
@@ -348,6 +373,12 @@ def cmd_task_list(args):
 def cmd_task_comment(args):
     from .tasks import comment_task
     task = comment_task(args.task_id, args.message, author=args.author, base_dir=args.base_dir)
+    _output(task.to_dict())
+
+
+def cmd_task_clear_errors(args):
+    from .tasks import clear_task_errors
+    task = clear_task_errors(args.task_id, error_id=args.error_id, base_dir=args.base_dir)
     _output(task.to_dict())
 
 
@@ -904,6 +935,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-self", action="store_true", help="Include the root workstream in output")
     p.set_defaults(func=cmd_workstream_descendants)
 
+    p = ws_sub.add_parser("token-usage", help="Export task token usage for a workstream to CSV")
+    p.add_argument("id", help="Workstream ID to export")
+    p.add_argument("--output", "-o", help="Output CSV path (default: tokens_<workstream_id>.csv)")
+    p.set_defaults(func=cmd_workstream_token_usage)
+
     p = ws_sub.add_parser("migrate-artifact-root-home")
     p.add_argument("id", help="Root workstream ID whose explicit artifact_root should move into foundation storage")
     p.add_argument("--apply", action="store_true", help="Apply migration; default is dry run")
@@ -985,6 +1021,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--message", required=True)
     p.add_argument("--author", help="Optional comment author (agent/user)")
     p.set_defaults(func=cmd_task_comment)
+
+    p = task_sub.add_parser("clear-errors")
+    p.add_argument("task_id")
+    p.add_argument("--error-id", default=None)
+    p.set_defaults(func=cmd_task_clear_errors)
 
     p = task_sub.add_parser("archive")
     p.add_argument("task_id")
