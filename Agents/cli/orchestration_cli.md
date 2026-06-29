@@ -364,8 +364,12 @@ python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "* * * * 
 # Email-based trigger: dispatches an agent when a new inbound thread arrives
 python -m orchestration.cli trigger create WORKSTREAM_ID --on-email-recipient "build@guild.platformstud.io" --on-email-event new_thread --action run_agent --agent startup_vendor
 
-# Schedule-based trigger with task filter
+# Schedule-based trigger with task filter. Filters are conjunctive:
+# state/status must match and every listed tag must be present.
 python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "*/5 * * * *" --filter '{"status": "pending", "tags": ["batch"]}' --action run_agent --agent sdr
+
+# Singular tag is also supported for one required tag.
+python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "0 * * * *" --filter '{"state": "Live", "tag": "requestor_notify"}' --action run_agent --agent product_feedback_loopback
 ```
 
 Template variables `{task_id}` and `{workstream_id}` are replaced in `run_command` commands. Email triggers also populate `{email_from}`, `{email_to}`, `{email_subject}`, `{email_date}`, `{email_body}`, `{email_storage_key}`, `{email_attachment_count}`, and `{email_attachments_json}`.

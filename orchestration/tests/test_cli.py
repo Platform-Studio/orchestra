@@ -850,6 +850,23 @@ class TestCLIScheduleTrigger:
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert data["on_schedule"] == "0 9 * * 1"
+        assert data["filter"] == {"state": "To Do"}
+
+    def test_create_schedule_trigger_with_state_and_tag_filter(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+
+        result = run_cli("trigger", "create", ws_id,
+                         "--on-schedule", "0 * * * *",
+                         "--filter", '{"state": "Live", "tag": "requestor_notify"}',
+                         "--action", "run_agent",
+                         "--agent", "product_feedback_loopback",
+                         base_dir=workspace)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["on_schedule"] == "0 * * * *"
+        assert data["filter"] == {"state": "Live", "tag": "requestor_notify"}
+        assert data["agent"] == "product_feedback_loopback"
 
     def test_create_state_trigger_with_task_selection(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)

@@ -363,9 +363,12 @@ def _task_matches_filter(task, filter_def: dict) -> bool:
         elif task.status != state_filter:
             return False
 
-    if "tags" in filter_def:
-        required_tags = filter_def["tags"]
-        if not any(t in task.tags for t in required_tags):
+    if "tag" in filter_def or "tags" in filter_def:
+        required_tags = _required_filter_tags(filter_def)
+        if not required_tags:
+            return False
+        task_tags = set(task.tags or [])
+        if not all(tag in task_tags for tag in required_tags):
             return False
 
     if "older_than_days" in filter_def:
@@ -382,6 +385,21 @@ def _task_matches_filter(task, filter_def: dict) -> bool:
                 break
 
     return True
+
+
+def _required_filter_tags(filter_def: dict) -> list[str]:
+    values = []
+    for key in ("tag", "tags"):
+        if key not in filter_def:
+            continue
+        raw = filter_def[key]
+        if isinstance(raw, str):
+            values.append(raw)
+        elif isinstance(raw, (list, tuple, set)):
+            values.extend(raw)
+        elif raw is not None:
+            values.append(raw)
+    return [str(tag).strip() for tag in values if str(tag).strip()]
 
 
 def _group_tasks_by_status(tasks: list) -> dict[str, list]:

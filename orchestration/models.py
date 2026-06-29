@@ -70,7 +70,7 @@ class Trigger:
     on_email: dict = None      # email-based trigger config: {recipient, event}
     event_context: dict = None # transient event payload injected at execution time
     task_selection: str = None # for state triggers: first_unlocked | all_unlocked
-    filter: dict = None        # filter for schedule-based triggers (state, tags, older_than_days)
+    filter: dict = None        # filter for schedule triggers (state/status AND tag/tags AND older_than_days)
     agent: str = None
     command: str = None
     prompt: str = None         # custom prompt injected into agent when trigger fires

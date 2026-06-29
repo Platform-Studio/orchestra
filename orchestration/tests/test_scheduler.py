@@ -113,6 +113,22 @@ class TestTaskFilterMatching:
         assert _task_matches_filter(task, {"tags": ["urgent"]}) is True
         assert _task_matches_filter(task, {"tags": ["low"]}) is False
 
+    def test_matches_all_required_tags(self, workspace, ws):
+        task = create_task(ws.id, title="T", tags=["urgent", "requestor_notify"], base_dir=workspace)
+        assert _task_matches_filter(task, {"tags": ["urgent", "requestor_notify"]}) is True
+        assert _task_matches_filter(task, {"tags": ["urgent", "missing"]}) is False
+
+    def test_matches_singular_tag_filter(self, workspace, ws):
+        task = create_task(ws.id, title="T", tags=["requestor_notify"], base_dir=workspace)
+        assert _task_matches_filter(task, {"tag": "requestor_notify"}) is True
+        assert _task_matches_filter(task, {"tag": "requestor_notified"}) is False
+
+    def test_matches_state_and_tags_conjunctively(self, workspace, ws):
+        task = create_task(ws.id, title="T", tags=["requestor_notify"], base_dir=workspace)
+        assert _task_matches_filter(task, {"state": "To Do", "tags": ["requestor_notify"]}) is True
+        assert _task_matches_filter(task, {"state": "Done", "tags": ["requestor_notify"]}) is False
+        assert _task_matches_filter(task, {"state": "To Do", "tags": ["requestor_notified"]}) is False
+
     def test_empty_filter_matches_all(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         assert _task_matches_filter(task, {}) is True
@@ -733,6 +749,50 @@ class TestTick:
 
         result = tick(workspace)
         assert len(result["trigger_schedules_fired"]) == 0
+
+    def test_tick_schedule_trigger_filters_by_state_and_all_tags(self, workspace, ws, monkeypatch):
+        matching = create_task(ws.id, title="Matching", tags=["requestor_notify", "P1"], base_dir=workspace)
+        update_task(matching.id, status="In Progress", base_dir=workspace)
+        update_task(matching.id, status="Done", base_dir=workspace)
+
+        missing_tag = create_task(ws.id, title="Missing Tag", tags=["requestor_notify"], base_dir=workspace)
+        update_task(missing_tag.id, status="In Progress", base_dir=workspace)
+        update_task(missing_tag.id, status="Done", base_dir=workspace)
+
+        create_task(ws.id, title="Wrong State", tags=["requestor_notify", "P1"], base_dir=workspace)
+
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="* * * * *",
+            filter={"state": "Done", "tags": ["requestor_notify", "P1"]},
+            action="run_agent",
+            agent="test_agent",
+            base_dir=workspace,
+        )
+
+        captured = {}
+
+        def _fake_lock_invoke_unlock(trigger_obj, task_ids, ws_obj, base_dir, background=False, ignore_paused=False):
+            captured["trigger_id"] = trigger_obj.id
+            captured["task_ids"] = list(task_ids)
+            captured["background"] = background
+            return {"trigger_id": trigger_obj.id, "status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+        _save_state({"last_tick_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}, workspace)
+
+        result = tick(workspace)
+
+        assert captured == {
+            "trigger_id": trigger.id,
+            "task_ids": [matching.id],
+            "background": True,
+        }
+        assert result["trigger_schedules_fired"] == [{
+            "trigger_id": trigger.id,
+            "task_ids": [matching.id],
+            "result": {"trigger_id": trigger.id, "status": "dispatched"},
+        }]
 
     def test_tick_prioritizes_later_state_trigger_for_shared_agent(self, workspace, ws, monkeypatch):
         backlog = create_task(ws.id, title="Backlog Task", base_dir=workspace)
