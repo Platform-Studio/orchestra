@@ -20,6 +20,7 @@ from orchestration.scheduler import (
     _cron_matches_between,
     _select_state_trigger_task_ids,
     _task_matches_filter,
+    _matching_task_ids,
     _lock_invoke_unlock,
     tick,
     status,
@@ -128,6 +129,28 @@ class TestTaskFilterMatching:
         assert _task_matches_filter(task, {"state": "To Do", "tags": ["requestor_notify"]}) is True
         assert _task_matches_filter(task, {"state": "Done", "tags": ["requestor_notify"]}) is False
         assert _task_matches_filter(task, {"state": "To Do", "tags": ["requestor_notified"]}) is False
+
+    def test_matching_task_ids_prefilters_by_state_before_tags(self, workspace, ws, monkeypatch):
+        live = create_task(ws.id, title="Live", tags=["requestor_notify"], base_dir=workspace)
+        update_task(live.id, status="In Progress", base_dir=workspace)
+        update_task(live.id, status="Done", base_dir=workspace)
+        backlog = create_task(ws.id, title="Backlog", tags=["requestor_notify"], base_dir=workspace)
+        tasks = [live, backlog]
+        tasks_by_status = {"Done": [live], "To Do": [backlog]}
+        checked_ids = []
+
+        def _record_checked_task(task, filter_def):
+            checked_ids.append(task.id)
+            return True
+
+        monkeypatch.setattr("orchestration.scheduler._task_matches_filter", _record_checked_task)
+
+        assert _matching_task_ids(
+            tasks,
+            {"state": "Done", "tag": "requestor_notify"},
+            tasks_by_status=tasks_by_status,
+        ) == [live.id]
+        assert checked_ids == [live.id]
 
     def test_empty_filter_matches_all(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)

@@ -258,6 +258,94 @@ class TestRunTriggerNow:
         assert result["status"] == "started"
         assert captured["calls"] == 0
 
+    def test_schedule_trigger_run_now_filters_by_state_and_tag(self, workspace, ws, monkeypatch):
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="*/5 * * * *",
+            filter={"state": "Done", "tag": "requestor_notify"},
+            action="run_agent",
+            agent="test_agent",
+            base_dir=workspace,
+        )
+        matching = create_task(ws.id, title="Matching", tags=["requestor_notify"], base_dir=workspace)
+        update_task(matching.id, status="In Progress", base_dir=workspace)
+        update_task(matching.id, status="Done", base_dir=workspace)
+
+        missing_tag = create_task(ws.id, title="Missing Tag", base_dir=workspace)
+        update_task(missing_tag.id, status="In Progress", base_dir=workspace)
+        update_task(missing_tag.id, status="Done", base_dir=workspace)
+        create_task(ws.id, title="Wrong State", tags=["requestor_notify"], base_dir=workspace)
+
+        captured = {}
+
+        class _InlineThread:
+            def __init__(self, target=None, args=None, kwargs=None, daemon=None):
+                self._target = target
+                self._args = args or ()
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                self._target(*self._args, **self._kwargs)
+
+        def _fake_lock_invoke_unlock(_trigger, task_ids, _ws, _base_dir, background=False, ignore_paused=False):
+            captured["task_ids"] = list(task_ids)
+            captured["ignore_paused"] = ignore_paused
+            return {"trigger_id": _trigger.id, "status": "dispatched"}
+
+        monkeypatch.setattr("orchestration.triggers.threading.Thread", _InlineThread)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
+        assert captured == {"task_ids": [matching.id], "ignore_paused": True}
+
+    def test_schedule_trigger_run_now_skips_when_filter_matches_no_tasks(self, workspace, ws, monkeypatch):
+        trigger = create_trigger(
+            ws.id,
+            on_schedule="*/5 * * * *",
+            filter={"state": "Done", "tag": "requestor_notify"},
+            action="run_agent",
+            agent="test_agent",
+            base_dir=workspace,
+        )
+        create_task(ws.id, title="Wrong State", tags=["requestor_notify"], base_dir=workspace)
+
+        captured = {"calls": 0, "audit": None}
+
+        class _InlineThread:
+            def __init__(self, target=None, args=None, kwargs=None, daemon=None):
+                self._target = target
+                self._args = args or ()
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                self._target(*self._args, **self._kwargs)
+
+        def _fake_lock_invoke_unlock(*_args, **_kwargs):
+            captured["calls"] += 1
+            return {"status": "dispatched"}
+
+        def _fake_audit(_trigger, result, _ws, _base_dir, task_ids=None):
+            captured["audit"] = {"result": result, "task_ids": list(task_ids or [])}
+
+        monkeypatch.setattr("orchestration.triggers.threading.Thread", _InlineThread)
+        monkeypatch.setattr("orchestration.scheduler._lock_invoke_unlock", _fake_lock_invoke_unlock)
+        monkeypatch.setattr("orchestration.scheduler._audit_trigger", _fake_audit)
+
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
+        assert captured["calls"] == 0
+        assert captured["audit"] == {
+            "result": {
+                "trigger_id": trigger.id,
+                "status": "skipped",
+                "message": "No unlocked tasks currently match trigger filter",
+            },
+            "task_ids": [],
+        }
+
     def test_run_now_rejects_paused_trigger(self, workspace, ws):
         trigger = create_trigger(
             ws.id,

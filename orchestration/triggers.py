@@ -310,10 +310,18 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
 
             def _run():
                 from .tasks import list_tasks
-                from .scheduler import _lock_invoke_unlock, _task_matches_filter, _audit_trigger, _select_state_trigger_task_ids
+                from .scheduler import (
+                    _group_tasks_by_status,
+                    _lock_invoke_unlock,
+                    _matching_task_ids,
+                    _audit_trigger,
+                    _select_state_trigger_task_ids,
+                )
                 from .locks import lock_status
                 try:
                     manual_task_ids = []
+                    matching_ids = []
+                    audit_ids = []
                     ignore_paused = True
                     if _trigger.on_state is not None:
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
@@ -339,6 +347,7 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                                 background=True,
                                 ignore_paused=ignore_paused,
                             )
+                        audit_ids = manual_task_ids
                     elif _trigger.filter is None:
                         result = _lock_invoke_unlock(
                             _trigger,
@@ -349,19 +358,32 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                         )
                     else:
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
-                        matching_ids = [
-                            t.id for t in tasks
-                            if t.status not in set(getattr(_ws, "paused_states", []) or [])
-                            and _task_matches_filter(t, _trigger.filter)
-                        ]
-                        result = _lock_invoke_unlock(
-                            _trigger,
-                            matching_ids,
-                            _ws,
-                            base_dir,
-                            ignore_paused=ignore_paused,
+                        paused_states = set(getattr(_ws, "paused_states", []) or [])
+                        matching_ids = _matching_task_ids(
+                            tasks,
+                            _trigger.filter,
+                            _group_tasks_by_status(tasks),
+                            paused_states,
                         )
-                    audit_ids = manual_task_ids if _trigger.on_state else (matching_ids if _trigger.filter else [])
+                        matching_ids = [
+                            task_id for task_id in matching_ids
+                            if lock_status(task_id, base_dir) is None
+                        ]
+                        audit_ids = matching_ids
+                        if not matching_ids:
+                            result = {
+                                "trigger_id": _trigger.id,
+                                "status": "skipped",
+                                "message": "No unlocked tasks currently match trigger filter",
+                            }
+                        else:
+                            result = _lock_invoke_unlock(
+                                _trigger,
+                                matching_ids,
+                                _ws,
+                                base_dir,
+                                ignore_paused=ignore_paused,
+                            )
                     if result.get("status") not in ("dispatched",):
                         _audit_trigger(_trigger, result, _ws, base_dir, task_ids=audit_ids)
                 except Exception as e:
