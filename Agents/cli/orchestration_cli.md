@@ -318,6 +318,24 @@ python -m orchestration.cli task clear-schedule TASK_ID
 
 ---
 
+#### task pause — Pause automatic processing for one task
+
+```bash
+python -m orchestration.cli task pause TASK_ID
+```
+
+The task remains in its current workstream and state, but state-based and schedule-based triggers will not pick it up while it is paused. Pausing an already paused task is idempotent.
+
+#### task resume — Resume automatic processing for one task
+
+```bash
+python -m orchestration.cli task resume TASK_ID
+```
+
+The task becomes eligible for automatic trigger pickup again. Resuming an already active task is idempotent.
+
+---
+
 #### lock acquire — Lock a task before working on it
 
 ```bash
