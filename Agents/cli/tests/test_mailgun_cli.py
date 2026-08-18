@@ -119,6 +119,42 @@ def test_cmd_list_plain_text_heading_mentions_recipient(monkeypatch, capsys):
     assert "Build ready" in output
 
 
+def test_cmd_create_domain_posts_domain_and_returns_dns_records(monkeypatch, capsys):
+    mailgun = _load_mailgun_module()
+    captured = {}
+    response = {
+        "domain": {"name": "vibesold.com", "state": "unverified"},
+        "sending_dns_records": [
+            {
+                "record_type": "TXT",
+                "name": "vibesold.com",
+                "value": "v=spf1 include:mailgun.org ~all",
+            }
+        ],
+        "receiving_dns_records": [],
+    }
+
+    monkeypatch.setattr(mailgun, "get_api_key", lambda env: "test-key")
+    monkeypatch.setattr(mailgun, "fetch_domains", lambda api_key: [])
+
+    def _fake_request(method, url, api_key, data=None, files=None):
+        captured.update(method=method, url=url, api_key=api_key, data=data)
+        return response
+
+    monkeypatch.setattr(mailgun, "_mailgun_request", _fake_request)
+
+    args = Namespace(domain="VibeSold.com", json=True)
+    mailgun.cmd_create_domain(args, env={})
+
+    assert json.loads(capsys.readouterr().out) == response
+    assert captured == {
+        "method": "POST",
+        "url": "https://api.mailgun.net/v4/domains",
+        "api_key": "test-key",
+        "data": {"name": "vibesold.com"},
+    }
+
+
 def test_cmd_download_attachments_writes_files(monkeypatch, tmp_path, capsys):
     mailgun = _load_mailgun_module()
 

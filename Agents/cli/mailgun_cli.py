@@ -6,6 +6,7 @@ Wraps the Mailgun v3 API for sending and receiving email:
 - List the most recent inbound messages for a domain or a specific recipient (sender + subject summary).
 - Read full details of a specific inbound message.
 - List all configured Mailgun domains (validates domain is registered).
+- Create a Mailgun domain and return the required DNS records.
 
 Auth comes from the project-root .env:
     MAILGUN_API_KEY
@@ -294,6 +295,40 @@ def cmd_domains(args: argparse.Namespace, env: dict[str, str]) -> None:
         print(f"{d['name']:<45} {d.get('state','?'):<10} {d.get('type','?'):<10} {d.get('created_at','?')}")
 
 
+def cmd_create_domain(args: argparse.Namespace, env: dict[str, str]) -> None:
+    api_key = get_api_key(env)
+    domain = args.domain.strip().lower()
+    if not domain or "." not in domain:
+        print("ERROR: DOMAIN must be a fully qualified domain name.", file=sys.stderr)
+        sys.exit(1)
+
+    if domain in fetch_domains(api_key):
+        response = _mailgun_request("GET", f"https://api.mailgun.net/v4/domains/{domain}", api_key)
+    else:
+        response = _mailgun_request(
+            "POST",
+            "https://api.mailgun.net/v4/domains",
+            api_key,
+            data={"name": domain},
+        )
+
+    if args.json:
+        print(json.dumps(response, indent=2))
+        return
+
+    print(f"Mailgun domain configured: {domain}")
+    for group in ("sending_dns_records", "receiving_dns_records"):
+        records = response.get(group, [])
+        if not records:
+            continue
+        print(f"\n{group.replace('_', ' ').title()}:")
+        for record in records:
+            print(
+                f"- {record.get('record_type', '?')} {record.get('name', '?')} "
+                f"-> {record.get('value', '?')}"
+            )
+
+
 def cmd_send(args: argparse.Namespace, env: dict[str, str]) -> None:
     api_key = get_api_key(env)
 
@@ -542,6 +577,13 @@ def build_parser() -> argparse.ArgumentParser:
     # domains
     p_domains = sub.add_parser("domains", help="List all Mailgun domains on this account")
 
+    # create-domain
+    p_create_domain = sub.add_parser(
+        "create-domain",
+        help="Create a Mailgun domain and return its required DNS records",
+    )
+    p_create_domain.add_argument("domain", metavar="DOMAIN", help="Domain to register")
+
     # send
     p_send = sub.add_parser("send", help="Send an email")
     p_send.add_argument("--domain", help="Sending domain (or MAILGUN_DOMAIN in .env)")
@@ -590,6 +632,8 @@ def main() -> None:
 
     if args.command == "domains":
         cmd_domains(args, env)
+    elif args.command == "create-domain":
+        cmd_create_domain(args, env)
     elif args.command == "send":
         cmd_send(args, env)
     elif args.command == "list":

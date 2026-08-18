@@ -909,6 +909,22 @@ class TestTask:
         assert code == 200
         assert body["data"]["status"] == "doing"
 
+    def test_update_description(self, api):
+        api.mocks["update_task"].return_value = _fake_task(description="Updated details")
+        code, body = api.post("/api/task/update/t-1", {"description": "Updated details"})
+        assert code == 200
+        call = api.mocks["update_task"].call_args
+        assert call.kwargs["task_id"] == "t-1"
+        assert call.kwargs["description"] == "Updated details"
+
+    def test_update_title(self, api):
+        api.mocks["update_task"].return_value = _fake_task(title="Renamed task")
+        code, body = api.post("/api/task/update/t-1", {"title": "Renamed task"})
+        assert code == 200
+        call = api.mocks["update_task"].call_args
+        assert call.kwargs["task_id"] == "t-1"
+        assert call.kwargs["title"] == "Renamed task"
+
     def test_comment(self, api):
         api.mocks["comment_task"].return_value = _fake_task()
         code, body = api.post("/api/task/comment/t-1", {"message": "hello"})

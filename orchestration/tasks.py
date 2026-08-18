@@ -646,6 +646,7 @@ def update_task(
     scheduled_action: dict = None,
     attachments: list = None,
     base_dir: str = ".",
+    title: str = None,
 ) -> Task:
     task = read_task(task_id, base_dir)
     ws = read_workstream(task.workstream_id, base_dir)
@@ -660,6 +661,13 @@ def update_task(
         )
 
     status_changed = False
+    if title is not None:
+        normalized_title = str(title).strip()
+        if not normalized_title:
+            raise ValueError("Task title cannot be empty")
+        task.title = normalized_title
+        task.add_audit("updated", "Title updated")
+
     if status is not None and status != task.status:
         if not force and not ws.validate_transition(task.status, status):
             raise ValueError(

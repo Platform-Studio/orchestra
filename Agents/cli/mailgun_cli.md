@@ -32,6 +32,19 @@ python Agents/cli/mailgun_cli.py --json domains
 
 ---
 
+### Create or inspect a domain
+
+Creates the domain when it is absent. If it is already registered, returns its
+current configuration. JSON output includes the exact sending and receiving DNS
+records required by Mailgun.
+
+```bash
+python Agents/cli/mailgun_cli.py create-domain vibesold.com
+python Agents/cli/mailgun_cli.py --json create-domain vibesold.com
+```
+
+---
+
 ### Sending email
 
 ```bash

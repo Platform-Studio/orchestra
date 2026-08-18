@@ -757,6 +757,8 @@ def handle_task(method, parts, params):
         return _ok(task.to_dict())
     elif m == "update" and parts:
         kwargs = {"task_id": parts[0], "base_dir": WORKSPACE_DIR}
+        if "title" in params:
+            kwargs["title"] = params["title"]
         if "status" in params:
             kwargs["status"] = params["status"]
         if "force" in params:

@@ -895,6 +895,19 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
 }
 .modal-close:hover { background: rgba(255,255,255,0.1); }
 .modal h3 { font-size: 20px; margin-bottom: 4px; color: #e6edf3; }
+.task-title-button {
+  display: block; width: 100%; background: none; border: none; color: inherit;
+  cursor: text; font: inherit; font-weight: inherit; line-height: inherit;
+  padding: 0; text-align: left;
+}
+.task-title-button:hover { color: #fff; }
+.task-title-input {
+  width: 100%; box-sizing: border-box; background: #22272e;
+  border: 1px solid #58a6ff; border-radius: 4px; color: #e6edf3;
+  font: inherit; font-size: 20px; font-weight: 700; line-height: 1.2;
+  margin-bottom: 4px; padding: 4px 6px;
+}
+.task-title-input:focus { outline: none; }
 .task-uid {
   display: flex;
   align-items: center;
@@ -1242,6 +1255,21 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-size: 13px; font-weight: 700; text-transform: uppercase;
   color: #8b949e; margin-bottom: 6px; letter-spacing: 0.5px;
 }
+.detail-section-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.detail-section-header h4 { margin-bottom: 6px; }
+.description-edit-link {
+  background: none; border: none; color: #8b949e; cursor: pointer;
+  font-size: 11px; padding: 0; text-decoration: underline; text-underline-offset: 2px;
+}
+.description-edit-link:hover { color: #c9d1d9; }
+.description-edit-textarea {
+  width: 100%; min-height: 140px; resize: vertical; box-sizing: border-box;
+  background: #22272e; border: 1px solid rgba(255,255,255,0.14); border-radius: 4px;
+  color: #c9d1d9; font: inherit; font-size: 14px; line-height: 1.5; padding: 10px 12px;
+}
+.description-edit-textarea:focus { border-color: #58a6ff; outline: none; }
 .detail-description { font-size: 14px; line-height: 1.6; color: #c9d1d9; }
 .markdown-content { color: #c9d1d9; }
 .detail-description p, .markdown-content p { margin: 0 0 8px; }
@@ -2002,6 +2030,8 @@ let taskDragState = null;
 let isBoardDragInProgress = false;
 let taskCommentDraftByTaskId = {}; // { [taskId]: string }
 let taskCommentEditing = null; // { taskId: string, index: number } | null
+let taskDescriptionEditingTaskId = null;
+let taskTitleEditingTaskId = null;
 const WORKSTREAM_MANAGER_TUNING_SOUND = 'workstream_startup.mp3';
 const WORKSTREAM_MANAGER_SOUND_MUTE_STORAGE_KEY = 'workstreamManager.soundMuted';
 let attemptedInitialTuningUpSound = false;
@@ -2801,6 +2831,94 @@ function inferCommentFromAudit(entry) {
 
 function stripCommentDatePrefix(message) {
   return String(message || '').replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/, '').trim();
+}
+
+function startEditTaskTitle(taskId) {
+  taskTitleEditingTaskId = String(taskId);
+  showTaskDetail(taskId, { updateHistory: false }).then(() => {
+    const input = document.getElementById('task-title-edit');
+    input?.focus();
+    input?.select();
+  });
+}
+
+function cancelEditTaskTitle(taskId) {
+  if (taskTitleEditingTaskId === String(taskId)) {
+    taskTitleEditingTaskId = null;
+  }
+  showTaskDetail(taskId, { updateHistory: false });
+}
+
+async function saveEditedTaskTitle(taskId, btn = null) {
+  const input = document.getElementById('task-title-edit');
+  if (!input) return;
+  if (input.dataset.saving === 'true') return;
+  const title = String(input.value || '').trim();
+  if (!title) {
+    alert('Title is required.');
+    input.focus();
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  input.dataset.saving = 'true';
+  input.disabled = true;
+  try {
+    await api('task/update/' + taskId, {
+      method: 'POST',
+      body: { title },
+    });
+    taskTitleEditingTaskId = null;
+    await showTaskDetail(taskId, { updateHistory: false });
+    await loadBoard({ preserveSelection: true });
+  } catch (e) {
+    input.disabled = false;
+    delete input.dataset.saving;
+    if (btn) btn.disabled = false;
+    input.focus();
+    alert('Failed to edit title: ' + (e.message || e));
+  }
+}
+
+function handleTaskTitleEditKeydown(event, taskId) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveEditedTaskTitle(taskId);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    cancelEditTaskTitle(taskId);
+  }
+}
+
+function startEditTaskDescription(taskId) {
+  taskDescriptionEditingTaskId = String(taskId);
+  showTaskDetail(taskId, { updateHistory: false });
+}
+
+function cancelEditTaskDescription(taskId) {
+  if (taskDescriptionEditingTaskId === String(taskId)) {
+    taskDescriptionEditingTaskId = null;
+  }
+  showTaskDetail(taskId, { updateHistory: false });
+}
+
+async function saveEditedTaskDescription(taskId, btn) {
+  const input = document.getElementById('task-description-edit');
+  if (!input) return;
+
+  if (btn) btn.disabled = true;
+  try {
+    await api('task/update/' + taskId, {
+      method: 'POST',
+      body: { description: String(input.value || '').trim() },
+    });
+    taskDescriptionEditingTaskId = null;
+    await showTaskDetail(taskId, { updateHistory: false });
+    await loadBoard({ preserveSelection: true });
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    alert('Failed to edit description: ' + (e.message || e));
+  }
 }
 
 function setTaskCommentDraft(taskId, value) {
@@ -4043,7 +4161,12 @@ async function showTaskDetail(taskId, opts = {}) {
   let main = '';
 
   // Title
-  main += `<h3>${esc(task.title)}</h3>`;
+  const isEditingTitle = taskTitleEditingTaskId === String(task.id);
+  if (isEditingTitle) {
+    main += `<input id="task-title-edit" class="task-title-input" type="text" value="${esc(task.title)}" maxlength="200" aria-label="Task title" onkeydown="handleTaskTitleEditKeydown(event, '${task.id}')" onblur="saveEditedTaskTitle('${task.id}')" />`;
+  } else {
+    main += `<h3><button class="task-title-button" type="button" onclick="startEditTaskTitle('${task.id}')" title="Edit task title">${esc(task.title)}</button></h3>`;
+  }
   main += `<div class="task-uid">Task UID: ${esc(task.id)} <button class="uid-copy-btn" type="button" onclick="copyToClipboard('${esc(task.id)}', this)">Copy</button><button class="uid-copy-btn" type="button" data-open-task-file="${esc(task.id)}" title="Open task YAML in VS Code">Open in VS Code</button></div>`;
 
   // Tags (colored)
@@ -4063,12 +4186,24 @@ async function showTaskDetail(taskId, opts = {}) {
   main += `</div>`;
 
   // Description
-  if (task.description) {
-    main += `<div class="detail-section">
+  const isEditingDescription = taskDescriptionEditingTaskId === String(task.id);
+  main += `<div class="detail-section">
+    <div class="detail-section-header">
       <h4>Description</h4>
-      <div class="detail-description">${renderMarkdown(task.description)}</div>
+      ${isEditingDescription ? '' : `<button class="description-edit-link" type="button" onclick="startEditTaskDescription('${task.id}')">Edit</button>`}
     </div>`;
+  if (isEditingDescription) {
+    main += `<textarea id="task-description-edit" class="description-edit-textarea">${esc(task.description || '')}</textarea>`;
+    main += `<div class="comment-actions">
+      <button class="comment-save-btn" type="button" onclick="saveEditedTaskDescription('${task.id}', this)">Save</button>
+      <button class="comment-cancel-btn" type="button" onclick="cancelEditTaskDescription('${task.id}')">Cancel</button>
+    </div>`;
+  } else if (task.description) {
+    main += `<div class="detail-description">${renderMarkdown(task.description)}</div>`;
+  } else {
+    main += `<div class="attachment-hint">No description yet.</div>`;
   }
+  main += `</div>`;
 
   // Attachments (artifact paths)
   const checklistHtml = renderDetailChecklist(detailRun && detailRun.progress_summary);

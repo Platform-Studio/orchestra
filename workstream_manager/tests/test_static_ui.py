@@ -390,6 +390,35 @@ def test_create_and_task_modals_both_wire_tag_editor_to_api_calls() -> None:
     assert 'persistTaskTags(nextTags);' in html
 
 
+def test_task_description_can_be_edited_inline() -> None:
+    html = _index_html()
+
+    assert 'class="detail-section-header"' in html
+    assert 'class="description-edit-link"' in html
+    assert "startEditTaskDescription('${task.id}')" in html
+    assert 'id="task-description-edit"' in html
+    assert "await api('task/update/' + taskId, {" in html
+    assert "body: { description: String(input.value || '').trim() }," in html
+    assert "saveEditedTaskDescription('${task.id}', this)" in html
+    assert "cancelEditTaskDescription('${task.id}')" in html
+    assert 'No description yet.' in html
+
+
+def test_task_title_can_be_edited_inline() -> None:
+    html = _index_html()
+
+    assert 'class="task-title-button"' in html
+    assert "startEditTaskTitle('${task.id}')" in html
+    assert 'id="task-title-edit"' in html
+    assert "body: { title }," in html
+    assert "handleTaskTitleEditKeydown(event, '${task.id}')" in html
+    assert "onblur=\"saveEditedTaskTitle('${task.id}')\"" in html
+    assert "event.key === 'Enter'" in html
+    assert "event.key === 'Escape'" in html
+    assert "alert('Title is required.');" in html
+    assert "if (input.dataset.saving === 'true') return;" in html
+
+
 def test_tag_editor_loads_workstream_catalog_and_can_create_colored_tags() -> None:
     html = _index_html()
 

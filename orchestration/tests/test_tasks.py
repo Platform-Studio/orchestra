@@ -168,6 +168,18 @@ class TestReadTask:
 
 
 class TestUpdateTask:
+    def test_update_title(self, workspace, ws):
+        task = create_task(ws.id, title="Original", base_dir=workspace)
+        updated = update_task(task.id, title="  Renamed task  ", base_dir=workspace)
+        assert updated.title == "Renamed task"
+        assert any(a.description == "Title updated" for a in updated.audit)
+
+    def test_update_title_rejects_empty_value(self, workspace, ws):
+        task = create_task(ws.id, title="Original", base_dir=workspace)
+        with pytest.raises(ValueError, match="Task title cannot be empty"):
+            update_task(task.id, title="   ", base_dir=workspace)
+        assert read_task(task.id, base_dir=workspace).title == "Original"
+
     def test_update_status_valid(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = update_task(task.id, status="In Progress", base_dir=workspace)
