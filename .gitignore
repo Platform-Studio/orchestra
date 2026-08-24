@@ -1,0 +1,61 @@
+# Ignore everything
+*
+
+# Allow directories (so git can traverse them)
+!*/
+
+# Allow markdown files
+!*.md
+
+# Allow shell scripts
+!*.sh
+
+# Allow python scripts
+!*.py
+
+# Allow .env.example for onboarding new devs
+!.env.example
+
+# Ignore repo-local pytest/temp runtime data used to keep test state away from
+# live jb_workstreams persistence roots, but keep the directory anchor checked in.
+.test/*
+!.test/.gitkeep
+
+# Allow workstreams data (source of truth for task/board state)
+!workstreams/**
+
+# Keep per-workstream secrets out of git
+workstreams/**/.env
+workstreams/**/.env.*
+!workstreams/**/.env.example
+
+# Allow artifacts data
+!artifacts/**
+
+# Ignore runtime and generated logs under artifacts.
+artifacts/logs/
+
+# Allow YAML files (used by workstreams)
+!*.yaml
+
+# Allow this file itself
+!.gitignore
+
+# Allow GitHub CI workflow files
+!.github/workflows/*.yml
+
+# Allow pip requirements file
+!requirements.txt
+
+# Allow the Prova product directory (all product source code)
+!prova/**
+
+# But exclude build artifacts and dependencies within prova
+prova/frontend/node_modules/
+prova/frontend/.nuxt/
+prova/frontend/.output/
+prova/backend/.venv/
+prova/backend/__pycache__/
+prova/backend/**/__pycache__/
+prova/backend/*.egg-info/
+prova/.env

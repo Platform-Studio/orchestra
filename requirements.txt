@@ -1,0 +1,10 @@
+pytest
+pyyaml
+python-dotenv
+Pillow
+requests
+httpx
+mcp
+psycopg2-binary
+google-auth
+google-api-python-client
