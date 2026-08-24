@@ -70,10 +70,10 @@ class TestCreateTask:
         task = create_task(
             ws.id,
             title="T",
-            attachments=["Stage 2 Research/brief.md", "/Stage 2 Research/brief.md"],
+            attachments=["Research/brief.md", "/Research/brief.md"],
             base_dir=workspace,
         )
-        assert task.attachments == ["Stage 2 Research/brief.md"]
+        assert task.attachments == ["Research/brief.md"]
 
     def test_create_adds_audit(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
@@ -582,10 +582,10 @@ class TestTaskAttachments:
         save_workstream(parent, base_dir=workspace)
         child = create_workstream(name="Product Development", parent_id=parent.id, base_dir=workspace)
 
-        artifact_path = "Stage 2 Research/example/architecture.md"
+        artifact_path = "Research/example/architecture.md"
         create_artifact(artifact_path, "# Architecture", base_dir=workspace)
         copy_artifact_tree(
-            "Stage 2 Research/example",
+            "Research/example",
             base_dir=workspace,
             workstream_id=parent.id,
             source_base_dir=workspace,

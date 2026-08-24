@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mailgun CLI for foundation agents.
+"""Mailgun CLI for autonomous agents.
 
 Wraps the Mailgun v3 API for sending and receiving email:
 - Send email (plain text, HTML, attachments, multiple recipients, CC/BCC).

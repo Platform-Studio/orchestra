@@ -150,10 +150,10 @@ class TestArtifactRouting:
 class TestArtifactCopyTree:
     def test_copytree_can_target_local_artifact_store(self, workspace):
         ws = create_workstream(name="local_ws", base_dir=workspace)
-        create_artifact("Stage 2 Research/example/readme.md", "hello", base_dir=workspace)
+        create_artifact("Research/example/readme.md", "hello", base_dir=workspace)
 
         result = copy_artifact_tree(
-            "Stage 2 Research/example",
+            "Research/example",
             base_dir=workspace,
             workstream_id=ws.id,
         )
@@ -170,20 +170,20 @@ class TestArtifactCopyTree:
         save_workstream(parent, base_dir=workspace)
         child = create_workstream(name="product_development", parent_id=parent.id, base_dir=workspace)
 
-        create_artifact("Stage 2 Research/example/one.md", "one", base_dir=str(source_root))
-        create_artifact("Stage 2 Research/example/nested/two.md", "two", base_dir=str(source_root))
+        create_artifact("Research/example/one.md", "one", base_dir=str(source_root))
+        create_artifact("Research/example/nested/two.md", "two", base_dir=str(source_root))
 
         result = copy_artifact_tree(
-            "Stage 2 Research/example",
+            "Research/example",
             base_dir=workspace,
             workstream_id=child.id,
             source_base_dir=str(source_root),
         )
 
         assert result["copy_count"] == 2
-        with open(Path(workspace) / "artifacts" / "Stage 2 Research" / "example" / "one.md", encoding="utf-8") as f:
+        with open(Path(workspace) / "artifacts" / "Research" / "example" / "one.md", encoding="utf-8") as f:
             assert f.read() == "one"
-        with open(Path(workspace) / "artifacts" / "Stage 2 Research" / "example" / "nested" / "two.md", encoding="utf-8") as f:
+        with open(Path(workspace) / "artifacts" / "Research" / "example" / "nested" / "two.md", encoding="utf-8") as f:
             assert f.read() == "two"
 
     def test_copytree_conflict_requires_overwrite(self, workspace, tmp_path):
@@ -196,26 +196,26 @@ class TestArtifactCopyTree:
         save_workstream(parent, base_dir=workspace)
         child = create_workstream(name="product_development", parent_id=parent.id, base_dir=workspace)
 
-        create_artifact("Stage 2 Research/example/file.md", "source", base_dir=str(source_root))
-        create_artifact("Stage 2 Research/example/file.md", "dest", base_dir=workspace, workstream_id=child.id)
+        create_artifact("Research/example/file.md", "source", base_dir=str(source_root))
+        create_artifact("Research/example/file.md", "dest", base_dir=workspace, workstream_id=child.id)
 
         with pytest.raises(FileExistsError, match="would overwrite"):
             copy_artifact_tree(
-                "Stage 2 Research/example",
+                "Research/example",
                 base_dir=workspace,
                 workstream_id=child.id,
                 source_base_dir=str(source_root),
             )
 
         result = copy_artifact_tree(
-            "Stage 2 Research/example",
+            "Research/example",
             base_dir=workspace,
             workstream_id=child.id,
             source_base_dir=str(source_root),
             overwrite=True,
         )
         assert result["overwrite_count"] == 1
-        with open(Path(workspace) / "artifacts" / "Stage 2 Research" / "example" / "file.md", encoding="utf-8") as f:
+        with open(Path(workspace) / "artifacts" / "Research" / "example" / "file.md", encoding="utf-8") as f:
             assert f.read() == "source"
 
 

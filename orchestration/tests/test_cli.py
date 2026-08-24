@@ -686,13 +686,13 @@ class TestCLIArtifact:
         ws_id = json.loads(ws_result.stdout)["data"]["id"]
         run_cli(
             "artifact", "create",
-            "--path", "Stage 2 Research/example/readme.md",
+            "--path", "Research/example/readme.md",
             "--content", "hello",
             base_dir=workspace,
         )
 
         result = run_cli(
-            "artifact", "copytree", "Stage 2 Research/example",
+            "artifact", "copytree", "Research/example",
             "--workstream", ws_id,
             base_dir=workspace,
         )
@@ -722,13 +722,13 @@ class TestCLIArtifact:
 
         run_cli(
             "artifact", "create",
-            "--path", "Stage 2 Research/example/readme.md",
+            "--path", "Research/example/readme.md",
             "--content", "hello",
             base_dir=workspace,
         )
 
         result = run_cli(
-            "artifact", "copytree", "Stage 2 Research/example",
+            "artifact", "copytree", "Research/example",
             "--workstream", child_id,
             "--source-base", workspace,
             base_dir=workspace,
@@ -737,7 +737,7 @@ class TestCLIArtifact:
         data = json.loads(result.stdout)["data"]
         assert data["copy_count"] == 0
         assert data["skipped_same_count"] == 1
-        assert (Path(workspace) / "artifacts" / "Stage 2 Research" / "example" / "readme.md").read_text() == "hello"
+        assert (Path(workspace) / "artifacts" / "Research" / "example" / "readme.md").read_text() == "hello"
 
     def test_artifact_read_logs_audit_when_run_context_present(self, workspace, monkeypatch):
         run_cli("artifact", "create", "--path", "x.md", "--content", "hello", base_dir=workspace)

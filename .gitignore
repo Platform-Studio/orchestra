@@ -38,6 +38,10 @@ artifacts/logs/
 # Allow YAML files (used by workstreams)
 !*.yaml
 
+# Ignore root-level runtime state.
+/workspace_audit.yaml
+/scheduler_state.yaml
+
 # Allow this file itself
 !.gitignore
 

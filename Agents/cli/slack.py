@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Slack workspace management CLI for foundation agents.
+Slack workspace management CLI for autonomous agents.
 
 Post messages, read channel history, reply to threads, manage reactions,
 look up users, upload files, pin messages, and search — all via the
@@ -637,7 +637,7 @@ def cmd_search(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Slack workspace management CLI for foundation agents.",
+        description="Slack workspace management CLI for autonomous agents.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)

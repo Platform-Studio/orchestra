@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Voice / text-to-speech CLI for foundation agents.
+Voice / text-to-speech CLI for autonomous agents.
 
 Usage:
     python gen_voice.py --text "Hello world" --source openai --output path/to/clip.mp3

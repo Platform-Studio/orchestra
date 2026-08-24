@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Image generation and stock photo CLI for foundation agents.
+Image generation and stock photo CLI for autonomous agents.
 
 Usage:
     python gen_image.py --prompt "A professional at a career crossroads" --source openai --output path/to/image.png
@@ -309,7 +309,7 @@ SOURCE_HANDLERS = {
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate or find images for foundation agents.",
+        description="Generate or find images for autonomous agents.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
