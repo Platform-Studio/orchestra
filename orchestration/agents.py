@@ -56,6 +56,9 @@ COPILOT_PROVIDER_API_KEY_ENV_VAR = "COPILOT_PROVIDER_API_KEY"
 CLINE_DATA_DIR_ENV_VAR = "CLINE_DATA_DIR"
 GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
 AGENTS_DIR_ENV_VAR = "ORCHESTRATION_AGENTS_DIR"
+AGENT_PATHS_ENV_VAR = "ORKESTRA_AGENT_PATHS"
+SKILL_PATHS_ENV_VAR = "ORKESTRA_SKILL_PATHS"
+CLI_PATHS_ENV_VAR = "ORKESTRA_CLI_PATHS"
 SOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
@@ -2600,6 +2603,15 @@ def _cli_dir(base_dir: str) -> str:
     return os.path.join(_agents_dir(base_dir), "cli")
 
 
+def _configured_paths(env_var: str) -> list[str]:
+    value = os.getenv(env_var, "")
+    return [
+        os.path.abspath(os.path.expandvars(os.path.expanduser(path.strip())))
+        for path in value.split(os.pathsep)
+        if path.strip()
+    ]
+
+
 def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
     """Resolve an agent reference to an absolute file path.
 
@@ -2609,7 +2621,7 @@ def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
       - relative path:    "Agents/sorter.md"
             - header name:      "Sorter" (from YAML frontmatter `name:`)
     """
-    agents_dir = _agents_dir(base_dir)
+    agents_dirs = [_agents_dir(base_dir), *_configured_paths(AGENT_PATHS_ENV_VAR)]
 
     # If it looks like a path (has separator or starts with Agents/)
     if os.sep in agent_ref or agent_ref.startswith("Agents/"):
@@ -2626,18 +2638,21 @@ def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
         if bare.startswith(prefix):
             bare = bare[len(prefix):]
 
-    candidate = os.path.join(agents_dir, f"{bare}.md")
-    if os.path.exists(candidate):
-        return candidate
-
     # Normalize spaces to underscores (agent names use spaces, filenames use underscores)
     bare_underscore = bare.replace(" ", "_")
-    candidate = os.path.join(agents_dir, f"{bare_underscore}.md")
-    if os.path.exists(candidate):
-        return candidate
+    for agents_dir in reversed(agents_dirs):
+        candidate = os.path.join(agents_dir, f"{bare}.md")
+        if os.path.exists(candidate):
+            return candidate
 
-    # Case-insensitive fallback (try both space and underscore variants)
-    if os.path.exists(agents_dir):
+        candidate = os.path.join(agents_dir, f"{bare_underscore}.md")
+        if os.path.exists(candidate):
+            return candidate
+
+        if not os.path.isdir(agents_dir):
+            continue
+
+        # Case-insensitive fallback (try both space and underscore variants)
         for fname in os.listdir(agents_dir):
             if fname.lower() == f"{bare.lower()}.md" or fname.lower() == f"{bare_underscore.lower()}.md":
                 return os.path.join(agents_dir, fname)
@@ -2656,7 +2671,7 @@ def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
             if agent_name and agent_name.lower() == agent_ref.strip().lower():
                 return path
 
-    raise FileNotFoundError(f"Agent '{agent_ref}' not found in {agents_dir}")
+    raise FileNotFoundError(f"Agent '{agent_ref}' not found in: {', '.join(agents_dirs)}")
 
 
 def _parse_agent_md(path: str) -> dict:
@@ -2757,6 +2772,20 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
                 tool_docs.append(f"### {tool_name}\n```\npython3 {available[tool_name]['py']} <args>\n```\n{available[tool_name]['description']}")
         if tool_docs:
             parts.append("\n\n## Available CLI Tools\n" + "\n\n".join(tool_docs))
+
+    external_resources = []
+    skill_paths = _configured_paths(SKILL_PATHS_ENV_VAR)
+    if skill_paths:
+        external_resources.append(
+            f"Additional skill definitions can be found in: {os.pathsep.join(skill_paths)}"
+        )
+    cli_paths = _configured_paths(CLI_PATHS_ENV_VAR)
+    if cli_paths:
+        external_resources.append(
+            f"Additional CLI tools can be found in: {os.pathsep.join(cli_paths)}"
+        )
+    if external_resources:
+        parts.append("\n\n## Additional Resources\n" + "\n".join(external_resources))
 
     # Always document the orchestration CLI
     parts.append(

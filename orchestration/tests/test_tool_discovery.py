@@ -6,6 +6,7 @@ import pytest
 from orchestration.agents import (
     discover_cli_tools,
     _parse_agent_md,
+    _resolve_agent_file,
     _build_system_prompt,
     _get_model,
     _cline_thinking_level,
@@ -65,6 +66,51 @@ class TestBuildSystemPrompt:
         agent_def = {"body": "Do stuff.", "tools": ["nonexistent"]}
         prompt = _build_system_prompt(agent_def, workspace)
         assert "nonexistent" not in prompt
+
+    def test_includes_configured_external_resource_paths(self, workspace, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "skills"
+        cli_dir = tmp_path / "cli"
+        monkeypatch.setenv("ORKESTRA_SKILL_PATHS", str(skill_dir))
+        monkeypatch.setenv("ORKESTRA_CLI_PATHS", str(cli_dir))
+
+        prompt = _build_system_prompt({"body": "Do stuff.", "tools": []}, workspace)
+
+        assert f"Additional skill definitions can be found in: {skill_dir}" in prompt
+        assert f"Additional CLI tools can be found in: {cli_dir}" in prompt
+
+    def test_omits_external_resource_guidance_when_unset(self, workspace, monkeypatch):
+        monkeypatch.delenv("ORKESTRA_SKILL_PATHS", raising=False)
+        monkeypatch.delenv("ORKESTRA_CLI_PATHS", raising=False)
+
+        prompt = _build_system_prompt({"body": "Do stuff.", "tools": []}, workspace)
+
+        assert "Additional Resources" not in prompt
+
+
+class TestExternalAgentPaths:
+    def test_resolves_from_multiple_paths_with_later_path_winning(self, workspace, tmp_path, monkeypatch):
+        first_dir = tmp_path / "first-agents"
+        second_dir = tmp_path / "second-agents"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        (first_dir / "external.md").write_text("First definition", encoding="utf-8")
+        selected = second_dir / "external.md"
+        selected.write_text("Second definition", encoding="utf-8")
+        monkeypatch.setenv(
+            "ORKESTRA_AGENT_PATHS",
+            os.pathsep.join([str(first_dir), str(second_dir)]),
+        )
+
+        assert _resolve_agent_file("external", workspace) == str(selected)
+
+    def test_external_definition_overrides_project_definition(self, workspace, tmp_path, monkeypatch):
+        external_dir = tmp_path / "external-agents"
+        external_dir.mkdir()
+        selected = external_dir / "test_agent.md"
+        selected.write_text("External definition", encoding="utf-8")
+        monkeypatch.setenv("ORKESTRA_AGENT_PATHS", str(external_dir))
+
+        assert _resolve_agent_file("test_agent", workspace) == str(selected)
 
 
 class TestGetModel:
