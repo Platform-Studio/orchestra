@@ -21,6 +21,10 @@
 .test/*
 !.test/.gitkeep
 
+# Ignore Python packaging output.
+/build/
+/*.egg-info/
+
 # Allow workstreams data (source of truth for task/board state)
 !workstreams/**
 
@@ -38,6 +42,9 @@ artifacts/logs/
 # Allow YAML files (used by workstreams)
 !*.yaml
 
+# Allow Python project and dependency metadata.
+!pyproject.toml
+
 # Ignore root-level runtime state.
 /workspace_audit.yaml
 /scheduler_state.yaml
@@ -47,9 +54,6 @@ artifacts/logs/
 
 # Allow GitHub CI workflow files
 !.github/workflows/*.yml
-
-# Allow pip requirements file
-!requirements.txt
 
 # Allow the Prova product directory (all product source code)
 !prova/**

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestra"
+version = "0.1.0"
+description = "Framework for coordinating autonomous agents across repeatable workflows"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+]
+image = [
+    "openai>=1.0",
+    "Pillow>=10.0",
+]
+browser = [
+    "playwright==1.59.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["orchestration*", "workstream_manager*"]
+exclude = ["orchestration.tests*", "workstream_manager.tests*"]
+
+[tool.setuptools.package-data]
+orchestration = ["templates/*.md"]
+workstream_manager = ["static/*.html"]

@@ -56,18 +56,30 @@ python -m orchestration scheduler run
 - **Agent runners** translate Orchestra's task and workstream context into commands for supported agent runtimes.
 - **Locks** prevent multiple agents from working on the same task at the same time.
 
+### Agent Roles
+
+| Role | Responsibility |
+|---|---|
+| `worker` | Completes individual tasks and can usually run in parallel with other workers. |
+| `manager` | Creates and coordinates task lists for workers. |
+| `director` | Plans and monitors a functional area against a broader objective. |
+| `executive` | Owns overall objectives, coordinates directors, and interfaces with humans. |
+
+### Scheduling and Retries
+
+A task can have a one-time scheduled action. Once it becomes due and runs, the schedule is cleared. If its workstream is paused when the action becomes due, it runs promptly after the workstream resumes. Recurring work is configured through scheduled triggers; state-based triggers select eligible tasks currently in a configured state. Supported trigger actions run an agent or a command.
+
+Retry configuration is resolved from the task override, then the workstream setting, then Orchestra's default of three retries with exponential backoff starting at 60 seconds. Current automatic retry handling primarily recovers work left behind by expired or orphaned agent locks.
+
 ## Repository Layout
 
 ```text
 /
 |-- Agents/                 # Public agent definitions and CLI tools
-|   |-- skills/             # Public skill definitions
 |   `-- cli/                # Agent-facing CLI tools and documentation
 |-- orchestration/          # Orchestration framework and CLI
 |-- workstream_manager/     # Workstream Manager server and web application
-|-- examples/               # Example workflows and synthetic example data
 |-- scripts/                # Validation and maintenance utilities
-|-- audio/                  # Optional event sounds
 |-- workstreams/            # Runtime state; created during setup and ignored by Git
 `-- artifacts/              # Runtime artifacts; created during setup and ignored by Git
 ```
@@ -79,8 +91,16 @@ The packaged installer described in the project roadmap is not yet available. Fo
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 cp .env.example .env
+```
+
+Development and optional CLI dependencies are installed as extras:
+
+```bash
+pip install -e ".[dev]"
+pip install -e ".[image,browser]"
+python -m playwright install chromium
 ```
 
 Configure at least one supported agent runtime:
@@ -216,6 +236,18 @@ ARTIFACT_ROOT=file:/absolute/path/to/artifacts
 - Both accept absolute paths or local `file:` URIs.
 - Other URI schemes are currently rejected.
 
+Within a workstream root, state uses this layout:
+
+```text
+workstreams/<workstream-id>.yaml
+workstreams/<workstream-id>/tasks/<task-id>.yaml
+workstreams/<workstream-id>/workstreams/<child-workstream-id>.yaml
+```
+
+By default, each workstream's children are stored beneath its home directory as shown above. `child_workstream_root` can redirect direct children to another workstream root. `working_directory` and `artifact_root` are inherited by descendants unless a descendant overrides them.
+
+Artifact paths are logical paths beneath `<artifact-root>/artifacts/`. A leading slash is ignored, and paths cannot traverse outside that directory.
+
 A workstream can also define:
 
 - `working_directory` for the code or project an agent should modify
@@ -262,22 +294,26 @@ During and after execution, the runner records run metadata, streams output to a
 
 A future runner adapter should preserve this lifecycle while translating it to another model or agent harness.
 
-## Data and Working Directories
-
-Orchestra separates four locations:
-
-1. **Orchestra repository:** framework code, public definitions, and CLI tools.
-2. **Orchestration state:** workstreams, tasks, locks, scheduler state, and run metadata.
-3. **Artifacts:** files read and produced by agents.
-4. **Working directory:** the product or repository an agent modifies.
-
-This separation allows agents to work in one repository while orchestration state and artifacts remain stable elsewhere.
-
 ## Environment Hierarchy
 
-A root `.env` provides process defaults. Workstreams can also contain `.env` files. Child workstreams inherit their ancestors' environment settings and can override or mask individual values.
+A root `.env` provides process defaults. Each workstream can also have a `.env` file beside its task directory, and a workstream's configured working directory can contribute its own `.env` file. Layers are applied from the root ancestor to the selected workstream; descendant values override ancestor values. Setting `KEY=` masks that key, including any process-environment fallback.
+
+`ORCHESTRATION_BASE_ENV_PATH` can select an explicit lowest-precedence base environment file. Otherwise Orchestra uses the repository `.env` when present, followed by the process environment for keys not defined by any file layer.
 
 This makes it possible to share common runtime settings while keeping project-specific credentials and configuration at the appropriate workstream level. Never commit populated `.env` files.
+
+## Runtime Paths
+
+Orchestra keeps four locations independent:
+
+| Location | Purpose |
+|---|---|
+| Orchestra root | Framework code, public definitions, and CLI tools |
+| Workstream root | Workstreams, tasks, locks, scheduler state, and audits |
+| Artifact root | Files read or produced by agents |
+| Working directory | Project code an agent reads or modifies |
+
+Agent prompts and subprocesses receive `ORCHESTRATION_ROOT` for the Orchestra repository and `WORKSPACE_ROOT` for the effective working directory. They also receive agent, run, task, and workstream identifiers. Dedicated environment variables for the resolved workstream, artifact, and child-workstream roots are not currently injected; agents should use the orchestration CLI so those paths are resolved consistently.
 
 ## Token and Cost Tracking
 
@@ -309,4 +345,4 @@ Logs are written under `ARTIFACT_ROOT/artifacts/logs/`, or `./artifacts/logs/` w
 
 ## Project Status
 
-The existing public Orchestra repository is being expanded with this orchestration framework and Workstream Manager. Installation, packaging, examples, contribution guidance, security documentation, and the formal adapter APIs are still being completed.
+The existing public Orchestra repository is being expanded with this orchestration framework and Workstream Manager. A packaged installer, examples, contribution guidance, security documentation, and formal adapter APIs are still being completed.
