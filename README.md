@@ -98,7 +98,7 @@ ORCHESTRATION_AGENT_RUNTIME=copilot
 Run the scheduler and Workstream Manager together with automatic restart during development:
 
 ```bash
-.venv/bin/python dev_servers.py
+.venv/bin/python scripts/dev_servers.py
 ```
 
 Or run them separately:
@@ -302,7 +302,7 @@ Tests use `./.test/pytest` and clear external persistence-root settings so test 
 During development, run the scheduler and server with automatic restart:
 
 ```bash
-.venv/bin/python dev_servers.py
+.venv/bin/python scripts/dev_servers.py
 ```
 
 Logs are written under `ARTIFACT_ROOT/artifacts/logs/`, or `./artifacts/logs/` when `ARTIFACT_ROOT` is unset.

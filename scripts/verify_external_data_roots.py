@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Verify that Orchestra runtime data is stored outside the code repository.
+
+The check resolves the configured workstream and artifact roots, confirms that
+neither points at this repository, and reports legacy runtime files left behind
+after migrating data to external directories.
+"""
 
 from __future__ import annotations
 

@@ -16,15 +16,16 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 try:
     from dotenv import load_dotenv
 except ImportError:
     load_dotenv = None
 
 from orchestration.persistence import resolve_artifact_root, resolve_workstream_root
-
-
-BASE_DIR = Path(__file__).resolve().parent
 
 WATCH_ROOTS = [
     BASE_DIR / "orchestration",

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-import dev_servers
+from scripts import dev_servers
 
 
 def test_ensure_process_started_raises_with_log_tail(tmp_path):
@@ -27,7 +27,7 @@ def test_stop_existing_scheduler_stops_running_scheduler():
         {"running": False},
     ])
 
-    with patch("dev_servers._orchestration_cli_json") as mock_cli:
+    with patch("scripts.dev_servers._orchestration_cli_json") as mock_cli:
         mock_cli.side_effect = lambda py, args: next(responses) if args == ["scheduler", "status"] else {"message": "stopped"}
         dev_servers._stop_existing_scheduler("/tmp/python")
 
@@ -36,7 +36,7 @@ def test_stop_existing_scheduler_stops_running_scheduler():
 
 
 def test_orchestration_cli_json_returns_data(tmp_path):
-    with patch("dev_servers.subprocess.run") as mock_run:
+    with patch("scripts.dev_servers.subprocess.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ok", "data": {"running": False}}), stderr="")
         result = dev_servers._orchestration_cli_json("/tmp/python", ["scheduler", "status"])
 
