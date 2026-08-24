@@ -70,8 +70,8 @@ class TestBuildSystemPrompt:
     def test_includes_configured_external_resource_paths(self, workspace, tmp_path, monkeypatch):
         skill_dir = tmp_path / "skills"
         cli_dir = tmp_path / "cli"
-        monkeypatch.setenv("ORKESTRA_SKILL_PATHS", str(skill_dir))
-        monkeypatch.setenv("ORKESTRA_CLI_PATHS", str(cli_dir))
+        monkeypatch.setenv("ORCHESTRA_SKILL_PATHS", str(skill_dir))
+        monkeypatch.setenv("ORCHESTRA_CLI_PATHS", str(cli_dir))
 
         prompt = _build_system_prompt({"body": "Do stuff.", "tools": []}, workspace)
 
@@ -79,6 +79,8 @@ class TestBuildSystemPrompt:
         assert f"Additional CLI tools can be found in: {cli_dir}" in prompt
 
     def test_omits_external_resource_guidance_when_unset(self, workspace, monkeypatch):
+        monkeypatch.delenv("ORCHESTRA_SKILL_PATHS", raising=False)
+        monkeypatch.delenv("ORCHESTRA_CLI_PATHS", raising=False)
         monkeypatch.delenv("ORKESTRA_SKILL_PATHS", raising=False)
         monkeypatch.delenv("ORKESTRA_CLI_PATHS", raising=False)
 
@@ -97,7 +99,7 @@ class TestExternalAgentPaths:
         selected = second_dir / "external.md"
         selected.write_text("Second definition", encoding="utf-8")
         monkeypatch.setenv(
-            "ORKESTRA_AGENT_PATHS",
+            "ORCHESTRA_AGENT_PATHS",
             os.pathsep.join([str(first_dir), str(second_dir)]),
         )
 
@@ -108,9 +110,19 @@ class TestExternalAgentPaths:
         external_dir.mkdir()
         selected = external_dir / "test_agent.md"
         selected.write_text("External definition", encoding="utf-8")
-        monkeypatch.setenv("ORKESTRA_AGENT_PATHS", str(external_dir))
+        monkeypatch.setenv("ORCHESTRA_AGENT_PATHS", str(external_dir))
 
         assert _resolve_agent_file("test_agent", workspace) == str(selected)
+
+    def test_legacy_external_agent_paths_remain_supported(self, workspace, tmp_path, monkeypatch):
+        external_dir = tmp_path / "legacy-agents"
+        external_dir.mkdir()
+        selected = external_dir / "legacy.md"
+        selected.write_text("Legacy definition", encoding="utf-8")
+        monkeypatch.delenv("ORCHESTRA_AGENT_PATHS", raising=False)
+        monkeypatch.setenv("ORKESTRA_AGENT_PATHS", str(external_dir))
+
+        assert _resolve_agent_file("legacy", workspace) == str(selected)
 
 
 class TestGetModel:

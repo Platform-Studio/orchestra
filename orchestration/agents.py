@@ -56,9 +56,12 @@ COPILOT_PROVIDER_API_KEY_ENV_VAR = "COPILOT_PROVIDER_API_KEY"
 CLINE_DATA_DIR_ENV_VAR = "CLINE_DATA_DIR"
 GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
 AGENTS_DIR_ENV_VAR = "ORCHESTRATION_AGENTS_DIR"
-AGENT_PATHS_ENV_VAR = "ORKESTRA_AGENT_PATHS"
-SKILL_PATHS_ENV_VAR = "ORKESTRA_SKILL_PATHS"
-CLI_PATHS_ENV_VAR = "ORKESTRA_CLI_PATHS"
+AGENT_PATHS_ENV_VAR = "ORCHESTRA_AGENT_PATHS"
+SKILL_PATHS_ENV_VAR = "ORCHESTRA_SKILL_PATHS"
+CLI_PATHS_ENV_VAR = "ORCHESTRA_CLI_PATHS"
+LEGACY_AGENT_PATHS_ENV_VAR = "ORKESTRA_AGENT_PATHS"
+LEGACY_SKILL_PATHS_ENV_VAR = "ORKESTRA_SKILL_PATHS"
+LEGACY_CLI_PATHS_ENV_VAR = "ORKESTRA_CLI_PATHS"
 SOURCE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 CLINE_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
@@ -2603,8 +2606,11 @@ def _cli_dir(base_dir: str) -> str:
     return os.path.join(_agents_dir(base_dir), "cli")
 
 
-def _configured_paths(env_var: str) -> list[str]:
-    value = os.getenv(env_var, "")
+def _configured_paths(env_var: str, legacy_env_var: str | None = None) -> list[str]:
+    value = os.getenv(env_var)
+    if value is None and legacy_env_var:
+        value = os.getenv(legacy_env_var)
+    value = value or ""
     return [
         os.path.abspath(os.path.expandvars(os.path.expanduser(path.strip())))
         for path in value.split(os.pathsep)
@@ -2621,7 +2627,10 @@ def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
       - relative path:    "Agents/sorter.md"
             - header name:      "Sorter" (from YAML frontmatter `name:`)
     """
-    agents_dirs = [_agents_dir(base_dir), *_configured_paths(AGENT_PATHS_ENV_VAR)]
+    agents_dirs = [
+        _agents_dir(base_dir),
+        *_configured_paths(AGENT_PATHS_ENV_VAR, LEGACY_AGENT_PATHS_ENV_VAR),
+    ]
 
     # If it looks like a path (has separator or starts with Agents/)
     if os.sep in agent_ref or agent_ref.startswith("Agents/"):
@@ -2774,12 +2783,12 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
             parts.append("\n\n## Available CLI Tools\n" + "\n\n".join(tool_docs))
 
     external_resources = []
-    skill_paths = _configured_paths(SKILL_PATHS_ENV_VAR)
+    skill_paths = _configured_paths(SKILL_PATHS_ENV_VAR, LEGACY_SKILL_PATHS_ENV_VAR)
     if skill_paths:
         external_resources.append(
             f"Additional skill definitions can be found in: {os.pathsep.join(skill_paths)}"
         )
-    cli_paths = _configured_paths(CLI_PATHS_ENV_VAR)
+    cli_paths = _configured_paths(CLI_PATHS_ENV_VAR, LEGACY_CLI_PATHS_ENV_VAR)
     if cli_paths:
         external_resources.append(
             f"Additional CLI tools can be found in: {os.pathsep.join(cli_paths)}"
