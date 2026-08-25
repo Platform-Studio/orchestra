@@ -107,7 +107,7 @@ Configure at least one supported agent runtime:
 
 - Claude Code CLI: install `claude` and authenticate it.
 - Cline CLI: install `cline` and authenticate it.
-- GitHub Copilot CLI: install `copilot`, or authenticate `gh` and use `gh copilot`.
+- GitHub Copilot CLI: install `copilot` and complete its normal interactive GitHub sign-in. Token environment variables are only needed for non-interactive or CI use.
 
 Select the default runtime in `.env`:
 
