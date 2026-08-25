@@ -302,6 +302,8 @@ A root `.env` provides process defaults. Each workstream can also have a `.env` 
 
 This makes it possible to share common runtime settings while keeping project-specific credentials and configuration at the appropriate workstream level. Never commit populated `.env` files.
 
+For agents with learning enabled, Orchestra checks the agent's learnings file after each run. If it exceeds `ORCHESTRATION_LEARNINGS_COMPACTION_THRESHOLD_BYTES`, Orchestra archives the original and replaces it with a deduplicated summary containing up to the 80 most recent entries. The default threshold is 20,000 bytes; invalid or non-positive values use the default.
+
 ## Runtime Paths
 
 Orchestra keeps four locations independent:
