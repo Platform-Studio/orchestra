@@ -50,7 +50,7 @@ def parse_size(size_str: str) -> tuple[int, int]:
 
 def download_image(url: str, output_path: Path) -> None:
     """Download an image from a URL to the output path."""
-    req = urllib.request.Request(url, headers={"User-Agent": "FoundationImageGen/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "OrchestraImageGen/1.0"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         output_path.write_bytes(resp.read())
 
@@ -168,7 +168,7 @@ def search_pexels(prompt: str, width: int, height: int, output_path: Path, count
     url = f"https://api.pexels.com/v1/search?{query}"
     req = urllib.request.Request(url, headers={
         "Authorization": api_key,
-        "User-Agent": "FoundationImageGen/1.0",
+        "User-Agent": "OrchestraImageGen/1.0",
     })
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
@@ -228,7 +228,7 @@ def search_pixabay(prompt: str, width: int, height: int, output_path: Path, coun
         "safesearch": "true",
     })
     url = f"https://pixabay.com/api/?{query}"
-    req = urllib.request.Request(url, headers={"User-Agent": "FoundationImageGen/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "OrchestraImageGen/1.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
 

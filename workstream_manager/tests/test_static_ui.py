@@ -262,13 +262,18 @@ def test_board_agent_run_chips_include_model_metadata() -> None:
     assert 'runMeta.summaryText' in html
 
 
-def test_board_cards_render_token_usage_footer_when_present() -> None:
+def test_board_cards_prefer_cost_footer_with_token_fallback() -> None:
     html = _index_html()
 
     assert 'class="card-token-usage"' in html
     assert '!cardRun && task && task.token_usage' in html
-    assert 'task.token_usage.input_tokens' in html
-    assert 'Tokens: ${esc(Number(task.token_usage.input_tokens || 0).toLocaleString())} in ${esc(Number(task.token_usage.output_tokens || 0).toLocaleString())} out' in html
+    assert 'usage.total_cost != null && usage.currency' in html
+    assert "style: 'currency'" in html
+    assert 'minimumFractionDigits: 2' in html
+    assert 'maximumFractionDigits: 2' in html
+    assert '<span class="card-token-total">Cost: ${esc(formatCost(usage.total_cost))}</span> In: ${esc(formatCost(usage.input_cost))} Out: ${esc(formatCost(usage.output_cost))}' in html
+    assert '.card-token-total { font-weight: 700; }' in html
+    assert 'Tokens: ${esc(Number(usage.input_tokens || 0).toLocaleString())} in ${esc(Number(usage.output_tokens || 0).toLocaleString())} out' in html
 
 
 def test_agent_run_details_show_cli_flags_separately_from_prompt() -> None:

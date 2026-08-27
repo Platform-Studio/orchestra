@@ -48,16 +48,16 @@ class TestCreateTrigger:
     def test_create_email_trigger(self, workspace, ws):
         trigger = create_trigger(
             ws.id,
-            on_email={"recipient": "Build@Guild.PlatformStud.io", "event": "new_thread"},
+            on_email={"recipient": "Build@Mail.Example.com", "event": "new_thread"},
             action="run_agent",
-            agent="startup_vendor",
+            agent="email_triage_agent",
             base_dir=workspace,
         )
         assert trigger.on_email == {
-            "recipient": "build@guild.platformstud.io",
+            "recipient": "build@mail.example.com",
             "event": "new_thread",
         }
-        assert trigger.agent == "startup_vendor"
+        assert trigger.agent == "email_triage_agent"
 
     def test_trigger_persisted_in_workstream(self, workspace, ws):
         create_trigger(ws.id, on_state="Done", action="run_command", command="echo x", base_dir=workspace)
@@ -92,7 +92,7 @@ class TestCreateTrigger:
             create_trigger(
                 ws.id,
                 on_state="To Do",
-                on_email={"recipient": "build@guild.platformstud.io", "event": "new_thread"},
+                on_email={"recipient": "build@mail.example.com", "event": "new_thread"},
                 action="run_command",
                 command="echo x",
                 base_dir=workspace,
@@ -508,8 +508,42 @@ class TestExecuteTrigger:
         assert captured["agent_name"] == "test_agent"
         assert captured["task_ids"] == [task.id]
         assert captured["workstream_id"] == ws.id
+        assert captured["prompt_source"] == "state_trigger"
         assert captured["allow_paused_workstream"] is True
         assert captured["concurrency_state"] == "Done"
+
+    @pytest.mark.parametrize(
+        ("trigger_kwargs", "expected_source"),
+        [
+            ({"on_state": "To Do"}, "state_trigger"),
+            ({"on_schedule": "0 9 * * *"}, "schedule_trigger"),
+            ({"on_email": {"recipient": "build@example.com", "event": "new_thread"}}, "email_trigger"),
+        ],
+    )
+    def test_execute_run_agent_passes_trigger_prompt_source(
+        self, workspace, ws, monkeypatch, trigger_kwargs, expected_source
+    ):
+        trigger = create_trigger(
+            ws.id,
+            action="run_agent",
+            agent="test_agent",
+            prompt="Do the triggered work.",
+            base_dir=workspace,
+            **trigger_kwargs,
+        )
+        captured = {}
+
+        def _fake_run_agent(_agent_name, **kwargs):
+            captured.update(kwargs)
+            return {"run_id": "run-123"}
+
+        monkeypatch.setattr("orchestration.agents.run_agent", _fake_run_agent)
+
+        result = execute_trigger(trigger, [], ws.id, base_dir=workspace)
+
+        assert result["status"] == "ok"
+        assert captured["prompt"] == "Do the triggered work."
+        assert captured["prompt_source"] == expected_source
 
 
 class TestStateTriggerViaTick:
@@ -711,18 +745,18 @@ class TestEmailTriggerViaTick:
     def test_tick_dispatches_email_trigger_as_standalone_run(self, workspace, ws, monkeypatch):
         trigger = create_trigger(
             ws.id,
-            on_email={"recipient": "build@guild.platformstud.io", "event": "new_thread"},
+            on_email={"recipient": "build@mail.example.com", "event": "new_thread"},
             action="run_agent",
-            agent="startup_vendor",
+            agent="email_triage_agent",
             base_dir=workspace,
         )
 
         def _fake_list_new_thread_messages(recipient):
-            assert recipient == "build@guild.platformstud.io"
+            assert recipient == "build@mail.example.com"
             return [{
                 "storage_key": "msg-1",
-                "from": "Jeremy Burton <jb@platformstud.io>",
-                "to": "build@guild.platformstud.io",
+                "from": "Alex Example <jb@example.com>",
+                "to": "build@mail.example.com",
                 "subject": "Need a feature",
                 "date": "Mon, 26 May 2026 10:00:00 +0000",
                 "body": "Please add the new workflow.",
@@ -759,8 +793,8 @@ class TestEmailTriggerViaTick:
         assert "Attachments (1):" in dispatched[0]["prompt"]
         assert "brief.pdf (application/pdf, 12345 bytes)" in dispatched[0]["prompt"]
         assert dispatched[0]["event_context"] == {
-            "email_from": "Jeremy Burton <jb@platformstud.io>",
-            "email_to": "build@guild.platformstud.io",
+            "email_from": "Alex Example <jb@example.com>",
+            "email_to": "build@mail.example.com",
             "email_subject": "Need a feature",
             "email_date": "Mon, 26 May 2026 10:00:00 +0000",
             "email_body": "Please add the new workflow.",
@@ -784,7 +818,7 @@ class TestEmailTriggerViaTick:
     def test_tick_dedupes_processed_email_threads(self, workspace, ws, monkeypatch):
         trigger = create_trigger(
             ws.id,
-            on_email={"recipient": "build@guild.platformstud.io", "event": "new_thread"},
+            on_email={"recipient": "build@mail.example.com", "event": "new_thread"},
             action="run_command",
             command="echo {email_subject}",
             base_dir=workspace,
@@ -793,8 +827,8 @@ class TestEmailTriggerViaTick:
         def _fake_list_new_thread_messages(_recipient):
             return [{
                 "storage_key": "msg-1",
-                "from": "Jeremy Burton <jb@platformstud.io>",
-                "to": "build@guild.platformstud.io",
+                "from": "Alex Example <jb@example.com>",
+                "to": "build@mail.example.com",
                 "subject": "Need a feature",
                 "body": "Please add the new workflow.",
                 "attachments": [],

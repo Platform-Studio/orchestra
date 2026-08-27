@@ -19,6 +19,7 @@ from .tasks import read_task, _save_task
 from .workstreams import read_workstream
 
 DEFAULT_RETRY_CONFIG = RetryConfig(max_retries=3, backoff="exponential", base_seconds=60)
+_FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 def _is_process_alive(pid: int) -> bool:
@@ -67,7 +68,7 @@ def _kill_process(pid: int) -> str:
             if not _is_process_alive(pid):
                 return "SIGTERM"
         # Still alive — force kill
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, _FORCE_KILL_SIGNAL)
         return "SIGKILL"
     except (OSError, ProcessLookupError):
         return "SIGTERM"

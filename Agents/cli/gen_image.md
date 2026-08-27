@@ -1,6 +1,6 @@
 ## Image Generation
 
-Generate images using `cli/gen_image.py` in the foundation workspace:
+Generate images using `cli/gen_image.py` in the Orchestra repository:
 
 ```bash
 python3 cli/gen_image.py --prompt "description" --source SOURCE --output "path/to/file.png" [--size WxH] [--count N] [--model MODEL]

@@ -7,8 +7,48 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  audit:
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install all dependency groups
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,image,browser]"
+
+      - name: Scan Git history for secrets
+        run: |
+          curl --fail --location --silent --show-error --output gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          curl --fail --location --silent --show-error --output checksums.txt \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+          grep 'gitleaks_8.30.1_linux_x64.tar.gz' checksums.txt | sha256sum --check
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks git --log-opts="--all" --redact .
+
+      - name: Scan tracked public content
+        run: python scripts/audit_public_repo.py
+
+      - name: Audit dependency licenses
+        run: python scripts/audit_licenses.py
+
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout repository
@@ -18,14 +58,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
         run: |
@@ -35,18 +69,38 @@ jobs:
       - name: Run tests
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: |
-          python -m pytest \
-            orchestration/tests/ \
-            workstream_manager/tests/ \
-            Agents/cli/tests/ \
-            -v \
-            --tb=short \
-            --junitxml=test-results.xml
+        run: python -m pytest orchestration/tests/ workstream_manager/tests/ Agents/cli/tests/ -v --tb=short --junitxml=test-results.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.os }}
           path: test-results.xml
+
+  release-flow:
+    name: Release flow (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install wheel builder
+        run: python -m pip install --upgrade build
+
+      - name: Test clean install, upgrade, and example
+        run: python scripts/test_release_flow.py

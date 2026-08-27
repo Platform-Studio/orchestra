@@ -14,8 +14,8 @@ Uses only Python stdlib — no extra packages required beyond `python-dotenv` (a
 MAILGUN_API_KEY=key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Optional defaults (used when --domain / --from are not passed)
-MAILGUN_DOMAIN=mg.hirescout.us
-MAILGUN_FROM_EMAIL=no-reply@mg.hirescout.us
+MAILGUN_DOMAIN=mg.example.com
+MAILGUN_FROM_EMAIL=no-reply@mg.example.com
 MAILGUN_FROM_NAME=Agent
 ```
 
@@ -56,15 +56,15 @@ python Agents/cli/mailgun_cli.py send \
 
 # Explicit domain + from
 python Agents/cli/mailgun_cli.py send \
-  --domain mg.hirescout.us \
-  --from "Jeremy Burton <jb@platformstud.io>" \
+  --domain mg.example.com \
+  --from "Alex Example <jb@example.com>" \
   --to alice@example.com \
   --subject "Hello" \
   --text "Hi there"
 
 # HTML + plain text
 python Agents/cli/mailgun_cli.py send \
-  --domain mg.hirescout.us \
+  --domain mg.example.com \
   --to alice@example.com \
   --subject "Update" \
   --text "See the report." \
@@ -72,7 +72,7 @@ python Agents/cli/mailgun_cli.py send \
 
 # Multiple recipients, CC, BCC
 python Agents/cli/mailgun_cli.py send \
-  --domain mg.hirescout.us \
+  --domain mg.example.com \
   --to alice@example.com --to bob@example.com \
   --cc manager@example.com \
   --bcc audit@example.com \
@@ -81,7 +81,7 @@ python Agents/cli/mailgun_cli.py send \
 
 # With attachments (multiple --attach supported)
 python Agents/cli/mailgun_cli.py send \
-  --domain mg.hirescout.us \
+  --domain mg.example.com \
   --to alice@example.com \
   --subject "Report" \
   --text "See attached." \
@@ -90,7 +90,7 @@ python Agents/cli/mailgun_cli.py send \
 
 # Send as a threaded reply using message IDs from the earlier email
 python Agents/cli/mailgun_cli.py send \
-  --domain mg.hirescout.us \
+  --domain mg.example.com \
   --to alice@example.com \
   --subject "Re: Hello" \
   --text "Following up here." \
@@ -100,7 +100,7 @@ python Agents/cli/mailgun_cli.py send \
 
 # JSON output (shows Mailgun message ID)
 python Agents/cli/mailgun_cli.py --json send \
-  --domain mg.hirescout.us \
+  --domain mg.example.com \
   --to alice@example.com \
   --subject "Hello" --text "Hi" \
 ```
@@ -117,62 +117,62 @@ Reply threading notes:
 **List recent messages** — shows the 25 most recent inbound accepted events with sender, subject, and the storage key needed to fetch the full message.
 
 ```bash
-python Agents/cli/mailgun_cli.py list --domain mg.hirescout.us
-python Agents/cli/mailgun_cli.py list --domain mg.hirescout.us --limit 10
-python Agents/cli/mailgun_cli.py --json list --domain mg.hirescout.us
+python Agents/cli/mailgun_cli.py list --domain mg.example.com
+python Agents/cli/mailgun_cli.py list --domain mg.example.com --limit 10
+python Agents/cli/mailgun_cli.py --json list --domain mg.example.com
 
 # Filter to a specific recipient address (domain inferred if omitted)
-python Agents/cli/mailgun_cli.py list --to build@guild.platformstud.io
-python Agents/cli/mailgun_cli.py --json list --to build@guild.platformstud.io
+python Agents/cli/mailgun_cli.py list --to build@mail.example.com
+python Agents/cli/mailgun_cli.py --json list --to build@mail.example.com
 ```
 
 Example output:
 ```
-Recent inbound messages for mg.hirescout.us (up to 25):
+Recent inbound messages for mg.example.com (up to 25):
 #    From                                     Subject                                            Storage Key
 ----------------------------------------------------------------------------------------------------------------------------------
-1    Jeremy Burton <jb@platformstud.io>       Test                                               BAABAQU3_nLx9y4Rxt5HqpOT...
+1    Alex Example <jb@example.com>       Test                                               <STORAGE_KEY>
 ```
 
 **Read full message** — fetches headers, body, and attachment metadata for a specific message using the storage key from `list`.
 
 ```bash
 python Agents/cli/mailgun_cli.py read \
-  --domain mg.hirescout.us \
-  --key BAABAQU3_nLx9y4Rxt5HqpOTir_jXKomaQ
+  --domain mg.example.com \
+  --key <STORAGE_KEY>
 
 python Agents/cli/mailgun_cli.py read \
-  --domain mg.hirescout.us \
-  --key BAABAQU3_nLx9y4Rxt5HqpOTir_jXKomaQ \
+  --domain mg.example.com \
+  --key <STORAGE_KEY> \
   
 python Agents/cli/mailgun_cli.py --json read \
-  --domain mg.hirescout.us \
-  --key BAABAQU3_nLx9y4Rxt5HqpOTir_jXKomaQ
+  --domain mg.example.com \
+  --key <STORAGE_KEY>
 ```
 
 Example output:
 ```
-From:     Jeremy Burton <jb@platformstud.io>
-To:       substack@mg.hirescout.us
+From:     Alex Example <jb@example.com>
+To:       substack@mg.example.com
 Subject:  Test
 Date:     Thu, 30 Apr 2026 ...
 
 Body:
 ------------------------------------------------------------
-Jeremy Burton
+Alex Example
 ```
 
 **Download attachments** — saves any downloadable attachment payloads for a stored inbound message.
 
 ```bash
 python Agents/cli/mailgun_cli.py download-attachments \
-  --domain mg.hirescout.us \
-  --key BAABAQU3_nLx9y4Rxt5HqpOTir_jXKomaQ \
+  --domain mg.example.com \
+  --key <STORAGE_KEY> \
   --out-dir ./tmp/mailgun-downloads
 
 python Agents/cli/mailgun_cli.py --json download-attachments \
-  --domain mg.hirescout.us \
-  --key BAABAQU3_nLx9y4Rxt5HqpOTir_jXKomaQ \
+  --domain mg.example.com \
+  --key <STORAGE_KEY> \
   --out-dir ./tmp/mailgun-downloads
 ```
 

@@ -934,13 +934,13 @@ class TestTask:
         assert call.kwargs.get("author") == "Anonymous Human"
 
     def test_comment_uses_human_name_env(self, api):
-        os.environ["HUMAN_NAME"] = "Jeremy"
+        os.environ["HUMAN_NAME"] = "Alex"
         try:
             api.mocks["comment_task"].return_value = _fake_task()
             code, body = api.post("/api/task/comment/t-1", {"message": "hello"})
             assert code == 200
             call = api.mocks["comment_task"].call_args
-            assert call.kwargs.get("author") == "Jeremy"
+            assert call.kwargs.get("author") == "Alex"
         finally:
             os.environ.pop("HUMAN_NAME", None)
 

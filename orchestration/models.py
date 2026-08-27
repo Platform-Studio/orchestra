@@ -322,7 +322,7 @@ class Task:
     token_usage: dict = None
     task_errors: list = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, *, include_audit: bool = True) -> dict:
         d = {
             "id": self.id,
             "workstream_id": self.workstream_id,
@@ -330,9 +330,10 @@ class Task:
             "status": self.status,
             "tags": self.tags,
             "comments": self.comments,
-            "audit": [a.to_dict() for a in self.audit],
             "attachments": self.attachments,
         }
+        if include_audit:
+            d["audit"] = [a.to_dict() for a in self.audit]
         if self.paused:
             d["paused"] = True
         if self.description is not None:

@@ -32,8 +32,8 @@ def test_cmd_list_filters_by_recipient_and_infers_domain(monkeypatch, capsys):
                     "storage": {"key": "key-build"},
                     "message": {
                         "headers": {
-                            "from": "Jeremy Burton <jb@platformstud.io>",
-                            "to": "Build Pipeline <build@guild.platformstud.io>, automatedemails@platformstud.io",
+                            "from": "Alex Example <jb@example.com>",
+                            "to": "Build Pipeline <build@mail.example.com>, automatedemails@example.com",
                             "subject": "Build ready",
                         }
                     },
@@ -44,8 +44,8 @@ def test_cmd_list_filters_by_recipient_and_infers_domain(monkeypatch, capsys):
                     "storage": {"key": "key-other"},
                     "message": {
                         "headers": {
-                            "from": "Jeremy Burton <jb@platformstud.io>",
-                            "to": "ops@guild.platformstud.io",
+                            "from": "Alex Example <jb@example.com>",
+                            "to": "ops@mail.example.com",
                             "subject": "Ops update",
                         }
                     },
@@ -56,8 +56,8 @@ def test_cmd_list_filters_by_recipient_and_infers_domain(monkeypatch, capsys):
                     "storage": {"key": "key-build"},
                     "message": {
                         "headers": {
-                            "from": "Jeremy Burton <jb@platformstud.io>",
-                            "to": "build@guild.platformstud.io",
+                            "from": "Alex Example <jb@example.com>",
+                            "to": "build@mail.example.com",
                             "subject": "Build ready duplicate event",
                         }
                     },
@@ -69,17 +69,17 @@ def test_cmd_list_filters_by_recipient_and_infers_domain(monkeypatch, capsys):
     monkeypatch.setattr(mailgun, "assert_domain_registered", _fake_assert_domain_registered)
     monkeypatch.setattr(mailgun, "_mailgun_request", _fake_request)
 
-    args = Namespace(domain=None, to="build@guild.platformstud.io", limit=25, json=True)
+    args = Namespace(domain=None, to="build@mail.example.com", limit=25, json=True)
     mailgun.cmd_list(args, env={})
 
     payload = json.loads(capsys.readouterr().out)
-    assert captured == {"domain": "guild.platformstud.io", "api_key": "test-key"}
+    assert captured == {"domain": "mail.example.com", "api_key": "test-key"}
     assert payload == [
         {
             "storage_key": "key-build",
             "timestamp": 111.0,
-            "from": "Jeremy Burton <jb@platformstud.io>",
-            "to": "Build Pipeline <build@guild.platformstud.io>, automatedemails@platformstud.io",
+            "from": "Alex Example <jb@example.com>",
+            "to": "Build Pipeline <build@mail.example.com>, automatedemails@example.com",
             "subject": "Build ready",
         }
     ]
@@ -101,8 +101,8 @@ def test_cmd_list_plain_text_heading_mentions_recipient(monkeypatch, capsys):
                     "storage": {"key": "key-build"},
                     "message": {
                         "headers": {
-                            "from": "Jeremy Burton <jb@platformstud.io>",
-                            "to": "build@guild.platformstud.io",
+                            "from": "Alex Example <jb@example.com>",
+                            "to": "build@mail.example.com",
                             "subject": "Build ready",
                         }
                     },
@@ -111,11 +111,11 @@ def test_cmd_list_plain_text_heading_mentions_recipient(monkeypatch, capsys):
         },
     )
 
-    args = Namespace(domain="guild.platformstud.io", to="build@guild.platformstud.io", limit=10, json=False)
+    args = Namespace(domain="mail.example.com", to="build@mail.example.com", limit=10, json=False)
     mailgun.cmd_list(args, env={})
 
     output = capsys.readouterr().out
-    assert "Recent inbound messages for guild.platformstud.io to build@guild.platformstud.io" in output
+    assert "Recent inbound messages for mail.example.com to build@mail.example.com" in output
     assert "Build ready" in output
 
 
@@ -180,7 +180,7 @@ def test_cmd_download_attachments_writes_files(monkeypatch, tmp_path, capsys):
         lambda method, url, api_key: (b"pdfdata", {"content-type": "application/pdf"}),
     )
 
-    args = Namespace(domain="guild.platformstud.io", key="msg-1", out_dir=str(tmp_path), json=True)
+    args = Namespace(domain="mail.example.com", key="msg-1", out_dir=str(tmp_path), json=True)
     mailgun.cmd_download_attachments(args, env={})
 
     payload = json.loads(capsys.readouterr().out)
@@ -213,9 +213,9 @@ def test_cmd_send_includes_optional_reply_headers(monkeypatch, capsys):
     monkeypatch.setattr(mailgun, "_mailgun_request", _fake_request)
 
     args = Namespace(
-        domain="guild.platformstud.io",
-        from_addr="Build <build@guild.platformstud.io>",
-        to=["jb@platformstud.io"],
+        domain="mail.example.com",
+        from_addr="Build <build@mail.example.com>",
+        to=["jb@example.com"],
         cc=None,
         bcc=None,
         in_reply_to="<parent@example.com>",

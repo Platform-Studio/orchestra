@@ -135,11 +135,20 @@ def _execute_trigger_inner(
             return {"trigger_id": trigger.id, "status": "error", "message": "No agent specified"}
         try:
             from .agents import run_agent
+            if trigger.on_state is not None:
+                prompt_source = "state_trigger"
+            elif trigger.on_schedule is not None:
+                prompt_source = "schedule_trigger"
+            elif trigger.on_email is not None:
+                prompt_source = "email_trigger"
+            else:
+                prompt_source = None
             result = run_agent(
                 trigger.agent,
                 task_ids=task_ids,
                 workstream_id=workstream_id,
                 prompt=trigger.prompt,
+                prompt_source=prompt_source,
                 timeout=trigger.timeout,
                 base_dir=base_dir,
                 allow_paused_workstream=ignore_paused,

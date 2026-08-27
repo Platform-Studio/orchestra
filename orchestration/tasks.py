@@ -6,7 +6,7 @@ import yaml
 from decimal import Decimal, InvalidOperation
 
 from ._atomic import atomic_write_yaml
-from .artifacts import read_artifact, _resolve_artifact_root, _validate_path
+from .artifacts import read_artifact, resolve_artifact_path, _resolve_artifact_root, _validate_path
 from .image_validation import _is_image_path, validate_image_artifact
 from .models import Task, RetryConfig, new_id, now_iso
 from .workstreams import ensure_workstream_tags, read_workstream, resolve_workstream_state_root, list_workstreams, workstream_workspace_index
@@ -174,7 +174,7 @@ def _validate_attachment_list(
             continue
 
         if validate_non_image:
-            read_artifact(path, base_dir=base_dir, workstream_id=workstream_id)
+            resolve_artifact_path(path, base_dir=base_dir, workstream_id=workstream_id)
 
     return normalized
 

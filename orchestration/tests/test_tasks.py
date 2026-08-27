@@ -226,10 +226,10 @@ class TestUpdateTask:
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = update_task(
             task.id,
-            attachments=["Theses/one.md", "Theses/two.md"],
+            attachments=["Reports/one.md", "Reports/two.md"],
             base_dir=workspace,
         )
-        assert updated.attachments == ["Theses/one.md", "Theses/two.md"]
+        assert updated.attachments == ["Reports/one.md", "Reports/two.md"]
 
     def test_update_adds_audit_entry(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
@@ -487,10 +487,10 @@ class TestCommentTask:
         monkeypatch.delenv("ORCHESTRATION_AGENT_NAME", raising=False)
         monkeypatch.delenv("AGENT_NAME", raising=False)
         monkeypatch.delenv("CLAUDE_AGENT_NAME", raising=False)
-        monkeypatch.setenv("USER", "jeremy")
+        monkeypatch.setenv("USER", "testuser")
         task = create_task(ws.id, title="T", base_dir=workspace)
         updated = comment_task(task.id, "Hello", base_dir=workspace)
-        assert updated.comments[0]["author"] == "jeremy"
+        assert updated.comments[0]["author"] == "testuser"
 
     def test_delete_comment_by_index(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
@@ -536,10 +536,10 @@ class TestCommentTask:
 
 class TestTaskAttachments:
     def test_attach_to_task(self, workspace, ws):
-        create_artifact("Theses/proptech.md", "# Proptech", base_dir=workspace)
+        create_artifact("Reports/proptech.md", "# Proptech", base_dir=workspace)
         task = create_task(ws.id, title="T", base_dir=workspace)
-        updated = attach_to_task(task.id, "Theses/proptech.md", base_dir=workspace)
-        assert updated.attachments == ["Theses/proptech.md"]
+        updated = attach_to_task(task.id, "Reports/proptech.md", base_dir=workspace)
+        assert updated.attachments == ["Reports/proptech.md"]
 
     def test_attach_invalid_image_rejects_with_clear_error(self, workspace, ws):
         create_artifact("assets/logo.png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB", base_dir=workspace)
@@ -562,16 +562,27 @@ class TestTaskAttachments:
             update_task(task.id, attachments=["assets/logo.png"], base_dir=workspace)
 
     def test_attach_is_deduplicated(self, workspace, ws):
-        create_artifact("Theses/proptech.md", "# Proptech", base_dir=workspace)
+        create_artifact("Reports/proptech.md", "# Proptech", base_dir=workspace)
         task = create_task(ws.id, title="T", base_dir=workspace)
-        attach_to_task(task.id, "Theses/proptech.md", base_dir=workspace)
-        updated = attach_to_task(task.id, "/Theses/proptech.md", base_dir=workspace)
-        assert updated.attachments == ["Theses/proptech.md"]
+        attach_to_task(task.id, "Reports/proptech.md", base_dir=workspace)
+        updated = attach_to_task(task.id, "/Reports/proptech.md", base_dir=workspace)
+        assert updated.attachments == ["Reports/proptech.md"]
 
     def test_attach_missing_artifact_raises(self, workspace, ws):
         task = create_task(ws.id, title="T", base_dir=workspace)
         with pytest.raises(FileNotFoundError):
-            attach_to_task(task.id, "Theses/missing.md", base_dir=workspace)
+            attach_to_task(task.id, "Reports/missing.md", base_dir=workspace)
+
+    def test_attach_binary_artifact(self, workspace, ws):
+        artifact_path = "Reports/evaluation.pdf"
+        os.makedirs(os.path.join(workspace, "artifacts", "Reports"), exist_ok=True)
+        with open(os.path.join(workspace, "artifacts", artifact_path), "wb") as artifact:
+            artifact.write(b"%PDF-1.4\n%\xd3\xeb\xe9\xe1\n")
+        task = create_task(ws.id, title="T", base_dir=workspace)
+
+        updated = attach_to_task(task.id, artifact_path, base_dir=workspace)
+
+        assert updated.attachments == [artifact_path]
 
     def test_attach_to_child_task_after_parent_artifact_copytree(self, workspace, tmp_path):
         working_root = tmp_path / "stashmap_repo"
@@ -598,16 +609,16 @@ class TestTaskAttachments:
         assert os.path.exists(os.path.join(workspace, "artifacts", artifact_path))
 
     def test_detach_from_task(self, workspace, ws):
-        task = create_task(ws.id, title="T", attachments=["Theses/a.md"], base_dir=workspace)
-        updated = detach_from_task(task.id, "Theses/a.md", base_dir=workspace)
+        task = create_task(ws.id, title="T", attachments=["Reports/a.md"], base_dir=workspace)
+        updated = detach_from_task(task.id, "Reports/a.md", base_dir=workspace)
         assert updated.attachments == []
 
     def test_attachment_prompt_includes_artifact_content(self, workspace, ws):
-        create_artifact("Theses/future.md", "# Future\nAI-first workflows", base_dir=workspace)
-        task = create_task(ws.id, title="T", attachments=["Theses/future.md"], base_dir=workspace)
+        create_artifact("Reports/future.md", "# Future\nAI-first workflows", base_dir=workspace)
+        task = create_task(ws.id, title="T", attachments=["Reports/future.md"], base_dir=workspace)
         section = _read_task_attachments_for_prompt(task, workspace)
         assert "Task attachments" in section
-        assert "Path: Theses/future.md" in section
+        assert "Path: Reports/future.md" in section
         assert "AI-first workflows" in section
 
     def test_attachment_prompt_handles_missing_artifact(self, workspace, ws):
@@ -778,9 +789,9 @@ class TestDuplicateTask:
         assert len(original.audit) == 1  # only the original "created" entry
 
     def test_duplicate_copies_attachments(self, workspace, ws):
-        task = create_task(ws.id, title="T", attachments=["Theses/x.md"], base_dir=workspace)
+        task = create_task(ws.id, title="T", attachments=["Reports/x.md"], base_dir=workspace)
         dup = duplicate_task(task.id, base_dir=workspace)
-        assert dup.attachments == ["Theses/x.md"]
+        assert dup.attachments == ["Reports/x.md"]
 
 
 class TestReorderTasksInWorkstream:

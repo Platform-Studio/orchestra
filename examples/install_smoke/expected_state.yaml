@@ -1,0 +1,4 @@
+workstream: Installation Smoke Test
+tasks:
+  - title: Verify Orchestra installation
+    status: Done

@@ -2,7 +2,7 @@ import os
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -35,6 +35,17 @@ def test_stop_existing_scheduler_stops_running_scheduler():
     assert mock_cli.call_args_list[1].args[1] == ["scheduler", "stop"]
 
 
+def test_signal_managed_process_uses_native_windows_methods():
+    proc = MagicMock()
+
+    with patch("scripts.dev_servers.os.name", "nt"):
+        dev_servers._signal_managed_process(proc, force=False)
+        dev_servers._signal_managed_process(proc, force=True)
+
+    proc.terminate.assert_called_once_with()
+    proc.kill.assert_called_once_with()
+
+
 def test_orchestration_cli_json_returns_data(tmp_path):
     with patch("scripts.dev_servers.subprocess.run") as mock_run:
         mock_run.return_value = SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ok", "data": {"running": False}}), stderr="")
@@ -44,23 +55,23 @@ def test_orchestration_cli_json_returns_data(tmp_path):
 
 
 def test_log_dir_uses_resolved_artifact_root(monkeypatch, tmp_path):
-    artifact_root = tmp_path / "jb_workstreams"
-    monkeypatch.setattr(dev_servers, "BASE_DIR", tmp_path / "foundation")
+    artifact_root = tmp_path / "external_data"
+    monkeypatch.setattr(dev_servers, "BASE_DIR", tmp_path / "repository")
     monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
 
     assert dev_servers._log_dir() == artifact_root / "artifacts" / "logs"
 
 
 def test_display_path_falls_back_to_absolute_for_external_paths(tmp_path, monkeypatch):
-    monkeypatch_base_dir = tmp_path / "foundation"
-    external_path = tmp_path / "jb_workstreams" / "artifacts" / "logs" / "scheduler.log"
+    monkeypatch_base_dir = tmp_path / "repository"
+    external_path = tmp_path / "external_data" / "artifacts" / "logs" / "scheduler.log"
     monkeypatch.setattr(dev_servers, "BASE_DIR", monkeypatch_base_dir)
 
     assert dev_servers._display_path(external_path) == str(external_path)
 
 
 def test_reload_dotenv_overrides_existing_values(monkeypatch, tmp_path):
-    base_dir = tmp_path / "foundation"
+    base_dir = tmp_path / "repository"
     base_dir.mkdir()
     (base_dir / ".env").write_text("COPILOT_CODING_LLM=gpt-5.4\n", encoding="utf-8")
     monkeypatch.setattr(dev_servers, "BASE_DIR", base_dir)
@@ -73,7 +84,7 @@ def test_reload_dotenv_overrides_existing_values(monkeypatch, tmp_path):
 
 
 def test_build_processes_uses_current_workstream_root(monkeypatch, tmp_path):
-    base_dir = tmp_path / "foundation"
+    base_dir = tmp_path / "repository"
     base_dir.mkdir()
     workstream_root = tmp_path / "updated_root"
     artifact_root = tmp_path / "artifacts_root"

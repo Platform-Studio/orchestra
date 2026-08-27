@@ -272,7 +272,7 @@ python Agents/cli/slack.py search "has:link api" --json
 Read a workstream summary and post it to Slack:
 ```bash
 # Get workstream tasks
-TASKS=$(python -m orchestration.cli workstream get WS_ID)
+TASKS=$(orc workstream get WS_ID)
 
 # Post summary to a channel
 python Agents/cli/slack.py post C0123CHANNEL --text "Workstream update: $TASKS"

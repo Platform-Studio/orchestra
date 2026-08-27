@@ -68,6 +68,49 @@ def _clear_runtime_model_env(monkeypatch):
     monkeypatch.setenv("DEFAULT_AGENT_ERROR_SOUND", "")
 
 
+def test_summarize_beans_proxy_usage_includes_cost_totals():
+    summary = agents_module._summarize_beans_proxy_usage(
+        [
+            {
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "input_cost": 0.12,
+                "output_cost": 0.0034,
+                "total_cost": 0.1234,
+                "currency": "USD",
+            },
+            {
+                "input_tokens": 50,
+                "output_tokens": 10,
+                "input_cost": 0.03,
+                "output_cost": 0.0016,
+                "total_cost": 0.0316,
+                "currency": "USD",
+            },
+        ],
+        pseudo_key="task-priced",
+    )
+
+    assert summary["input_tokens"] == 150
+    assert summary["output_tokens"] == 35
+    assert summary["input_cost"] == 0.15
+    assert summary["output_cost"] == 0.005
+    assert summary["total_cost"] == 0.155
+    assert summary["currency"] == "USD"
+
+
+def test_summarize_beans_proxy_usage_preserves_legacy_token_only_records():
+    summary = agents_module._summarize_beans_proxy_usage(
+        [{"input_tokens": 120, "output_tokens": 45}],
+        pseudo_key="task-legacy",
+    )
+
+    assert summary["input_tokens"] == 120
+    assert summary["output_tokens"] == 45
+    assert "total_cost" not in summary
+    assert "currency" not in summary
+
+
 def _write_run_meta(workspace: str, run_id: str, payload: dict) -> None:
     agents_module._write_run_meta(workspace, run_id, payload)
 
@@ -168,6 +211,8 @@ def test_retry_agent_run_reuses_recorded_context(workspace):
     meta = _base_run(run_id, ws.id, [task.id])
     meta["agent"] = "SEO Indexer"
     meta["agent_ref"] = "seo_indexer"
+    meta["instruction_prompt"] = "Retry these exact instructions."
+    meta["instruction_source"] = "schedule_trigger"
     _write_run_meta(workspace, run_id, meta)
 
     with patch("orchestration.agents.run_agent") as mock_run_agent:
@@ -179,6 +224,8 @@ def test_retry_agent_run_reuses_recorded_context(workspace):
         "seo_indexer",
         task_ids=[task.id],
         workstream_id=ws.id,
+        prompt="Retry these exact instructions.",
+        prompt_source="schedule_trigger",
         base_dir=workspace,
         allow_paused_workstream=False,
         retried_from_run_id=run_id,
@@ -206,6 +253,8 @@ def test_retry_agent_run_can_override_paused_workstream(workspace):
         "seo_indexer",
         task_ids=[task.id],
         workstream_id=ws.id,
+        prompt=None,
+        prompt_source=None,
         base_dir=workspace,
         allow_paused_workstream=True,
         retried_from_run_id=run_id,
@@ -537,6 +586,7 @@ def test_capture_provider_context_copies_cline_task_files_to_central_store(works
     assert os.path.commonpath([context_dir, manifest_path]) == context_dir
 
     details = get_agent_run_context("run-context", base_dir=workspace)
+    assert details["manifest"]["orchestration_context"]["prompt_in_run_metadata"] is True
     copied_paths = [f["copied_path"] for f in details["files"]]
     assert any(path.endswith("api_conversation_history.json") for path in copied_paths)
     assert all(not os.path.isabs(path) for path in copied_paths)
@@ -810,12 +860,15 @@ def test_run_agent_uses_and_cleans_own_worktree(mock_popen, mock_which, workspac
         with pytest.raises(RuntimeError, match="failed"):
             run_agent("Own Worktree Agent", workstream_id=ws.id, base_dir=workspace, _run_id="run-123")
 
-    prompt = mock_popen.call_args.args[0][mock_popen.call_args.args[0].index("-p") + 1]
+    cmd = mock_popen.call_args.args[0]
+    system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
     popen_env = mock_popen.call_args.kwargs["env"]
 
     mock_provision.assert_called_once_with(os.path.abspath(workspace), "run-123", base_dir=workspace)
     mock_deprovision.assert_called_once_with(worktree, base_dir=workspace)
-    assert f"WORKSPACE_ROOT: {isolated_root}" in prompt
+    assert f"WORKSPACE_ROOT={isolated_root}" in system_prompt
+    assert "temporary isolated Git worktree" in system_prompt
+    assert "does not isolate environment variables" in system_prompt
     assert popen_env["WORKSPACE_ROOT"] == isolated_root
     assert popen_env["ORCHESTRATION_AGENT_WORKTREE_ROOT"] == isolated_root
     assert mock_popen.call_args.kwargs["cwd"] == isolated_root
@@ -1070,14 +1123,30 @@ def test_resolve_agent_file_falls_back_to_source_agents_for_mounted_workspace(tm
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_injects_workstream_context(mock_popen, mock_which, workspace):
-    ws = create_workstream(name="Standalone WS", context="Use message variant B", base_dir=workspace)
+    platform = create_workstream(name="Platform", base_dir=workspace)
+    stage = create_workstream(name="Stage 3", parent_id=platform.id, base_dir=workspace)
+    product = create_workstream(name="VibeSold", parent_id=stage.id, base_dir=workspace)
+    ws = create_workstream(
+        name="Product Development",
+        context="Use message variant B",
+        parent_id=product.id,
+        base_dir=workspace,
+    )
 
     run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
-    prompt = cmd[cmd.index("-p") + 1]
-    assert "Workstream Operating Context:" in prompt
-    assert "Use message variant B" in prompt
+    system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert "=== WORKSTREAM ===" in system_prompt
+    assert "Path: Platform > Stage 3 > VibeSold > Product Development" in system_prompt
+    assert "Name: Product Development" not in system_prompt
+    assert f"ID: {ws.id}" in system_prompt
+    assert "Task state machine:" in system_prompt
+    assert "=== WORKSTREAM OPERATING CONTEXT ===" in system_prompt
+    assert "Use message variant B" in system_prompt
+    assert system_prompt.index("=== RUNTIME CONTEXT ===") < system_prompt.index("=== WORKSTREAM ===")
+    assert system_prompt.index("=== WORKSTREAM ===") < system_prompt.index("=== WORKSTREAM OPERATING CONTEXT ===")
+    assert system_prompt.index("=== WORKSTREAM OPERATING CONTEXT ===") < system_prompt.index("You are a test agent.")
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
@@ -1107,7 +1176,15 @@ def test_run_agent_passes_agent_body_as_system_prompt(mock_popen, mock_which, wo
     cmd = mock_popen.call_args.args[0]
     assert "--append-system-prompt" in cmd
     system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    task_prompt = cmd[cmd.index("-p") + 1]
+    assert "=== AGENT ROLE AND OPERATING INSTRUCTIONS ===" in system_prompt
     assert "You are a test agent." in system_prompt
+    assert "=== AGENT ROLE AND OPERATING INSTRUCTIONS ===" not in task_prompt
+    assert "=== ORCHESTRA OPERATING CONTRACT ===" in system_prompt
+    assert "never edit persisted workstream or task YAML directly" in system_prompt
+    assert "attach relevant outputs to supplied tasks" in system_prompt
+    assert "Store binary images as real binary content" in system_prompt
+    assert os.path.join(workspace, "Agents", "cli", "orchestration_cli.md") in system_prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
@@ -1122,25 +1199,52 @@ def test_run_agent_prompt_uses_current_python_executable(mock_popen, mock_which,
     expected = f"{sys.executable} -m orchestration.cli --base-dir {workspace}"
 
     prompt = cmd[cmd.index("-p") + 1]
-    assert f"Run: {expected} task read {task.id}" in prompt
-    assert "Run: python -m orchestration.cli" not in prompt
+    assert f"Read the task details with: {expected} task read {task.id}" in prompt
 
     system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
-    assert f"Use `{expected} <command>`" in system_prompt
-    assert "Use `python -m orchestration.cli <command>`" not in system_prompt
+    assert f"CLI command: {expected} <command>" in system_prompt
+    assert f"ORCHESTRATION_AGENT_TASK_IDS=[\"{task.id}\"]" in system_prompt
+    assert f"ORCHESTRATION_AGENT_WORKSTREAM_ID={ws.id}" in system_prompt
+    assert "temporary isolated Git worktree" not in system_prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
-def test_run_agent_does_not_inline_default_learning_prompt(mock_popen, mock_which, workspace):
+def test_run_agent_reads_multiple_tasks_in_one_ordered_command(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Prompt WS", base_dir=workspace)
+    first = create_task(ws.id, title="First", base_dir=workspace)
+    second = create_task(ws.id, title="Second", base_dir=workspace)
+
+    run_agent("test_agent", task_ids=[second.id, first.id], workstream_id=ws.id, base_dir=workspace)
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    expected = f"{sys.executable} -m orchestration.cli --base-dir {workspace} task read {second.id} {first.id}"
+    assert "=== TASKS ===" in prompt
+    assert expected in prompt
+    assert "Task IDs file" not in prompt
+    assert prompt.count("valid next:") == 0
+    assert prompt.count("Valid next states for assigned task statuses:") == 1
+    assert prompt.count(f"{first.status} ->") == 1
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_includes_default_learning_prompt(mock_popen, mock_which, workspace):
     ws = create_workstream(name="Learning WS", base_dir=workspace)
 
     run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
-    prompt = cmd[cmd.index("-p") + 1]
-    assert "AGENT LEARNING (DEFAULT)" not in prompt
-    assert "test_agent_learnings.md" not in prompt
+    task_prompt = cmd[cmd.index("-p") + 1]
+    system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert "=== AGENT LEARNING ===" in system_prompt
+    assert "test_agent_learnings.md" in system_prompt
+    assert f"artifact read 'test_agent_learnings.md' --workstream {ws.id}" in system_prompt
+    assert f"artifact create --path 'test_agent_learnings.md'" in system_prompt
+    assert "help future agents working on similar tasks in this workstream execute more efficiently and effectively" in system_prompt
+    assert system_prompt.index("=== AGENT LEARNING ===") < system_prompt.index("You are a test agent.")
+    assert "=== AGENT LEARNING ===" not in task_prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
@@ -1180,12 +1284,15 @@ def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which,
     run_agent("test_agent", workstream_id=child.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
-    prompt = cmd[cmd.index("-p") + 1]
-    assert f"WORKSPACE_ROOT: {working_root}" in prompt
+    system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
+    assert f"WORKSPACE_ROOT={working_root}" in system_prompt
 
     popen_env = mock_popen.call_args.kwargs["env"]
     assert popen_env["WORKSPACE_ROOT"] == working_root
     assert popen_env["ORCHESTRATION_ROOT"] == os.path.abspath(workspace)
+    python_paths = popen_env["PYTHONPATH"].split(os.pathsep)
+    assert agents_module.SOURCE_DIR in python_paths
+    assert os.path.abspath(workspace) in python_paths
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
@@ -1229,8 +1336,8 @@ def test_run_agent_applies_mounted_working_directory_env_to_child_process(mock_p
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
 def test_run_agent_applies_base_env_before_workstream_overrides(mock_popen, mock_which, workspace, tmp_path, monkeypatch):
-    base_env = tmp_path / "foundation.env"
-    base_env.write_text("FOUNDATION_ONLY=from-foundation\nOVERRIDE_ME=from-foundation\nMASK_ME=from-foundation\n")
+    base_env = tmp_path / "base.env"
+    base_env.write_text("BASE_ONLY=from-base\nOVERRIDE_ME=from-base\nMASK_ME=from-base\n")
     monkeypatch.setenv("ORCHESTRATION_BASE_ENV_PATH", str(base_env))
 
     ws = create_workstream(name="Env WS", base_dir=workspace)
@@ -1240,7 +1347,7 @@ def test_run_agent_applies_base_env_before_workstream_overrides(mock_popen, mock
     run_agent("test_agent", workstream_id=ws.id, base_dir=workspace)
 
     child_env = mock_popen.call_args.kwargs["env"]
-    assert child_env["FOUNDATION_ONLY"] == "from-foundation"
+    assert child_env["BASE_ONLY"] == "from-base"
     assert child_env["OVERRIDE_ME"] == "from-workstream"
     assert "MASK_ME" not in child_env
 
@@ -1754,8 +1861,10 @@ def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
     assert "--append-system-prompt" not in cmd
     assert "--dangerously-skip-permissions" not in cmd
     effective_prompt = cmd[-1]
-    assert "=== SYSTEM INSTRUCTIONS ===" in effective_prompt
-    assert "=== TASK ===" in effective_prompt
+    assert "=== SYSTEM INSTRUCTIONS ===" not in effective_prompt
+    assert effective_prompt.index("=== ORCHESTRA OPERATING CONTRACT ===") < effective_prompt.index("=== RUNTIME CONTEXT ===")
+    assert effective_prompt.index("=== RUNTIME CONTEXT ===") < effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===")
+    assert effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===") < effective_prompt.index("=== WORKSTREAM RUN ===")
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
@@ -1809,8 +1918,10 @@ def test_run_agent_can_use_copilot_runtime(mock_popen, mock_which, workspace):
     assert cmd[0] == "/usr/bin/copilot"
     assert "-p" in cmd
     effective_prompt = cmd[cmd.index("-p") + 1]
-    assert "=== SYSTEM INSTRUCTIONS ===" in effective_prompt
-    assert "=== TASK ===" in effective_prompt
+    assert "=== SYSTEM INSTRUCTIONS ===" not in effective_prompt
+    assert effective_prompt.index("=== ORCHESTRA OPERATING CONTRACT ===") < effective_prompt.index("=== RUNTIME CONTEXT ===")
+    assert effective_prompt.index("=== RUNTIME CONTEXT ===") < effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===")
+    assert effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===") < effective_prompt.index("=== WORKSTREAM RUN ===")
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "auto"
     assert "--output-format" in cmd
@@ -2003,13 +2114,33 @@ def test_progress_prompt_pins_commands_to_current_run(workspace):
     section = agents_module._agent_progress_prompt_section(workspace, run_id="run-abc")
 
     assert "progress init --run run-abc --item" in section
-    assert "Aim for 6-10 concrete, verifiable items unless the task is genuinely trivial" in section
-    assert "Bad: 'do the coding'. Good: 'add progress current CLI subcommand and parser wiring'" in section
-    assert "progress add --run run-abc --item" in section
-    assert "progress set-active <item_id> --run run-abc" in section
-    assert "progress complete <item_id> --run run-abc" in section
-    assert "progress block <item_id> --run run-abc --message" in section
-    assert "Every item must be in a terminal state: done, blocked, or skipped" in section
+    assert "Use concrete, verifiable items" in section
+    assert "keep exactly one active" in section
+    assert "progress <command> --run run-abc" in section
+    assert "leave no active or pending items" in section
+    assert "WORKED EXAMPLE" not in section
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_labels_and_records_instruction_source(mock_popen, mock_which, workspace):
+    ws = create_workstream(name="Triggered WS", base_dir=workspace)
+
+    result = run_agent(
+        "test_agent",
+        workstream_id=ws.id,
+        prompt="Deploy the approved release.",
+        prompt_source="state_trigger",
+        base_dir=workspace,
+    )
+
+    cmd = mock_popen.call_args.args[0]
+    prompt = cmd[cmd.index("-p") + 1]
+    assert "=== STATE TRIGGER INSTRUCTIONS ===" in prompt
+    assert "Your task state-specific instructions are:\nDeploy the approved release." in prompt
+    run_meta = get_agent_run(result["run_id"], base_dir=workspace)["run"]
+    assert run_meta["instruction_source"] == "state_trigger"
+    assert run_meta["instruction_prompt"] == "Deploy the approved release."
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
@@ -2261,6 +2392,12 @@ def test_runtime_reported_timeout_detects_cline_timeout():
     assert _runtime_reported_timeout("cline", '{"type": "error", "message": "Timeout"}', 1) is True
     assert _runtime_reported_timeout("claude-code", "Error: Timeout\n", 1) is False
     assert _runtime_reported_timeout("cline", "done", 0) is False
+
+
+def test_claude_output_falls_back_when_pty_is_unavailable(monkeypatch):
+    monkeypatch.setattr(agents_module, "pty", None)
+
+    assert agents_module._should_stream_output_via_pty("claude-code") is False
 
 
 # ── ANSI escape code stripping ────────────────────────────────────────

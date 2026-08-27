@@ -1,8 +1,33 @@
 # Orchestra
 
-[Orchestra](https://github.com/Platform-Studio/orchestra) is an open-source framework for coordinating autonomous agents across repeatable workflows. It combines a standalone orchestration CLI with a web-based Workstream Manager for creating tasks, assigning agents, following progress, and reviewing a complete audit trail.
+Orchestra is an agent orchestration framework for coordinating multiple autonomous agents across repeatable workflows. 
 
-Orchestra is model- and task-agnostic. It can coordinate coding, research, operations, marketing, sales, or any other work that can be represented as tasks moving through a workflow.
+It combines a standalone orchestration CLI with a web-based Workstream Manager for creating tasks, assigning agents, following progress, and reviewing a complete audit trail. 
+
+Think of Workstream Manager as a Kanban board that you (human) and agents can both interact with to manage and track work - think "Trello for humans and agents to work together."
+
+Orchestra is model- and task-agnostic. It can coordinate coding, research, operations, marketing, sales, or any other work that can be represented as tasks moving on a Kanban board. State-based and scheduled triggers allow agents to hand work to one another, branch based on results, and repeat steps when review or revision is needed.
+
+Orchestra was built for workflows in which many agents operate concurrently across different kinds of work, not only software development. It supports compound engineering: each run can leave behind structured results, audit history, and accumulated learnings that improve subsequent runs. It also supports metareview workflows in which one agent evaluates another agent's work and sends it back for revision when necessary.
+
+## Quick Start
+
+Requires Python 3.12+ and an authenticated `claude`, `cline`, or `copilot` CLI. (A virtual environment is recommended but not required.)
+
+```bash
+git clone https://github.com/Platform-Studio/orchestra.git
+cd orchestra
+./setup.sh
+./run-orchestra.sh
+```
+
+Open `http://localhost:8080`. The setup script automatically installs the Xmas Movies example (more detail below).
+
+## Why Orchestra Exists
+
+At Platform Venture Studio, we build multiple startups in parallel. Agents participate across the entire process, from identifying customer problems and conducting market research to product design, implementation, marketing, and sales. We needed one place to define those workflows, coordinate concurrent agents, see what each agent was doing, preserve context across runs, and understand the cost of work at the task level.
+
+We evaluated the available agent frameworks in early 2026, but none matched that combination of general-purpose workflow orchestration, human visibility, hierarchical state, and local ownership of data. Orchestra grew out of that need.
 
 ## Features
 
@@ -12,64 +37,87 @@ Orchestra is model- and task-agnostic. It can coordinate coding, research, opera
 - Agent execution through Claude Code, Cline, or GitHub Copilot CLI
 - Markdown agent definitions with YAML frontmatter
 - Per-workstream context shared across agent runs
+- Optional accumulated learnings that improve future runs
 - Comments, attachments, errors, progress checklists, and audit history
 - Filesystem-based persistence with independently configurable state and artifact roots
-- Optional per-task token and cost tracking through Beans Proxy
+- Optional per-task token and cost tracking through [Beans Proxy](https://github.com/platform-studio/beans-proxy)
 - A Kanban-style Workstream Manager for humans
 
-## Components
+## How It Fits Together
+
+Orchestra has two layers:
+
+- **Orchestration CLI:** the standalone interface used by humans, scripts, and agents to manage workstreams, tasks, triggers, locks, artifacts, and agent runs.
+- **Workstream Manager:** a visual interface on top of the Orchestration CLI. It is effectively a Kanban board for agents: humans can organize work, watch agents run, inspect progress, and review results and audit history.
+
+A scheduler process runs alongside those two layers. It continuously evaluates state-based and scheduled triggers and starts eligible agents.
 
 ### Orchestration CLI
 
-The CLI is the primary interface for managing workstreams, tasks, agents, triggers, locks, artifacts, progress, and the scheduler. It can be used directly by humans, scripts, or agents.
+The CLI allows for managing workstreams, tasks, agents, triggers, locks, artifacts, progress, and the scheduler. It can be used directly by humans, scripts, or agents.
 
 ```bash
-python -m orchestration --help
-python -m orchestration workstream list
-python -m orchestration agent list
+orc --help
+orc workstream list
+orc agent list
 ```
+
+`orchestra` can be used instead of `orc`. You can also call `python -m orchestration` if you want to use a specific Python version.
 
 ### Workstream Manager
 
-The Workstream Manager is a web application built on the same orchestration data. It provides Kanban boards, task details, agent-run status, audit history, attachments, and operational controls.
+The Workstream Manager is a web application built on top of the Orchestration CLI. It provides Kanban boards, task details, agent-run status, audit history, attachments, and operational controls.
 
 ```bash
-python -m workstream_manager
+orc worksm start
 ```
 
 ### Scheduler
 
-The scheduler evaluates time-based and state-based triggers and starts eligible agents. It runs as a separate foreground process:
+The scheduler evaluates time-based and state-based triggers and starts agents. It runs as a separate foreground process:
 
 ```bash
-python -m orchestration scheduler run
+orc scheduler run
 ```
+
+### run-orchestra.sh
+
+`run-orchestra.sh` is a convenience script that runs both the Workstream Manager and the scheduler in one call.
 
 ## Core Concepts
 
-- **Tasks** are the basic units of work. A task has a title, description, state, tags, comments, attachments, errors, progress, and an audit trail.
-- **Workstreams** contain tasks and define the allowed task states and transitions. Workstreams can be nested to represent larger systems of work.
-- **Agents** are Markdown definitions that describe a role and configure how that role is executed.
-- **Triggers** start agents in response to task state changes or schedules.
-- **Artifacts** are documents, images, and other files consumed or produced by agents. Agents can manage them through the CLI so storage location remains independent of the code workspace.
-- **Workstream context** is shared operating context available to every agent in a workstream.
-- **Agent runners** translate Orchestra's task and workstream context into commands for supported agent runtimes.
-- **Locks** prevent multiple agents from working on the same task at the same time.
+- **Tasks** are the basic units of work. A task has a title, description, state, tags, comments, attachments, errors, progress checklist, and audit trail. In Workstream Manager, tasks appear as cards on a Kanban board.
+- **Workstreams** represent workflows. They contain tasks and define a state machine: each state becomes a board column in the Workstream Manager, and the workstream controls which transitions are allowed. Workstreams can contain child workstreams, allowing a large process to be represented as a hierarchy of smaller workflows, and for parent workflows to observe and report on the progress of child workflows.
+- **Agents** are autonomous workers defined by Markdown files with YAML frontmatter. When an agent runs, Orchestra provides its instructions together with task details, workstream context, valid transitions, attachments, requested tools, and relevant accumulated learnings.
+- **Triggers** cause work to run. A trigger can respond to a task entering a state, a schedule becoming due, or a supported external event such as inbound email. Trigger actions can start an agent or execute a configured command.
+- **Artifacts** are documents, images, and other files consumed or produced during work. Agents access them through Orchestra so artifact storage remains independent of both orchestration state and the code an agent is modifying.
+- **Workstream context** is shared operating context supplied to every agent working in that workstream. It acts like a whiteboard that agents and humans can update as understanding evolves.
+- **Agent runners** translate an agent definition plus Orchestra's task and workstream context into a process for Claude Code, Cline, GitHub Copilot CLI, or a future runtime. They capture output, enforce timeouts, track lifecycle state, and return results to Orchestra.
+- **Locks** prevent agents from accidentally working on the same task concurrently. Orchestra acquires locks during dispatch and releases them when work completes or fails.
+- **Audit history** records task changes, comments, state transitions, agent runs, and other important events so humans can reconstruct what happened, when, and why.
 
-### Agent Roles
+### When Agents Run
+Agents generally run because:
+- a defined trigger is activated
+- a schedule becomes due
+- a user manually initiates the agent
 
-| Role | Responsibility |
-|---|---|
-| `worker` | Completes individual tasks and can usually run in parallel with other workers. |
-| `manager` | Creates and coordinates task lists for workers. |
-| `director` | Plans and monitors a functional area against a broader objective. |
-| `executive` | Owns overall objectives, coordinates directors, and interfaces with humans. |
+Triggers are defined at the workstream level. 3 types of triggers are supported:
 
-### Scheduling and Retries
+- state - a task enters a specific state in the workstream
+- schedule - at a recurring interval (like a cron job)
+- email - when an email is received (uses the Mailgun CLI tool)
 
-A task can have a one-time scheduled action. Once it becomes due and runs, the schedule is cleared. If its workstream is paused when the action becomes due, it runs promptly after the workstream resumes. Recurring work is configured through scheduled triggers; state-based triggers select eligible tasks currently in a configured state. Supported trigger actions run an agent or a command.
+Additionally, a task can have a one-time schedule. Once it becomes due and runs, the schedule is cleared.
 
-Retry configuration is resolved from the task override, then the workstream setting, then Orchestra's default of three retries with exponential backoff starting at 60 seconds. Current automatic retry handling primarily recovers work left behind by expired or orphaned agent locks.
+### Pausing Work
+Work can be paused and resumed at multiple levels:
+- individual tasks can be paused
+- individual states can be paused, meaning no triggers run on tasks in that state
+- individual triggers can be paused, meaning the trigger will not activate even if its conditions are met
+- whole workstreams can be paused
+
+All of these pause/resume actions can be done with one click through the Workstream Manager interface.
 
 ## Repository Layout
 
@@ -86,20 +134,23 @@ Retry configuration is resolved from the task override, then the workstream sett
 
 ## Installation From Source
 
+Orchestra supports Python 3.12 on macOS, Windows, and Linux. CI runs the complete test suite plus clean-install, upgrade, and example checks on all three platforms.
+
 The packaged installer described in the project roadmap is not yet available. For the current source checkout:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
-cp .env.example .env
+python -m pip install -e .
 ```
+
+On Windows PowerShell, activate the environment with `.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`. Copy `.env.example` to `.env`, then configure the runtime you intend to use.
 
 Development and optional CLI dependencies are installed as extras:
 
 ```bash
-pip install -e ".[dev]"
-pip install -e ".[image,browser]"
+python -m pip install -e ".[dev]"
+python -m pip install -e ".[image,browser]"
 python -m playwright install chromium
 ```
 
@@ -118,23 +169,52 @@ ORCHESTRATION_AGENT_RUNTIME=copilot
 Run the scheduler and Workstream Manager together with automatic restart during development:
 
 ```bash
-.venv/bin/python scripts/dev_servers.py
+python scripts/dev_servers.py
 ```
 
 Or run them separately:
 
 ```bash
-python -m orchestration scheduler run
-python -m workstream_manager
+orc scheduler run
+orc worksm start
 ```
 
-## Extension Contracts
+## Upgrading
 
-Orchestra is designed so public and private definitions can coexist without copying files into the framework repository. The contracts below describe the current extension boundaries. Where a broader adapter API is planned but not implemented, that is stated explicitly.
+An Orchestra upgrade replaces the installed Python package while preserving the workspace containing `.env`, workstreams, tasks, artifacts, and audit history. For a tool installation, use the upgrade command provided by the installer:
+
+```bash
+pipx upgrade orchestra
+# or
+uv tool upgrade orchestra
+```
+
+For a source installation, pull the newer source and reinstall it into the same virtual environment. Do not delete or replace `WORKSTREAM_ROOT` or `ARTIFACT_ROOT`. Future releases that change persisted YAML formats will include explicit data migrations and release notes.
+
+CI tests this contract by creating workstream, task, and artifact data with a package built from the previous packaged revision, upgrading to the current wheel, and reading the same data through `orc`.
+
+## Examples
+
+Examples are installed through `example.sh`. Run it from the Orchestra repository root after completing `./setup.sh`:
+
+```bash
+./example.sh fruit_and_veg
+./example.sh xmas_movies
+```
+
+The installer copies the example's agent and skill definitions into its workspace, then uses the public `orc` CLI to create the workstreams, states, and triggers. It prints the CLI commands as it runs. Reinstalling an example reuses matching resources instead of creating duplicates.
+
+| Example | Install command | Default workspace | What it demonstrates |
+|---|---|---|---|
+| [Fruit and Vegetable Sorter](examples/fruit_and_veg/README.md) | `./example.sh fruit_and_veg` | `./fruit-and-veg-workspace` | Scheduled generation, state-based classification, comments, tags, and state transitions |
+| [Xmas Movies](examples/xmas_movies/README.md) | `./example.sh xmas_movies` | `./xmas-movies-workspace` | Hierarchical workstreams, a branching state machine, a reusable skill, and four collaborating agents |
+
+Both examples use your configured Claude Code, Cline, or GitHub Copilot CLI runtime. The runtime must be authenticated, and running agents will use tokens!
 
 ### Agent Definitions
 
-An agent is a Markdown file whose body contains its instructions. Optional YAML frontmatter configures execution:
+Orchestra uses standard agent definition markdown files (the same as Claude uses). i.e. markdown with some YAML at the top.
+Orchestra adds some additional YAML headers (`x-...`) to control runtime behavior and agent capabilities.
 
 ```markdown
 ---
@@ -173,6 +253,10 @@ Supported headers include:
 | `x-tools` | Names of documented CLI tools requested by the agent |
 | `x-sound-start`, `x-sound-finish`, `x-sound-error` | Optional event sound names |
 
+These headers override defaults set in the environment (e.g. in your `.env` file) so they are optional and only need to be specified when you don't want the default behavior.
+
+### How Orchestra Finds Agent Definitions
+
 Agent references can use a filename, a relative path, or the human-readable frontmatter name. Definitions are resolved in this precedence order:
 
 1. The normal project or built-in `Agents/` directory
@@ -187,6 +271,16 @@ ORCHESTRA_AGENT_PATHS=/path/to/team-agents:/path/to/private-agents
 `ORCHESTRATION_AGENTS_DIR` remains available as a legacy single-directory override.
 The former `ORKESTRA_AGENT_PATHS` spelling is also accepted as a compatibility alias when `ORCHESTRA_AGENT_PATHS` is unset.
 
+#### Agent Roles
+
+| Role | Responsibility |
+|---|---|
+| `worker` | Completes individual tasks and can usually run in parallel with other workers. |
+| `manager` | Creates and coordinates task lists for workers. |
+| `director` | Plans and monitors a functional area against a broader objective. |
+| `executive` | Owns overall objectives, coordinates directors, and interfaces with humans. |
+
+
 ### Skills
 
 Skills are Markdown resources that give agents reusable procedures, constraints, or domain knowledge. Project skills conventionally live under `Agents/skills/`.
@@ -198,7 +292,7 @@ ORCHESTRA_SKILL_PATHS=/path/to/shared-skills:/path/to/private-skills
 ```
 
 When this variable is set, Orchestra includes those locations in the agent's initialization instructions. Skill selection and loading are performed by the agent runtime; Orchestra does not currently parse skills into an internal registry.
-The former `ORKESTRA_SKILL_PATHS` spelling remains a compatibility alias.
+The former `ORCHESTRA_SKILL_PATHS` spelling remains a compatibility alias.
 
 ### Agent-Facing CLI Tools
 
@@ -218,7 +312,6 @@ ORCHESTRA_CLI_PATHS=/path/to/shared-cli:/path/to/private-cli
 ```
 
 Orchestra currently tells the initialized agent where these external tools are located. Automatic discovery and prompt injection of external tool pairs is not yet implemented.
-The former `ORKESTRA_CLI_PATHS` spelling remains a compatibility alias.
 
 ### Persistence
 
@@ -317,6 +410,29 @@ Orchestra keeps four locations independent:
 
 Agent prompts and subprocesses receive `ORCHESTRATION_ROOT` for the Orchestra repository and `WORKSPACE_ROOT` for the effective working directory. They also receive agent, run, task, and workstream identifiers. Dedicated environment variables for the resolved workstream, artifact, and child-workstream roots are not currently injected; agents should use the orchestration CLI so those paths are resolved consistently.
 
+## Agent Concurrency
+By default, only one instance of a given agent can run concurrently on each workstream.
+
+Concurrency is controlled at the workstream level by defining a concurrency policy.
+
+```json
+{
+  "default": 2,
+  "state_overrides": {
+    "Staging Deploy": {
+      "overrides": {
+        "devops": 1
+      }
+    },
+    "Production Deploy": {
+      "overrides": {
+        "devops": 1
+      }
+    }
+  }
+}
+```
+
 ## Token and Cost Tracking
 
 Orchestra can optionally route supported agent calls through [Beans Proxy](https://github.com/platform-studio/beans-proxy) to record token usage by task. When enabled, task totals are stored with run metadata and displayed by the Workstream Manager.
@@ -345,6 +461,16 @@ During development, run the scheduler and server with automatic restart:
 
 Logs are written under `ARTIFACT_ROOT/artifacts/logs/`, or `./artifacts/logs/` when `ARTIFACT_ROOT` is unset.
 
+## Project Policies
+
+- [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Security policy](SECURITY.md) and [security model](docs/security-model.md)
+- [Governance and open-core commitment](GOVERNANCE.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Changelog](CHANGELOG.md) and [release process](docs/releasing.md)
+- [Apache License 2.0](LICENSE)
+
 ## Project Status
 
-The existing public Orchestra repository is being expanded with this orchestration framework and Workstream Manager. A packaged installer, examples, contribution guidance, security documentation, and formal adapter APIs are still being completed.
+The existing public Orchestra repository is being expanded with this orchestration framework and Workstream Manager. A packaged installer, additional examples, and formal adapter APIs are still being completed.

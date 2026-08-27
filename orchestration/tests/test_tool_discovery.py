@@ -8,6 +8,7 @@ from orchestration.agents import (
     _parse_agent_md,
     _resolve_agent_file,
     _build_system_prompt,
+    _orchestration_prompt_section,
     _get_model,
     _cline_thinking_level,
     _resolve_agent_model,
@@ -50,11 +51,14 @@ class TestBuildSystemPrompt:
         prompt = _build_system_prompt(agent_def, workspace)
         assert "You are a test agent." in prompt
 
-    def test_includes_orchestration_cli_docs(self, workspace):
+    def test_keeps_orchestration_cli_docs_out_of_role_prompt(self, workspace):
         agent_def = {"body": "Do stuff.", "tools": []}
         prompt = _build_system_prompt(agent_def, workspace)
-        assert "orchestration.cli" in prompt
-        assert "task update" in prompt
+        assert prompt == "Do stuff."
+
+        runner_prompt = _orchestration_prompt_section(workspace)
+        assert "orchestration.cli" in runner_prompt
+        assert "ORCHESTRA OPERATING CONTRACT" in runner_prompt
 
     def test_includes_requested_tool_docs(self, workspace):
         agent_def = {"body": "Do stuff.", "tools": ["alpha", "beta"]}

@@ -210,18 +210,25 @@ def _kill_process_group(pid: int, sig: int) -> None:
         pass
 
 
+def _signal_managed_process(proc: subprocess.Popen, *, force: bool) -> None:
+    if os.name == "nt":
+        proc.kill() if force else proc.terminate()
+        return
+    _kill_process_group(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
+
+
 def stop_managed(proc: ManagedProc, timeout: float = 10.0) -> None:
     if not proc.popen:
         return
 
     p = proc.popen
     if p.poll() is None:
-        _kill_process_group(p.pid, signal.SIGTERM)
+        _signal_managed_process(p, force=False)
         deadline = time.time() + timeout
         while time.time() < deadline and p.poll() is None:
             time.sleep(0.1)
         if p.poll() is None:
-            _kill_process_group(p.pid, signal.SIGKILL)
+            _signal_managed_process(p, force=True)
             try:
                 p.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -247,14 +254,17 @@ def start_managed(proc: ManagedProc) -> None:
     log_fh.write(f"\n[{stamp}] starting: {' '.join(proc.cmd)}\n")
     log_fh.flush()
 
-    p = subprocess.Popen(
-        proc.cmd,
-        cwd=str(BASE_DIR),
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
+    popen_kwargs = {
+        "cwd": str(BASE_DIR),
+        "stdout": log_fh,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    p = subprocess.Popen(proc.cmd, **popen_kwargs)
 
     proc.popen = p
     proc.log_handle = log_fh

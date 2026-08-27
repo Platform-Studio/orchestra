@@ -1299,6 +1299,19 @@ class Handler(SimpleHTTPRequestHandler):
             sys.stderr.write(f"[API] {msg}\n")
 
 
+def run(base_dir: str, port: int = 8080) -> None:
+    set_workspace_dir(base_dir)
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    print(f"Workstream Manager running at http://localhost:{port}")
+    print(f"Managing orchestration workspace: {WORKSPACE_DIR}")
+    print("Note: Start the scheduler separately via: orc scheduler run")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+        server.shutdown()
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Workstream Manager server")
@@ -1309,17 +1322,7 @@ def main():
         help="Orchestration workspace to manage (default: repository root or WORKSTREAM_MANAGER_BASE_DIR)",
     )
     args = parser.parse_args()
-    set_workspace_dir(args.base_dir)
-
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"Workstream Manager running at http://localhost:{args.port}")
-    print(f"Managing orchestration workspace: {WORKSPACE_DIR}")
-    print("Note: Start the scheduler separately via: python -m orchestration.cli scheduler run")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nShutting down.")
-        server.shutdown()
+    run(args.base_dir, args.port)
 
 
 if __name__ == "__main__":

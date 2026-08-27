@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Platform-Studio/orchestra/discussions
+    about: Ask for help or discuss an idea before turning it into actionable work.
+  - name: Report a security vulnerability
+    url: https://github.com/Platform-Studio/orchestra/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.

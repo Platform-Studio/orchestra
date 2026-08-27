@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,14 +7,34 @@ name = "orchestra"
 version = "0.1.0"
 description = "Framework for coordinating autonomous agents across repeatable workflows"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+keywords = ["agents", "automation", "orchestration", "workflows"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
 ]
 
+[project.scripts]
+orc = "orchestration.cli:main"
+orchestra = "orchestration.cli:main"
+
 [project.optional-dependencies]
 dev = [
+    "pip-licenses>=5,<6",
     "pytest>=8,<9",
 ]
 image = [
@@ -24,6 +44,12 @@ image = [
 browser = [
     "playwright==1.59.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Platform-Studio/orchestra"
+Repository = "https://github.com/Platform-Studio/orchestra"
+Issues = "https://github.com/Platform-Studio/orchestra/issues"
+Changelog = "https://github.com/Platform-Studio/orchestra/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["orchestration*", "workstream_manager*"]

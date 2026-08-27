@@ -13,17 +13,29 @@
 # Allow python scripts
 !*.py
 
+# Allow HTML files
+!*.html
+
 # Allow .env.example for onboarding new devs
 !.env.example
 
+# Allow public license and GitHub issue forms.
+!LICENSE
+!.github/ISSUE_TEMPLATE/*.yml
+
 # Ignore repo-local pytest/temp runtime data used to keep test state away from
-# live jb_workstreams persistence roots, but keep the directory anchor checked in.
+# live external_data persistence roots, but keep the directory anchor checked in.
 .test/*
 !.test/.gitkeep
 
-# Ignore Python packaging output.
+# Ignore Python packaging and runtime output.
 /build/
 /*.egg-info/
+__pycache__/
+.pytest_cache/
+
+# Ignore example workspace directories created by setup.
+*-workspace/
 
 # Allow workstreams data (source of truth for task/board state)
 !workstreams/**

@@ -22,15 +22,15 @@ Usage examples:
 
     # Send plain text
     python Agents/cli/mailgun_cli.py send \\
-        --domain mg.hirescout.us \\
+        --domain mg.example.com \\
         --to alice@example.com \\
         --subject "Hello" \\
         --text "Hi there"
 
     # Send HTML + plain, multiple recipients, CC, attachment
     python Agents/cli/mailgun_cli.py send \\
-        --domain mg.hirescout.us \\
-        --from "Jeremy <jb@platformstud.io>" \\
+        --domain mg.example.com \\
+        --from "Alex <jb@example.com>" \\
         --to alice@example.com --to bob@example.com \\
         --cc manager@example.com \\
         --subject "Report" \\
@@ -39,19 +39,19 @@ Usage examples:
         --attach ./report.pdf
 
     # List 25 most recent inbound messages for a domain
-    python Agents/cli/mailgun_cli.py list --domain mg.hirescout.us
+    python Agents/cli/mailgun_cli.py list --domain mg.example.com
 
     # List recent inbound messages for a specific email address
-    python Agents/cli/mailgun_cli.py list --to build@guild.platformstud.io
+    python Agents/cli/mailgun_cli.py list --to build@mail.example.com
 
     # Read full details of a specific message (storage key from list output)
     python Agents/cli/mailgun_cli.py read \\
-        --domain mg.hirescout.us \\
-        --key BAABAQU3_nLx9y4Rxt5HqpOTir_jXKomaQ
+        --domain mg.example.com \\
+        --key <STORAGE_KEY>
 
     # Output as JSON
-    python Agents/cli/mailgun_cli.py --json list --domain mg.hirescout.us
-    python Agents/cli/mailgun_cli.py --json read --domain mg.hirescout.us --key <KEY>
+    python Agents/cli/mailgun_cli.py --json list --domain mg.example.com
+    python Agents/cli/mailgun_cli.py --json read --domain mg.example.com --key <KEY>
 """
 
 from __future__ import annotations

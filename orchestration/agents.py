@@ -5,7 +5,6 @@ import errno
 import json
 import os
 import glob
-import pty
 import re
 import shlex
 import signal
@@ -20,10 +19,18 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 import yaml
 from ._atomic import atomic_write_json, atomic_write_yaml
+
+_FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 from .image_validation import validate_task_image_attachments
 from .persistence import resolve_workstream_root
+
+try:
+    import pty
+except ImportError:
+    pty = None
 
 try:
     from dotenv import load_dotenv
@@ -246,6 +253,11 @@ def _summarize_beans_proxy_usage(records: list[dict], *, pseudo_key: str) -> dic
     input_tokens = 0
     output_tokens = 0
     request_count = 0
+    input_cost = Decimal("0")
+    output_cost = Decimal("0")
+    total_cost = Decimal("0")
+    cost_record_count = 0
+    currencies = set()
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -260,13 +272,33 @@ def _summarize_beans_proxy_usage(records: list[dict], *, pseudo_key: str) -> dic
             output_tokens += max(0, int(record.get("output_tokens", 0) or 0))
         except (TypeError, ValueError):
             pass
-    return {
+        if record.get("total_cost") is not None:
+            try:
+                total_cost += max(Decimal("0"), Decimal(str(record["total_cost"])))
+                input_cost += max(Decimal("0"), Decimal(str(record.get("input_cost", 0) or 0)))
+                output_cost += max(Decimal("0"), Decimal(str(record.get("output_cost", 0) or 0)))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            currency = str(record.get("currency") or "").strip().upper()
+            if currency:
+                currencies.add(currency)
+            cost_record_count += 1
+
+    summary = {
         "pseudo_key": pseudo_key,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "request_count": request_count,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if cost_record_count and len(currencies) == 1:
+        summary.update({
+            "input_cost": float(input_cost),
+            "output_cost": float(output_cost),
+            "total_cost": float(total_cost),
+            "currency": currencies.pop(),
+        })
+    return summary
 
 def _audio_file_root(base_dir: str) -> str:
     """Resolve the root directory for agent sound assets."""
@@ -341,14 +373,17 @@ def _play_agent_sound(agent_def: dict, event: str, base_dir: str) -> str | None:
     if not command:
         return None
 
+    popen_kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     try:
-        subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        subprocess.Popen(command, **popen_kwargs)
     except Exception:
         return None
     return audio_path
@@ -359,14 +394,12 @@ def _agent_learning_prompt_section(agent_def: dict, workstream_id: str, base_dir
     learning_path = _agent_learning_artifact_name(agent_def)
     cli = _orchestration_cli_command(base_dir)
     return (
-        "=== AGENT LEARNING (DEFAULT) ===\n"
-        f"Before you start working, review the learnings artifact at '{learning_path}' in the orchestration system, if it exists.\n"
-        f"- Try: {cli} artifact read '{learning_path}' --workstream {workstream_id}\n"
-        "- If it does not exist, continue without failing.\n\n"
-        f"When you are done working, append actionable learnings that will help you work faster and more efficiently to '{learning_path}' in the orchestration system (create it if it does not exist).\n"
-        f"- Read current file first: {cli} artifact read '{learning_path}' --workstream {workstream_id}\n"
-        f"- Save updated content: {cli} artifact create --path '{learning_path}' --content '<updated_markdown>' --workstream {workstream_id}\n"
-        "- Keep entries concise and practical. Do not include secrets, tokens, passwords, or personal data."
+        "=== AGENT LEARNING ===\n"
+        f"Before working, read '{learning_path}' if it exists; continue if it does not:\n"
+        f"{cli} artifact read '{learning_path}' --workstream {workstream_id}\n\n"
+        "After working, update it with concise, actionable lessons that would help future agents working on similar tasks in this workstream execute more efficiently and effectively; read the current content first and preserve useful prior entries:\n"
+        f"{cli} artifact create --path '{learning_path}' --content '<updated_markdown>' --workstream {workstream_id}\n"
+        "Never include secrets, tokens, passwords, or personal data."
     )
 
 
@@ -375,37 +408,11 @@ def _agent_progress_prompt_section(base_dir: str = None, run_id: str = None) -> 
     run_arg = f" --run {run_id}" if run_id else ""
     return (
         "=== RUN PROGRESS CHECKLIST (MANDATORY) ===\n"
-        "The progress checklist is user-visible: the user watches it in real time to confirm the run is alive, focused, and actually advancing. It is not optional bookkeeping — it is how you report status. Treat every checklist call as a first-class part of doing the work, not as something to do at the end.\n"
-        "\n"
-        "FIRST ACTION AFTER READING CONTEXT:\n"
-        f"As soon as you have read the task payload and the attachments you need (and BEFORE you start any implementation work), you MUST call: {cli} progress init{run_arg} --item '<step 1>' --item '<step 2>' ...\n"
-        "- Aim for 6-10 concrete, verifiable items unless the task is genuinely trivial. Each item should name a specific action or output, not a phase. Bad: 'do the coding'. Good: 'add progress current CLI subcommand and parser wiring'.\n"
-        "- Decompose implementation and verification into separate items where reasonable (e.g. 'implement X', 'add tests for X', 'run pytest and confirm green').\n"
-        "\n"
-        "DURING WORK — bind every transition to real work:\n"
-        f"- BEFORE you take a meaningful action on an item (run a build, edit a file group, call a tool to do work), mark that item active: {cli} progress set-active <item_id>{run_arg}\n"
-        f"- AS SOON AS an item is actually finished (verified, not just attempted), in the same response, mark it done: {cli} progress complete <item_id>{run_arg}\n"
-        f"- If you start working on something the active item does not describe, STOP and either complete/skip the active item first, or add the new work as a new item: {cli} progress add{run_arg} --item '<new step>'\n"
-        f"- If you get blocked, mark the item blocked with a one-line reason: {cli} progress block <item_id>{run_arg} --message '<blocker>'\n"
-        f"- If you are unsure what is currently active, check: {cli} progress current{run_arg}\n"
-        f"- To complete the active item and start the next one in a single call: {cli} progress next <next_item_id>{run_arg}\n"
-        "- Keep EXACTLY ONE item active while work is in progress. Never leave the same item active across many tool calls without either completing it, splitting it, or blocking it.\n"
-        "\n"
-        "WORKED EXAMPLE (the rhythm you should follow):\n"
-        f"  1. {cli} progress init{run_arg} --item 'Read failing test and identify root cause' --item 'Patch parser to handle empty input' --item 'Run pytest suite and confirm green' --item 'Post summary comment on task'\n"
-        f"  2. {cli} progress set-active read-failing-test-and-identify-root-cause{run_arg}\n"
-        "     <read the test, inspect the code>\n"
-        f"  3. {cli} progress next patch-parser-to-handle-empty-input{run_arg}\n"
-        "     <edit the file>\n"
-        f"  4. {cli} progress next run-pytest-suite-and-confirm-green{run_arg}\n"
-        "     <run the tests>\n"
-        f"  5. {cli} progress next post-summary-comment-on-task{run_arg}\n"
-        "     <post the comment>\n"
-        f"  6. {cli} progress complete post-summary-comment-on-task{run_arg}\n"
-        "\n"
-        "BEFORE FINISHING THE RUN:\n"
-        "- Every item must be in a terminal state: done, blocked, or skipped. No item may be left active or pending.\n"
-        "- In your final message, include the rendered checklist (item text + status) so the human can see the trajectory at a glance. This is your status report — do not omit it."
+        "This checklist is user-visible. Initialize it after reading enough context to understand the work:\n"
+        f"{cli} progress init{run_arg} --item '<step 1>' --item '<step 2>' ...\n"
+        "Use concrete, verifiable items; keep exactly one active while working; complete items promptly; and add, block, or skip items as the work changes.\n"
+        f"Use `{cli} progress <command>{run_arg}` for subsequent updates; see the CLI reference for commands.\n"
+        "Before finishing, leave no active or pending items and include the final checklist status in your response."
     )
 
 
@@ -549,7 +556,7 @@ def _finalize_expired_active_run(base_dir: str, run: dict) -> None:
 
     for pid in sorted(candidate_pids):
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, _FORCE_KILL_SIGNAL)
         except OSError:
             pass
 
@@ -1079,7 +1086,7 @@ def _capture_provider_context(
         "sources": [],
         "files": [],
         "warnings": [],
-        "foundation_context": {
+        "orchestration_context": {
             "prompt_in_run_metadata": True,
             "system_prompt_in_run_metadata": True,
             "command_line_in_run_metadata": True,
@@ -1840,6 +1847,8 @@ def retry_agent_run(run_id: str, base_dir: str = ".", allow_paused_workstream: b
 
     task_ids = list(run.get("task_ids") or [])
     workstream_id = run.get("workstream_id") or None
+    instruction_prompt = run.get("instruction_prompt") or None
+    instruction_source = run.get("instruction_source") or None
 
     # --- Synchronous preflight so callers get errors immediately ---
     # Only the paused-workstream check is done here because it drives an
@@ -1862,6 +1871,8 @@ def retry_agent_run(run_id: str, base_dir: str = ".", allow_paused_workstream: b
                     agent_ref,
                     task_ids=task_ids,
                     workstream_id=workstream_id,
+                    prompt=instruction_prompt,
+                    prompt_source=instruction_source,
                     base_dir=base_dir,
                     allow_paused_workstream=allow_paused_workstream,
                     retried_from_run_id=run_id,
@@ -1880,6 +1891,8 @@ def retry_agent_run(run_id: str, base_dir: str = ".", allow_paused_workstream: b
         agent_ref,
         task_ids=task_ids,
         workstream_id=workstream_id,
+        prompt=instruction_prompt,
+        prompt_source=instruction_source,
         base_dir=base_dir,
         allow_paused_workstream=allow_paused_workstream,
         retried_from_run_id=run_id,
@@ -1978,6 +1991,11 @@ def kill_agent_run(run_id: str, base_dir: str = ".", grace_seconds: float = 1.0)
         }
 
     pids = _find_run_pids(run_id)
+    if active and active.get("pid") is not None:
+        try:
+            pids = sorted(set(pids + [int(active["pid"])]))
+        except (TypeError, ValueError):
+            pass
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -1993,7 +2011,7 @@ def kill_agent_run(run_id: str, base_dir: str = ".", grace_seconds: float = 1.0)
         except OSError:
             continue
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, _FORCE_KILL_SIGNAL)
         except OSError:
             pass
 
@@ -2282,12 +2300,7 @@ def _resolve_runtime_executable(runtime: str) -> str:
 
 def _build_cline_prompt(task_prompt: str, system_prompt: str) -> str:
     """Compose a single prompt for Cline, which lacks a separate system prompt flag."""
-    return (
-        "=== SYSTEM INSTRUCTIONS ===\n"
-        f"{system_prompt}\n\n"
-        "=== TASK ===\n"
-        f"{task_prompt}"
-    )
+    return f"{system_prompt}\n\n{task_prompt}"
 
 
 def _cline_thinking_level(effort: str | None) -> str | None:
@@ -2307,12 +2320,7 @@ def _cline_thinking_level(effort: str | None) -> str | None:
 
 def _build_copilot_prompt(task_prompt: str, system_prompt: str) -> str:
     """Compose a single prompt for Copilot CLI prompt mode."""
-    return (
-        "=== SYSTEM INSTRUCTIONS ===\n"
-        f"{system_prompt}\n\n"
-        "=== TASK ===\n"
-        f"{task_prompt}"
-    )
+    return f"{system_prompt}\n\n{task_prompt}"
 
 
 def _copilot_effort_value(effort: str | None) -> str | None:
@@ -2409,7 +2417,10 @@ def _runtime_process_timeout_seconds(runtime: str, runtime_timeout_seconds: int)
 def _terminate_process_group(proc, grace_seconds: float = 10.0) -> None:
     """Terminate a detached subprocess session, escalating to SIGKILL if needed."""
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        if os.name == "nt":
+            proc.terminate()
+        else:
+            os.killpg(proc.pid, signal.SIGTERM)
     except OSError:
         try:
             proc.terminate()
@@ -2425,7 +2436,10 @@ def _terminate_process_group(proc, grace_seconds: float = 10.0) -> None:
         pass
 
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        if os.name == "nt":
+            proc.kill()
+        else:
+            os.killpg(proc.pid, _FORCE_KILL_SIGNAL)
     except OSError:
         try:
             proc.kill()
@@ -2440,7 +2454,7 @@ def _terminate_process_group(proc, grace_seconds: float = 10.0) -> None:
 
 def _should_stream_output_via_pty(runtime: str) -> bool:
     """Use a PTY for runtimes whose incremental output is otherwise buffered."""
-    return _normalize_agent_runtime(runtime) == "claude-code"
+    return pty is not None and _normalize_agent_runtime(runtime) == "claude-code"
 
 
 def _start_pty_output_pump(master_fd: int, log_file, stats: dict) -> threading.Thread:
@@ -2767,9 +2781,8 @@ def discover_cli_tools(base_dir: str = ".") -> dict:
 
 
 def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
-    """Build the system prompt from the agent body and available tools."""
+    """Build role-specific instructions from the agent body and requested tools."""
     parts = [agent_def["body"]]
-    cli = _orchestration_cli_command(base_dir)
 
     # List available CLI tools so the agent knows what it can run via bash
     requested = agent_def.get("tools", [])
@@ -2795,32 +2808,6 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         )
     if external_resources:
         parts.append("\n\n## Additional Resources\n" + "\n".join(external_resources))
-
-    # Always document the orchestration CLI
-    parts.append(
-        "\n\n## Orchestration CLI\n"
-        f"Use `{cli} <command>` to manage tasks, workstreams, artifacts, etc.\n"
-        "Key commands:\n"
-        "- `workstream find --query '<name>'` — find a workstream by name\n"
-        "- `workstream read <workstream_id>` — read workstream details\n"
-        "- `workstream context <workstream_id>` — read the current workstream operating context\n"
-        "- `workstream update-context <workstream_id> --content '<text>'` — update the workstream operating context\n"
-        "- `workstream descendants <workstream_id>` — list all descendant workstreams as JSON\n"
-        "- `task create <workstream_id> --title '<title>' --description '<desc>'` — create a task\n"
-        "- `task update <task_id> --status <new_status>` — transition a task\n"
-        "- `task comment <task_id> --message '<msg>' --author '<agent_name>'` — add a comment with author\n"
-        "- `task attach <task_id> --path '<artifact_path>'` — attach an artifact to a task (REQUIRED after creating any artifact)\n"
-        "- `task detach <task_id> --path '<artifact_path>'` — remove an artifact attachment from a task\n"
-        "- `task list <workstream_id>` — list tasks in a workstream\n"
-        "- `artifact create --path '<path>' --content '<content>' --workstream '<workstream_id>'` — save a text artifact\n"
-        "- `artifact create --path '<image_path>' --source-file '<local_file>' --workstream '<workstream_id>'` — save a binary image artifact from a local file\n"
-        "- `artifact create --path '<image_path>' --content-base64 '<base64>' --workstream '<workstream_id>'` — save a binary image artifact when you only have base64 bytes\n"
-        "- `artifact read '<path>' --workstream '<workstream_id>'` — read an artifact\n"
-        "- `artifact list --workstream '<workstream_id>'` — list artifacts in the workstream root\n"
-        "- `artifact list --prefix '<prefix>' --workstream '<workstream_id>'` — list artifacts under a path\n"
-        "  (When running under orchestration, `--workstream` is auto-inferred from run context.)\n"
-        "\nFull CLI reference: Agents/cli/orchestration_cli.md\n"
-    )
 
     return "\n".join(parts)
 
@@ -2858,7 +2845,91 @@ def _workstream_context_prompt_section(ws) -> str:
     context = str(getattr(ws, "context", "") or "").strip()
     if not context:
         return ""
-    return "Workstream Operating Context:\n" + context
+    return "=== WORKSTREAM OPERATING CONTEXT ===\nThis inherited context applies to the current workstream and its tasks.\n\n" + context
+
+
+def _workstream_prompt_section(ws, base_dir: str) -> str:
+    from .workstreams import list_workstreams
+
+    workstreams_by_id = {
+        workstream.id: workstream
+        for workstream in list_workstreams(base_dir=base_dir)
+    }
+    path = []
+    current = ws
+    seen = set()
+    while current is not None:
+        if current.id in seen:
+            raise RuntimeError(f"Cycle detected in workstream hierarchy at {current.id}")
+        seen.add(current.id)
+        path.append(current.name)
+        current = workstreams_by_id.get(current.parent_id) if current.parent_id else None
+
+    lines = [
+        "=== WORKSTREAM ===",
+        f"Path: {' > '.join(reversed(path))}",
+        f"ID: {ws.id}",
+        "Task state machine:",
+    ]
+    for state, next_states in ws.task_states.items():
+        rendered_next = ", ".join(next_states) if next_states else "(terminal)"
+        lines.append(f"- {state} -> {rendered_next}")
+    return "\n".join(lines)
+
+
+def _orchestration_prompt_section(base_dir: str) -> str:
+    cli = _orchestration_cli_command(base_dir)
+    cli_reference = os.path.join(_cli_dir(base_dir), "orchestration_cli.md")
+    return (
+        "You are running within the Orchestra orchestration system.\n"
+        f"CLI reference: {cli_reference}\n"
+        f"CLI command: {cli} <command>\n\n"
+        "=== ORCHESTRA OPERATING CONTRACT ===\n"
+        "- Use the orchestration CLI for workstream, task, lock, environment, and artifact operations; never edit persisted workstream or task YAML directly.\n"
+        "- Read assigned task details before working. Read only attachments relevant to your role and current work.\n"
+        "- Save generated non-code outputs through the artifact system and attach relevant outputs to supplied tasks. Store binary images as real binary content.\n"
+        "- Before finishing, comment on supplied tasks with outcomes and verification evidence, and change task state only when your role owns that transition."
+    )
+
+
+def _runtime_context_prompt_section(
+    *,
+    orchestration_root: str,
+    workspace_root: str,
+    task_ids: list,
+    workstream_id: str | None,
+    owned_worktree: dict | None,
+) -> str:
+    lines = [
+        "=== RUNTIME CONTEXT ===",
+        f"ORCHESTRATION_ROOT={orchestration_root}",
+        f"WORKSPACE_ROOT={workspace_root}",
+        f"ORCHESTRATION_AGENT_TASK_IDS={_compact_json(task_ids)}",
+        f"ORCHESTRATION_AGENT_WORKSTREAM_ID={workstream_id or ''}",
+        "Use ORCHESTRATION_ROOT for Orchestra instructions and CLI resources. Write product code only under WORKSPACE_ROOT.",
+    ]
+    if owned_worktree:
+        lines.extend([
+            "WORKSPACE_ROOT is a temporary isolated Git worktree that the runner removes after this run. It may be detached; inspect the actual HEAD when the commit matters. Files left only in this worktree are not durable.",
+            "The worktree isolates repository files and code changes only. It does not isolate environment variables, installed dependencies, running services, cloud resources, databases, migrations, or other shared runtime state.",
+        ])
+    return "\n".join(lines)
+
+
+def _instruction_prompt_heading(prompt_source: str | None) -> str:
+    return {
+        "state_trigger": "STATE TRIGGER INSTRUCTIONS",
+        "schedule_trigger": "SCHEDULE TRIGGER INSTRUCTIONS",
+        "email_trigger": "EMAIL TRIGGER INSTRUCTIONS",
+    }.get(prompt_source, "CALLER INSTRUCTIONS")
+
+
+def _instruction_prompt_preamble(prompt_source: str | None) -> str:
+    return {
+        "state_trigger": "These instructions come from the state trigger for the assigned task state. Your task state-specific instructions are:",
+        "schedule_trigger": "These instructions come from the schedule trigger that started this run:",
+        "email_trigger": "These instructions come from the email trigger that started this run:",
+    }.get(prompt_source, "The caller provided these additional instructions:")
 
 
 def _apply_resolved_workstream_env(env: dict, workstream_id: str | None, base_dir: str) -> None:
@@ -2900,26 +2971,24 @@ def _classify_run_outcome(returncode: int, timeout_expired: bool, runtime_failed
         return "completed"
 
     # Treat termination signals as killed so UI/operator intent is preserved.
-    if returncode in (-signal.SIGTERM, 128 + signal.SIGTERM, -signal.SIGKILL, 128 + signal.SIGKILL):
+    if returncode in (-signal.SIGTERM, 128 + signal.SIGTERM, -_FORCE_KILL_SIGNAL, 128 + _FORCE_KILL_SIGNAL):
         return "killed"
 
     return "failed"
 
 
-def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None, concurrency_state: str = None) -> dict:
+def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None, prompt: str = None, prompt_source: str = None, timeout: int = None, base_dir: str = ".", allow_paused_workstream: bool = False, retried_from_run_id: str = None, _run_id: str = None, concurrency_state: str = None) -> dict:
     """Run an agent via the configured local runtime against 0-N tasks.
 
     Callers are responsible for locking/unlocking tasks. This function
     does not acquire or release locks.
-
-    Task IDs are written to a temporary JSON file and passed to the agent
-    via the prompt so the agent knows which tasks to work on.
 
     Args:
         agent_name: Agent reference (bare name, filename, or path).
         task_ids: List of task IDs to process. May be None or empty.
         workstream_id: Workstream context. Inferred from first task if not provided.
         prompt: Optional custom prompt from trigger, appended to the task prompt.
+        prompt_source: Provenance for prompt, such as state_trigger or schedule_trigger.
         timeout: Execution timeout in seconds. Overrides agent x-timeout. Defaults to DEFAULT_AGENT_TIMEOUT.
         base_dir: Workspace root.
         allow_paused_workstream: When true, allow manual execution even if the workstream is paused.
@@ -2999,23 +3068,14 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             + "\n".join(details)
         )
 
-    # Write task IDs to a temp file for the agent to reference (always, even for single task)
-    task_file_path = None
     log_path_rel = None
     run_meta = None
     provider_context_snapshot = None
     owned_worktree = None
     proxy_context = {"enabled": False}
-    fd, task_file_path = tempfile.mkstemp(suffix=".json", prefix="agent_tasks_")
-    with os.fdopen(fd, "w") as f:
-        json.dump({"task_ids": task_ids, "workstream_id": workstream_id}, f)
-
     try:
-        # Build system prompt from agent definition + tool docs
-        system_prompt = _build_system_prompt(agent_def, base_dir)
         cli = _orchestration_cli_command(base_dir)
 
-        # Compute path context for prompt injection
         orchestration_root = os.path.abspath(base_dir)
         workspace_root = orchestration_root
         if ws:
@@ -3028,85 +3088,71 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         if agent_def.get("own_worktree"):
             owned_worktree = _provision_run_worktree(workspace_root, run_id, base_dir=base_dir)
             workspace_root = owned_worktree["workspace_root"]
-        _path_context = (
-            f"ORCHESTRATION_ROOT: {orchestration_root} "
-            f"(orchestration CLI, artifacts, agent instructions)\n"
-            f"WORKSPACE_ROOT: {workspace_root} "
-            f"(product source code, tests, configs for this workstream)\n"
-            "MANDATORY: Write product code only under WORKSPACE_ROOT. "
-            "Do not write product code under ORCHESTRATION_ROOT unless both paths are identical.\n\n"
-        )
 
-        # Build task prompt based on context available
+        system_sections = [
+            _orchestration_prompt_section(base_dir),
+            _runtime_context_prompt_section(
+                orchestration_root=orchestration_root,
+                workspace_root=workspace_root,
+                task_ids=task_ids,
+                workstream_id=workstream_id,
+                owned_worktree=owned_worktree,
+            ),
+        ]
+        if ws:
+            system_sections.append(_workstream_prompt_section(ws, base_dir))
+            context_section = _workstream_context_prompt_section(ws)
+            if context_section:
+                system_sections.append(context_section)
+        if workstream_id and agent_def.get("learning_enabled", True):
+            system_sections.append(_agent_learning_prompt_section(agent_def, workstream_id, base_dir))
+        role_prompt = (
+            "=== AGENT ROLE AND OPERATING INSTRUCTIONS ===\n"
+            f"{_build_system_prompt(agent_def, base_dir)}"
+        )
+        system_sections.append(role_prompt)
+        system_prompt = "\n\n".join(system_sections)
+
         if tasks and ws:
             if len(tasks) == 1:
                 task = tasks[0]
-                valid_transitions = ws.task_states.get(task.status, [])
                 task_prompt = (
-                    f"You are working on task '{task.title}' (ID: {task.id}) "
-                    f"in workstream '{ws.name}' (ID: {ws.id}).\n"
+                    "=== TASK ===\n"
+                    f"You are working on task '{task.title}' (ID: {task.id}).\n"
                     f"Current status: {task.status}\n"
-                    f"Valid next states: {valid_transitions}\n\n"
-                    f"Task IDs file: {task_file_path}\n\n"
-                    + _path_context +
-                    f"Execution contract:\n"
-                    f"1. Run: {cli} task read {task.id}\n"
-                    f"2. Read the task context needed to execute: title, description, tags, comments, and attachments.\n"
-                    f"   Treat audit history as optional and only read it when needed for debugging/provenance.\n"
-                    f"3. For each attachment/path referenced in the task payload, run: {cli} artifact read \"<artifact_path>\" --workstream {ws.id}\n"
-                    f"4. Only begin implementation/triage after completing steps 1 to 3.\n"
-                    f"5. Before finishing, post a task comment summarizing what you changed and why.\n"
-                    f"6. If your role owns state movement, transition the task to the next valid state based on outcome.\n\n"
-                    f"Role-specific objective:\n"
-                    f"Follow your agent instructions and complete this task.\n\n"
-                    f"Completion requirements:\n"
-                    f"1. Explicitly state: done, blocked, or needs follow-up.\n"
-                    f"2. If blocked, include blocker details and exact dependency.\n"
-                    f"3. If done, include verification evidence (tests/build/commands run)."
+                    f"Valid next states: {ws.task_states.get(task.status, [])}\n\n"
+                    "=== ACCESSING YOUR TASK ===\n"
+                    f"Read the task details with: {cli} task read {task.id}\n"
+                    "Review its attachment list and read only artifacts relevant to your role and current work. Agent-specific instructions may identify mandatory artifacts."
                 )
-                context_section = _workstream_context_prompt_section(ws)
-                if context_section:
-                    task_prompt += f"\n\n{context_section}"
             else:
                 task_lines = []
                 for t in tasks:
-                    transitions = ws.task_states.get(t.status, [])
                     task_lines.append(
                         f"- '{t.title}' (ID: {t.id}, status: {t.status}, "
-                        f"valid next: {transitions}, attachments: {len(getattr(t, 'attachments', []) or [])})"
+                        f"attachments: {len(getattr(t, 'attachments', []) or [])})"
                     )
+                status_transitions = []
+                for status in dict.fromkeys(t.status for t in tasks):
+                    status_transitions.append(f"- {status} -> {ws.task_states.get(status, [])}")
                 task_prompt = (
-                    f"You are working on {len(tasks)} tasks "
-                    f"in workstream '{ws.name}' (ID: {ws.id}).\n\n"
-                    f"Tasks:\n" + "\n".join(task_lines) + "\n\n"
-                    f"Task IDs file: {task_file_path}\n\n"
-                    + _path_context +
-                    f"Execution contract:\n"
-                    f"1. Run: {cli} task list {ws.id} or read each task ID from the Task IDs file.\n"
-                    f"2. For each task ID, run: {cli} task read <task_id>\n"
-                    f"3. Read the task context for each task: title, description, tags, comments, and attachments.\n"
-                    f"   Treat audit history as optional and only read it when needed for debugging/provenance.\n"
-                    f"4. For each attachment/path referenced by any task payload, run: {cli} artifact read \"<artifact_path>\" --workstream {ws.id}\n"
-                    f"5. Only begin implementation/triage after completing steps 1 to 4.\n"
-                    f"6. Before finishing, post task comments summarizing what you changed and why.\n"
-                    f"7. If your role owns state movement, transition each task to the next valid state based on outcome.\n\n"
-                    f"Role-specific objective:\n"
-                    f"Follow your agent instructions and complete these tasks.\n\n"
-                    f"Completion requirements:\n"
-                    f"1. Explicitly state for each task: done, blocked, or needs follow-up.\n"
-                    f"2. If blocked, include blocker details and exact dependency.\n"
-                    f"3. If done, include verification evidence (tests/build/commands run)."
+                    "=== TASKS ===\n"
+                    f"You are working on {len(tasks)} tasks.\n\n"
+                    "Tasks:\n" + "\n".join(task_lines) + "\n\n"
+                    "Valid next states for assigned task statuses:\n"
+                    + "\n".join(status_transitions) + "\n\n"
+                    "=== ACCESSING YOUR TASKS ===\n"
+                    f"Read all assigned task details with: {cli} task read "
+                    + " ".join(shlex.quote(t.id) for t in tasks) + "\n"
+                    "Review their attachment lists and read only artifacts relevant to your role and current work. Agent-specific instructions may identify mandatory artifacts."
                 )
-                context_section = _workstream_context_prompt_section(ws)
-                if context_section:
-                    task_prompt += f"\n\n{context_section}"
         elif ws:
             states = list(ws.task_states.keys())
             task_prompt = (
+                "=== WORKSTREAM RUN ===\n"
                 f"You are running standalone in workstream '{ws.name}' (ID: {ws.id}).\n"
                 f"Available states for tasks on this workstream: {states}\n\n"
-                + _path_context +
-                "Execution contract:\n"
+                "=== ACCESSING TASKS ===\n"
                 "1. You may inspect tasks in this workstream and decide which ones to work on.\n"
                 f"2. Before you begin work on any specific task, acquire a lock through the orchestration system: {cli} lock acquire <task_id> --agent \"<agent_name>\"\n"
                 "3. If a task is already locked or lock acquisition fails, skip that task.\n"
@@ -3114,22 +3160,20 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "5. Do not modify a task unless you successfully acquired its lock first.\n\n"
                 f"Follow your instructions now."
             )
-            context_section = _workstream_context_prompt_section(ws)
-            if context_section:
-                task_prompt += f"\n\n{context_section}"
         else:
             task_prompt = (
-                f"You are running standalone with no specific workstream or task.\n"
-                f"ORCHESTRATION_ROOT: {orchestration_root}\n\n"
-                f"Follow your instructions now."
+                "=== STANDALONE RUN ===\n"
+                "You are running with no specific workstream or task. Follow your role instructions."
             )
 
         if agent_def.get("progress_checklist_enabled"):
             task_prompt += f"\n\n{_agent_progress_prompt_section(base_dir, run_id=run_id)}"
 
-        # Append custom trigger prompt if provided
         if prompt:
-            task_prompt += f"\n\nAdditional instructions:\n{prompt}"
+            task_prompt += (
+                f"\n\n=== {_instruction_prompt_heading(prompt_source)} ===\n"
+                f"{_instruction_prompt_preamble(prompt_source)}\n{prompt}"
+            )
 
         # Log agent_started to audit trail for each task
         for t in tasks:
@@ -3167,12 +3211,11 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             # forward an ambient OpenAI key into the child process.
             env.pop("OPENAI_API_KEY", None)
         abs_base = os.path.abspath(base_dir)
-        if runtime == "cline" and workspace_root != abs_base:
-            existing_pythonpath = str(env.get("PYTHONPATH", "") or "")
-            python_paths = [SOURCE_DIR, abs_base]
-            if existing_pythonpath:
-                python_paths.append(existing_pythonpath)
-            env["PYTHONPATH"] = os.pathsep.join(python_paths)
+        existing_pythonpath = str(env.get("PYTHONPATH", "") or "")
+        python_paths = [SOURCE_DIR, abs_base]
+        if existing_pythonpath:
+            python_paths.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(python_paths))
 
         task_titles = [{"id": t.id, "title": t.title} for t in tasks]
         run_meta = {
@@ -3190,6 +3233,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "tasks": task_titles,
             "prompt": task_prompt,
             "system_prompt": system_prompt,
+            "instruction_prompt": prompt,
+            "instruction_source": prompt_source,
             "log_path": log_path_rel,
             "own_worktree": bool(owned_worktree),
             "started_at": started_at,
@@ -3260,11 +3305,11 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "stderr": subprocess.STDOUT,
                 "cwd": process_cwd,
                 "env": env,
-                # Detach the agent process from the scheduler's process group.
-                # This prevents scheduler restarts/stops from accidentally terminating
-                # in-flight agent runs that should continue independently.
-                "start_new_session": True,
             }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
             if use_pty_output:
                 pty_master_fd, pty_slave_fd = pty.openpty()
                 popen_kwargs["stdout"] = pty_slave_fd
@@ -3486,6 +3531,3 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             shutil.rmtree(proxy_context["cline_data_dir"], ignore_errors=True)
         if owned_worktree is not None:
             _deprovision_run_worktree(owned_worktree, base_dir=base_dir)
-        # Clean up temp file
-        if task_file_path and os.path.exists(task_file_path):
-            os.remove(task_file_path)

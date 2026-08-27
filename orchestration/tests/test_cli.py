@@ -59,6 +59,10 @@ def test_cli_loads_dotenv_on_import(monkeypatch):
     assert calls
 
 
+def test_cli_uses_packaged_command_name():
+    assert build_parser().prog == "orc"
+
+
 class TestCLIWorkstream:
     def test_create_and_list(self, workspace):
         # Create
@@ -465,7 +469,13 @@ class TestCLITask:
         # Read task
         result = run_cli("task", "read", task_id, base_dir=workspace)
         assert result.returncode == 0
-        assert json.loads(result.stdout)["data"]["title"] == "My Task"
+        task_data = json.loads(result.stdout)["data"]
+        assert task_data["title"] == "My Task"
+        assert "audit" not in task_data
+
+        result = run_cli("task", "read", task_id, "--include-audit", base_dir=workspace)
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["data"]["audit"]
 
         # Update status
         result = run_cli("task", "update", task_id, "--status", "Done", base_dir=workspace)
@@ -486,6 +496,21 @@ class TestCLITask:
         result = run_cli("task", "archive", task_id, base_dir=workspace)
         assert result.returncode == 0
 
+    def test_read_multiple_tasks_preserves_requested_order(self, workspace):
+        result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
+        ws_id = json.loads(result.stdout)["data"]["id"]
+        first = run_cli("task", "create", ws_id, "--title", "First", base_dir=workspace)
+        second = run_cli("task", "create", ws_id, "--title", "Second", base_dir=workspace)
+        first_id = json.loads(first.stdout)["data"]["id"]
+        second_id = json.loads(second.stdout)["data"]["id"]
+
+        result = run_cli("task", "read", second_id, first_id, base_dir=workspace)
+
+        assert result.returncode == 0
+        data = json.loads(result.stdout)["data"]
+        assert [task["id"] for task in data] == [second_id, first_id]
+        assert all("audit" not in task for task in data)
+
     def test_create_task_with_attachments(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
         ws_id = json.loads(result.stdout)["data"]["id"]
@@ -493,13 +518,13 @@ class TestCLITask:
         result = run_cli(
             "task", "create", ws_id,
             "--title", "My Task",
-            "--attachment", "Theses/a.md",
-            "--attachment", "Theses/b.md",
+            "--attachment", "Reports/a.md",
+            "--attachment", "Reports/b.md",
             base_dir=workspace,
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
-        assert data["attachments"] == ["Theses/a.md", "Theses/b.md"]
+        assert data["attachments"] == ["Reports/a.md", "Reports/b.md"]
 
     def test_attach_and_detach_task_attachment(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
@@ -508,15 +533,15 @@ class TestCLITask:
         result = run_cli("task", "create", ws_id, "--title", "My Task", base_dir=workspace)
         task_id = json.loads(result.stdout)["data"]["id"]
 
-        result = run_cli("artifact", "create", "--path", "Theses/attach.md", "--content", "hello", base_dir=workspace)
+        result = run_cli("artifact", "create", "--path", "Reports/attach.md", "--content", "hello", base_dir=workspace)
         assert result.returncode == 0
 
-        result = run_cli("task", "attach", task_id, "--path", "Theses/attach.md", base_dir=workspace)
+        result = run_cli("task", "attach", task_id, "--path", "Reports/attach.md", base_dir=workspace)
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
-        assert data["attachments"] == ["Theses/attach.md"]
+        assert data["attachments"] == ["Reports/attach.md"]
 
-        result = run_cli("task", "detach", task_id, "--path", "Theses/attach.md", base_dir=workspace)
+        result = run_cli("task", "detach", task_id, "--path", "Reports/attach.md", base_dir=workspace)
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert data["attachments"] == []
@@ -860,13 +885,13 @@ class TestCLIScheduleTrigger:
                          "--on-schedule", "0 * * * *",
                          "--filter", '{"state": "Live", "tag": "requestor_notify"}',
                          "--action", "run_agent",
-                         "--agent", "product_feedback_loopback",
+                         "--agent", "review_agent",
                          base_dir=workspace)
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert data["on_schedule"] == "0 * * * *"
         assert data["filter"] == {"state": "Live", "tag": "requestor_notify"}
-        assert data["agent"] == "product_feedback_loopback"
+        assert data["agent"] == "review_agent"
 
     def test_create_state_trigger_with_task_selection(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)
@@ -899,19 +924,19 @@ class TestCLIScheduleTrigger:
             "create",
             ws_id,
             "--on-email-recipient",
-            "build@guild.platformstud.io",
+            "build@mail.example.com",
             "--on-email-event",
             "new_thread",
             "--action",
             "run_agent",
             "--agent",
-            "startup_vendor",
+            "email_triage_agent",
             base_dir=workspace,
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert data["on_email"] == {
-            "recipient": "build@guild.platformstud.io",
+            "recipient": "build@mail.example.com",
             "event": "new_thread",
         }
 
@@ -1123,6 +1148,23 @@ class TestCLIScheduler:
         error = json.loads(result.stderr)
         assert error["code"] == "RUNTIME_ERROR"
         assert "disabled while scheduler is running" in error["message"]
+
+
+class TestCLIWorkstreamManager:
+    def test_worksm_start_passes_workspace_and_port(self, workspace, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "workstream_manager.server.run",
+            lambda base_dir, port: calls.append((base_dir, port)),
+        )
+        args = build_parser().parse_args([
+            "--base-dir", workspace,
+            "worksm", "start", "--port", "9090",
+        ])
+
+        args.func(args)
+
+        assert calls == [(workspace, 9090)]
 
 
 class TestCLIEnv:

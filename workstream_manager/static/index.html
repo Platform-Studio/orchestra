@@ -772,6 +772,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+.card-token-total { font-weight: 700; }
 .card-agent-separator {
   margin: 6px 0 4px;
   border-top: 1px solid rgba(139,148,158,0.28);
@@ -3822,9 +3823,28 @@ function renderCard(task, lock, state) {
   const canDrag = !task._error && !(lock && lock.locked);
   const isPaused = !!task.paused;
   const pauseTitle = isPaused ? 'Resume task (allow agent pickup)' : 'Pause task (prevent agent pickup)';
-  const tokenUsage = !cardRun && task && task.token_usage && (Number(task.token_usage.input_tokens || 0) > 0 || Number(task.token_usage.output_tokens || 0) > 0)
-    ? `<div class="card-token-usage">Tokens: ${esc(Number(task.token_usage.input_tokens || 0).toLocaleString())} in ${esc(Number(task.token_usage.output_tokens || 0).toLocaleString())} out</div>`
-    : '';
+  let tokenUsage = '';
+  if (!cardRun && task && task.token_usage) {
+    const usage = task.token_usage;
+    if (usage.total_cost != null && usage.currency) {
+      const currency = String(usage.currency).toUpperCase();
+      const formatCost = amount => {
+        try {
+          return new Intl.NumberFormat(undefined, {
+            style: 'currency',
+            currency,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }).format(Number(amount || 0));
+        } catch (_) {
+          return `${currency} ${Number(amount || 0).toFixed(2)}`;
+        }
+      };
+      tokenUsage = `<div class="card-token-usage"><span class="card-token-total">Cost: ${esc(formatCost(usage.total_cost))}</span> In: ${esc(formatCost(usage.input_cost))} Out: ${esc(formatCost(usage.output_cost))}</div>`;
+    } else if (Number(usage.input_tokens || 0) > 0 || Number(usage.output_tokens || 0) > 0) {
+      tokenUsage = `<div class="card-token-usage">Tokens: ${esc(Number(usage.input_tokens || 0).toLocaleString())} in ${esc(Number(usage.output_tokens || 0).toLocaleString())} out</div>`;
+    }
+  }
   const pauseBtn = task._error
     ? ''
     : `<button class="card-pause-btn${isPaused ? ' paused' : ''}" type="button" data-task-pause-id="${esc(task.id)}" title="${esc(pauseTitle)}" aria-label="${esc(pauseTitle)}" aria-pressed="${isPaused ? 'true' : 'false'}" onclick="event.stopPropagation(); toggleTaskPause('${esc(task.id)}', this)">${isPaused ? ICON_PLAY : ICON_PAUSE}</button>`;

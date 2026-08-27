@@ -4,9 +4,9 @@ from scripts.verify_external_data_roots import evaluate_repo_root
 
 
 def test_evaluate_repo_root_passes_when_roots_are_external(monkeypatch, tmp_path):
-    repo_root = tmp_path / "foundation"
+    repo_root = tmp_path / "repository"
     repo_root.mkdir()
-    external_root = tmp_path / "jb_workstreams"
+    external_root = tmp_path / "external_data"
     external_root.mkdir()
 
     monkeypatch.setenv("WORKSTREAM_ROOT", str(external_root))
@@ -21,9 +21,9 @@ def test_evaluate_repo_root_passes_when_roots_are_external(monkeypatch, tmp_path
 
 
 def test_evaluate_repo_root_fails_when_local_persistence_remains(monkeypatch, tmp_path):
-    repo_root = tmp_path / "foundation"
+    repo_root = tmp_path / "repository"
     repo_root.mkdir()
-    external_root = tmp_path / "jb_workstreams"
+    external_root = tmp_path / "external_data"
     external_root.mkdir()
 
     (repo_root / "workstreams").mkdir()

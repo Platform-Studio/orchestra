@@ -1,23 +1,25 @@
 ## Orchestration Framework CLI
 
-Manage workstreams, tasks, locks, triggers, env settings, artifacts, and agents from the command line using `orchestration/cli.py`.
+Manage workstreams, tasks, locks, triggers, env settings, artifacts, and agents with the installed `orc` command.
 
 All commands output **JSON** to stdout on success, and a JSON error object to stderr on failure. Exit code 0 indicates success, non-zero indicates failure.
 
 ### Prerequisites
 
-- Python 3.x
+- Python 3.12 or newer
 - `pip install pyyaml` (already in project)
 - For agent execution: Claude Code CLI (`claude`) installed and `ANTHROPIC_API_KEY` set in `.env`, or Cline CLI (`cline`) installed and authenticated with `cline auth` when using `x-runtime: cline`
 
 ### General Usage
 
 ```bash
-python -m orchestration.cli <concept> <method> [arguments]
+orc <concept> <method> [arguments]
 
 # Optionally specify a different workspace root (default: current directory)
-python -m orchestration.cli --base-dir /path/to/workspace <concept> <method> [arguments]
+orc --base-dir /path/to/workspace <concept> <method> [arguments]
 ```
+
+`orchestra` and `python -m orchestration` are compatibility forms; use `orc` in documentation and automation.
 
 ### Output Format
 
@@ -40,19 +42,19 @@ Error codes: `NOT_FOUND`, `INVALID_TRANSITION`, `TASK_LOCKED`, `RUNTIME_ERROR`, 
 #### workstream create — Create a new workstream
 
 ```bash
-python -m orchestration.cli workstream create --name "SDR Outreach"
+orc workstream create --name "SDR Outreach"
 
 # With description and parent
-python -m orchestration.cli workstream create --name "Email Campaign" --description "Q2 email outreach" --parent PARENT_WS_ID
+orc workstream create --name "Email Campaign" --description "Q2 email outreach" --parent PARENT_WS_ID
 
 # With custom task states (JSON string)
-python -m orchestration.cli workstream create --name "Pipeline" --states '{"To Do": ["In Progress", "Invalid"], "In Progress": ["Done", "Failed"], "Done": [], "Failed": ["To Do"], "Invalid": []}'
+orc workstream create --name "Pipeline" --states '{"To Do": ["In Progress", "Invalid"], "In Progress": ["Done", "Failed"], "Done": [], "Failed": ["To Do"], "Invalid": []}'
 
 # With retry configuration
-python -m orchestration.cli workstream create --name "Retry WS" --retry '{"max_retries": 5, "backoff": "exponential", "base_seconds": 30}'
+orc workstream create --name "Retry WS" --retry '{"max_retries": 5, "backoff": "exponential", "base_seconds": 30}'
 
 # Descendants-only mounted workspace root
-python -m orchestration.cli workstream create --name "career_pivot" --mounted-workspace-path "~/career_pivot"
+orc workstream create --name "career_pivot" --mounted-workspace-path "~/career_pivot"
 ```
 
 Default task states if `--states` is omitted:
@@ -64,25 +66,25 @@ Default task states if `--states` is omitted:
 #### workstream list — List all workstreams
 
 ```bash
-python -m orchestration.cli workstream list
+orc workstream list
 ```
 
 #### workstream read — Read a single workstream
 
 ```bash
-python -m orchestration.cli workstream read WORKSTREAM_ID
+orc workstream read WORKSTREAM_ID
 ```
 
 #### workstream find — Search workstreams by name or description
 
 ```bash
-python -m orchestration.cli workstream find --query "SDR"
+orc workstream find --query "SDR"
 ```
 
 #### workstream tree — Pretty-print the workstream hierarchy
 
 ```bash
-python -m orchestration.cli workstream tree
+orc workstream tree
 ```
 
 Outputs a tree view like:
@@ -97,10 +99,10 @@ Note: This command prints plain text to stdout (not JSON).
 #### workstream descendants — Return all descendant workstreams as JSON
 
 ```bash
-python -m orchestration.cli workstream descendants WORKSTREAM_ID
+orc workstream descendants WORKSTREAM_ID
 
 # Include the root workstream in the output
-python -m orchestration.cli workstream descendants WORKSTREAM_ID --include-self
+orc workstream descendants WORKSTREAM_ID --include-self
 ```
 
 Returns JSON rows with:
@@ -114,7 +116,7 @@ This is the recommended command for director-style agents that need to traverse 
 #### workstream pause — Pause a workstream
 
 ```bash
-python -m orchestration.cli workstream pause WORKSTREAM_ID
+orc workstream pause WORKSTREAM_ID
 ```
 
 Paused workstreams are skipped by the scheduler — no triggers will fire.
@@ -122,7 +124,7 @@ Paused workstreams are skipped by the scheduler — no triggers will fire.
 #### workstream resume — Resume a paused workstream
 
 ```bash
-python -m orchestration.cli workstream resume WORKSTREAM_ID
+orc workstream resume WORKSTREAM_ID
 ```
 
 ---
@@ -130,7 +132,7 @@ python -m orchestration.cli workstream resume WORKSTREAM_ID
 #### env set — Set a workstream-local env key
 
 ```bash
-python -m orchestration.cli env set WORKSTREAM_ID OPENAI_API_KEY "sk-..."
+orc env set WORKSTREAM_ID OPENAI_API_KEY "sk-..."
 ```
 
 Writes key/value pairs into `workstreams/{workstream_id}/.env`.
@@ -138,7 +140,7 @@ Writes key/value pairs into `workstreams/{workstream_id}/.env`.
 #### env unset — Mask a key at this workstream level
 
 ```bash
-python -m orchestration.cli env unset WORKSTREAM_ID OPENAI_API_KEY
+orc env unset WORKSTREAM_ID OPENAI_API_KEY
 ```
 
 `unset` writes `KEY=` in the workstream `.env` file. This explicitly masks inherited values from parent workstreams and also masks process-level environment fallback.
@@ -147,10 +149,10 @@ python -m orchestration.cli env unset WORKSTREAM_ID OPENAI_API_KEY
 
 ```bash
 # Resolve using a workstream context
-python -m orchestration.cli env get OPENAI_API_KEY --workstream WORKSTREAM_ID
+orc env get OPENAI_API_KEY --workstream WORKSTREAM_ID
 
 # Resolve using a task context (task -> owning workstream)
-python -m orchestration.cli env get OPENAI_API_KEY --task TASK_ID
+orc env get OPENAI_API_KEY --task TASK_ID
 ```
 
 Resolution order:
@@ -164,16 +166,16 @@ If any level defines `KEY=`, resolution stops and returns no value for that key.
 
 ```bash
 # Effective inherited map (default)
-python -m orchestration.cli env list --workstream WORKSTREAM_ID
+orc env list --workstream WORKSTREAM_ID
 
 # Task-context effective map
-python -m orchestration.cli env list --task TASK_ID
+orc env list --task TASK_ID
 
 # Only keys physically present in selected workstream .env
-python -m orchestration.cli env list --workstream WORKSTREAM_ID --local
+orc env list --workstream WORKSTREAM_ID --local
 
 # Include process environment fallback keys in effective output
-python -m orchestration.cli env list --workstream WORKSTREAM_ID --include-system
+orc env list --workstream WORKSTREAM_ID --include-system
 ```
 
 ---
@@ -181,33 +183,40 @@ python -m orchestration.cli env list --workstream WORKSTREAM_ID --include-system
 #### task create — Create a new task in a workstream
 
 ```bash
-python -m orchestration.cli task create WORKSTREAM_ID --title "Contact John Doe"
+orc task create WORKSTREAM_ID --title "Contact John Doe"
 
 # With description, tags, and retry override
-python -m orchestration.cli task create WORKSTREAM_ID --title "Send proposal" --description "Draft and send the proposal doc" --tags "sales,urgent" --retry '{"max_retries": 5}'
+orc task create WORKSTREAM_ID --title "Send proposal" --description "Draft and send the proposal doc" --tags "sales,urgent" --retry '{"max_retries": 5}'
 ```
 
 The task's initial status will be the **first state** in the workstream's `task_states` map.
 
-#### task read — Read a task by ID
+#### task read — Read one or more tasks by ID
 
 ```bash
-python -m orchestration.cli task read TASK_ID
+# One task returns a single task object
+orc task read TASK_ID
+
+# Multiple tasks return an array in the requested order
+orc task read TASK_ID_1 TASK_ID_2 TASK_ID_3
+
+# Audit history is omitted by default; include it when needed for debugging or provenance
+orc task read TASK_ID --include-audit
 ```
 
-Tasks are found by ID across all workstreams — you don't need to specify the workstream.
+Tasks are found by ID across all workstreams — you don't need to specify the workstream. A single ID returns one object; multiple IDs return an array in the same order as the arguments.
 
 #### task update — Update a task's status, description, or tags
 
 ```bash
 # Change status (validated against workstream's state transition map)
-python -m orchestration.cli task update TASK_ID --status "In Progress"
+orc task update TASK_ID --status "In Progress"
 
 # Update description
-python -m orchestration.cli task update TASK_ID --description "Updated scope"
+orc task update TASK_ID --description "Updated scope"
 
 # Update tags
-python -m orchestration.cli task update TASK_ID --tags "high-priority,q2"
+orc task update TASK_ID --tags "high-priority,q2"
 ```
 
 **Important:** Status transitions are validated. If you try an invalid transition (e.g. jumping from "To Do" directly to "Done" when only "To Do" → "In Progress" is allowed), the command will fail with code `INVALID_TRANSITION`.
@@ -216,13 +225,13 @@ python -m orchestration.cli task update TASK_ID --tags "high-priority,q2"
 
 ```bash
 # All tasks
-python -m orchestration.cli task list WORKSTREAM_ID
+orc task list WORKSTREAM_ID
 
 # Filter by status
-python -m orchestration.cli task list WORKSTREAM_ID --status "pending"
+orc task list WORKSTREAM_ID --status "pending"
 
 # Filter by tags (comma-separated, all must match)
-python -m orchestration.cli task list WORKSTREAM_ID --tags "urgent,sales"
+orc task list WORKSTREAM_ID --tags "urgent,sales"
 ```
 
 Tasks are returned in board order for each state (rank-based ordering), not creation time.
@@ -230,7 +239,7 @@ Tasks are returned in board order for each state (rank-based ordering), not crea
 #### task move-up — Move a task one position up in its current state
 
 ```bash
-python -m orchestration.cli task move-up TASK_ID
+orc task move-up TASK_ID
 ```
 
 This only reorders within the task's current status column.
@@ -238,7 +247,7 @@ This only reorders within the task's current status column.
 #### task move-down — Move a task one position down in its current state
 
 ```bash
-python -m orchestration.cli task move-down TASK_ID
+orc task move-down TASK_ID
 ```
 
 This only reorders within the task's current status column.
@@ -246,7 +255,7 @@ This only reorders within the task's current status column.
 #### task move-before — Move a task directly before another task
 
 ```bash
-python -m orchestration.cli task move-before TASK_ID TARGET_TASK_ID
+orc task move-before TASK_ID TARGET_TASK_ID
 ```
 
 Both tasks must be in the same workstream and status column.
@@ -254,7 +263,7 @@ Both tasks must be in the same workstream and status column.
 #### task move-after — Move a task directly after another task
 
 ```bash
-python -m orchestration.cli task move-after TASK_ID TARGET_TASK_ID
+orc task move-after TASK_ID TARGET_TASK_ID
 ```
 
 Both tasks must be in the same workstream and status column.
@@ -262,7 +271,7 @@ Both tasks must be in the same workstream and status column.
 #### task move-to-index — Move a task to a zero-based index within its current state
 
 ```bash
-python -m orchestration.cli task move-to-index TASK_ID INDEX
+orc task move-to-index TASK_ID INDEX
 ```
 
 This only reorders within the task's current status column. Index values outside bounds are clamped.
@@ -270,10 +279,10 @@ This only reorders within the task's current status column. Index values outside
 #### task comment — Add a comment to a task
 
 ```bash
-python -m orchestration.cli task comment TASK_ID --message "Reached out via email, waiting for response"
+orc task comment TASK_ID --message "Reached out via email, waiting for response"
 
 # Recommended for agents: explicitly set author
-python -m orchestration.cli task comment TASK_ID --message "Reached out via email, waiting for response" --author "LinkedIn SDR"
+orc task comment TASK_ID --message "Reached out via email, waiting for response" --author "LinkedIn SDR"
 ```
 
 Notes:
@@ -283,7 +292,7 @@ Notes:
 #### task attach — Attach an artifact to a task
 
 ```bash
-python -m orchestration.cli task attach TASK_ID --path <artifact_path>
+orc task attach TASK_ID --path <artifact_path>
 ```
 
 Adds an artifact path to the task's attachment list. After saving any artifact via the orchestration system, attach it to any Task(s) you were provided with so that other agents and human users can easily find your outputs. This applies to all artifact types — markdown documents, images (SVG, PNG, etc.), and any other files.
@@ -291,7 +300,7 @@ Adds an artifact path to the task's attachment list. After saving any artifact v
 #### task detach — Remove an artifact attachment from a task
 
 ```bash
-python -m orchestration.cli task detach TASK_ID --path <artifact_path>
+orc task detach TASK_ID --path <artifact_path>
 ```
 
 ---
@@ -299,13 +308,13 @@ python -m orchestration.cli task detach TASK_ID --path <artifact_path>
 #### task archive — Delete a task (and its lock)
 
 ```bash
-python -m orchestration.cli task archive TASK_ID
+orc task archive TASK_ID
 ```
 
 #### task audit — View a task's audit trail
 
 ```bash
-python -m orchestration.cli task audit TASK_ID
+orc task audit TASK_ID
 ```
 
 Returns an array of audit entries, each with `timestamp`, `type`, and `description`.
@@ -313,7 +322,7 @@ Returns an array of audit entries, each with `timestamp`, `type`, and `descripti
 #### task clear-schedule — Remove a task's scheduled action
 
 ```bash
-python -m orchestration.cli task clear-schedule TASK_ID
+orc task clear-schedule TASK_ID
 ```
 
 ---
@@ -321,7 +330,7 @@ python -m orchestration.cli task clear-schedule TASK_ID
 #### task pause — Pause automatic processing for one task
 
 ```bash
-python -m orchestration.cli task pause TASK_ID
+orc task pause TASK_ID
 ```
 
 The task remains in its current workstream and state, but state-based and schedule-based triggers will not pick it up while it is paused. Pausing an already paused task is idempotent.
@@ -329,7 +338,7 @@ The task remains in its current workstream and state, but state-based and schedu
 #### task resume — Resume automatic processing for one task
 
 ```bash
-python -m orchestration.cli task resume TASK_ID
+orc task resume TASK_ID
 ```
 
 The task becomes eligible for automatic trigger pickup again. Resuming an already active task is idempotent.
@@ -339,10 +348,10 @@ The task becomes eligible for automatic trigger pickup again. Resuming an alread
 #### lock acquire — Lock a task before working on it
 
 ```bash
-python -m orchestration.cli lock acquire TASK_ID --agent my-agent-name
+orc lock acquire TASK_ID --agent my-agent-name
 
 # With custom TTL (default: 900 seconds / 15 minutes)
-python -m orchestration.cli lock acquire TASK_ID --agent my-agent-name --ttl 3600
+orc lock acquire TASK_ID --agent my-agent-name --ttl 3600
 ```
 
 **You MUST acquire a lock before modifying a task.** This prevents two agents from working on the same task simultaneously. If the task is already locked by another agent, the command fails with code `TASK_LOCKED`.
@@ -352,7 +361,7 @@ Locks automatically expire after the TTL. Expired locks are treated as unlocked.
 #### lock release — Release a lock you hold
 
 ```bash
-python -m orchestration.cli lock release TASK_ID --agent my-agent-name
+orc lock release TASK_ID --agent my-agent-name
 ```
 
 Only the agent that acquired the lock can release it. Returns an error if a different agent tries to release.
@@ -360,7 +369,7 @@ Only the agent that acquired the lock can release it. Returns an error if a diff
 #### lock status — Check if a task is locked
 
 ```bash
-python -m orchestration.cli lock status TASK_ID
+orc lock status TASK_ID
 ```
 
 Returns `{"locked": false}` or `{"locked": true, "agent_id": "...", "acquired_at": "...", "expires_at": "..."}`.
@@ -371,23 +380,23 @@ Returns `{"locked": false}` or `{"locked": true, "agent_id": "...", "acquired_at
 
 ```bash
 # State-based trigger: runs an agent when a task enters a state
-python -m orchestration.cli trigger create WORKSTREAM_ID --on-state "pending" --action run_agent --agent sdr
+orc trigger create WORKSTREAM_ID --on-state "pending" --action run_agent --agent sdr
 
 # State-based trigger: runs a shell command
-python -m orchestration.cli trigger create WORKSTREAM_ID --on-state "Done" --action run_command --command "echo Task {task_id} in {workstream_id} is done"
+orc trigger create WORKSTREAM_ID --on-state "Done" --action run_command --command "echo Task {task_id} in {workstream_id} is done"
 
 # Schedule-based trigger: runs every minute on matching tasks
-python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "* * * * *" --action run_command --command "echo tick"
+orc trigger create WORKSTREAM_ID --on-schedule "* * * * *" --action run_command --command "echo tick"
 
 # Email-based trigger: dispatches an agent when a new inbound thread arrives
-python -m orchestration.cli trigger create WORKSTREAM_ID --on-email-recipient "build@guild.platformstud.io" --on-email-event new_thread --action run_agent --agent startup_vendor
+orc trigger create WORKSTREAM_ID --on-email-recipient "build@mail.example.com" --on-email-event new_thread --action run_agent --agent email_triage_agent
 
 # Schedule-based trigger with task filter. Filters are conjunctive:
 # state/status must match and every listed tag must be present.
-python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "*/5 * * * *" --filter '{"status": "pending", "tags": ["batch"]}' --action run_agent --agent sdr
+orc trigger create WORKSTREAM_ID --on-schedule "*/5 * * * *" --filter '{"status": "pending", "tags": ["batch"]}' --action run_agent --agent sdr
 
 # Singular tag is also supported for one required tag.
-python -m orchestration.cli trigger create WORKSTREAM_ID --on-schedule "0 * * * *" --filter '{"state": "Live", "tag": "requestor_notify"}' --action run_agent --agent product_feedback_loopback
+orc trigger create WORKSTREAM_ID --on-schedule "0 * * * *" --filter '{"state": "Live", "tag": "requestor_notify"}' --action run_agent --agent review_agent
 ```
 
 Template variables `{task_id}` and `{workstream_id}` are replaced in `run_command` commands. Email triggers also populate `{email_from}`, `{email_to}`, `{email_subject}`, `{email_date}`, `{email_body}`, `{email_storage_key}`, `{email_attachment_count}`, and `{email_attachments_json}`.
@@ -400,7 +409,7 @@ Concurrency for `run_agent` triggers is controlled at the workstream level, per 
 agent_concurrency:
   default: 1
   overrides:
-    kanban_ninja: 2
+    example_agent: 2
 ```
 
 This policy is configured in workstream YAML. Trigger-level concurrency flags are deprecated.
@@ -408,13 +417,13 @@ This policy is configured in workstream YAML. Trigger-level concurrency flags ar
 #### trigger list — List triggers on a workstream
 
 ```bash
-python -m orchestration.cli trigger list WORKSTREAM_ID
+orc trigger list WORKSTREAM_ID
 ```
 
 #### trigger delete — Remove a trigger
 
 ```bash
-python -m orchestration.cli trigger delete TRIGGER_ID
+orc trigger delete TRIGGER_ID
 ```
 
 ---
@@ -422,7 +431,7 @@ python -m orchestration.cli trigger delete TRIGGER_ID
 #### agent list — List available agent definitions
 
 ```bash
-python -m orchestration.cli agent list
+orc agent list
 ```
 
 Lists all `.md` files in the `Agents/` directory, showing name, description, and agent type.
@@ -430,7 +439,7 @@ Lists all `.md` files in the `Agents/` directory, showing name, description, and
 #### agent run — Run an agent against a task
 
 ```bash
-python -m orchestration.cli agent run AGENT_NAME --task TASK_ID
+orc agent run AGENT_NAME --task TASK_ID
 ```
 
 Parses the agent's `.md` file and executes it via Claude Code CLI against the specified task. Requires `claude` CLI and `ANTHROPIC_API_KEY`.
@@ -440,7 +449,7 @@ Parses the agent's `.md` file and executes it via Claude Code CLI against the sp
 #### scheduler run — Start the scheduler process
 
 ```bash
-python -m orchestration.cli scheduler run
+orc scheduler run
 ```
 
 Runs the scheduler as a **foreground process** that ticks every 60 seconds. Each tick:
@@ -453,7 +462,7 @@ The scheduler is a standalone process, independent of the Workstream Manager web
 #### scheduler stop — Stop the scheduler
 
 ```bash
-python -m orchestration.cli scheduler stop
+orc scheduler stop
 ```
 
 Sends SIGTERM to the running scheduler process (identified by PID stored in `scheduler_state.yaml`).
@@ -461,7 +470,7 @@ Sends SIGTERM to the running scheduler process (identified by PID stored in `sch
 #### scheduler status — Check scheduler status
 
 ```bash
-python -m orchestration.cli scheduler status
+orc scheduler status
 ```
 
 Returns `{"running": true, "pid": 12345, "last_tick_at": "..."}` or `{"running": false}`.
@@ -469,7 +478,7 @@ Returns `{"running": true, "pid": 12345, "last_tick_at": "..."}` or `{"running":
 #### scheduler tick — Execute a single tick
 
 ```bash
-python -m orchestration.cli scheduler tick
+orc scheduler tick
 ```
 
 Runs one scheduler tick immediately (useful for testing or manual triggering).
@@ -480,16 +489,16 @@ Runs one scheduler tick immediately (useful for testing or manual triggering).
 
 ```bash
 # Recent events
-python -m orchestration.cli audit log
+orc audit log
 
 # Filter by workstream
-python -m orchestration.cli audit log --workstream WORKSTREAM_ID
+orc audit log --workstream WORKSTREAM_ID
 
 # Filter by event type
-python -m orchestration.cli audit log --type trigger_fired
+orc audit log --type trigger_fired
 
 # Limit results
-python -m orchestration.cli audit log --limit 20
+orc audit log --limit 20
 ```
 
 ---
@@ -497,16 +506,16 @@ python -m orchestration.cli audit log --limit 20
 #### artifact create — Store a work product
 
 ```bash
-python -m orchestration.cli artifact create --path "reports/q2_summary.md" --content "# Q2 Summary\n\nResults..."
+orc artifact create --path "reports/q2_summary.md" --content "# Q2 Summary\n\nResults..."
 
 # Optional mounted-routing context
-python -m orchestration.cli artifact create --path "ideas/april.md" --content "..." --workstream WORKSTREAM_ID
+orc artifact create --path "ideas/april.md" --content "..." --workstream WORKSTREAM_ID
 
 # Save a raster image from base64 bytes
-python -m orchestration.cli artifact create --path "assets/mockup.png" --content-base64 "iVBORw0KGgoAAA..." --workstream WORKSTREAM_ID
+orc artifact create --path "assets/mockup.png" --content-base64 "iVBORw0KGgoAAA..." --workstream WORKSTREAM_ID
 
 # Prefer source-file for large binary images
-python -m orchestration.cli artifact create --path "assets/mockup.png" --source-file "/tmp/mockup.png" --workstream WORKSTREAM_ID
+orc artifact create --path "assets/mockup.png" --source-file "/tmp/mockup.png" --workstream WORKSTREAM_ID
 ```
 
 Important:
@@ -517,10 +526,10 @@ Important:
 #### artifact read — Read an artifact
 
 ```bash
-python -m orchestration.cli artifact read "reports/q2_summary.md"
+orc artifact read "reports/q2_summary.md"
 
 # Optional mounted-routing context
-python -m orchestration.cli artifact read "ideas/april.md" --workstream WORKSTREAM_ID
+orc artifact read "ideas/april.md" --workstream WORKSTREAM_ID
 ```
 
 Behavior:
@@ -532,10 +541,10 @@ Behavior:
 
 ```bash
 # All artifacts
-python -m orchestration.cli artifact list
+orc artifact list
 
 # Filter by path prefix
-python -m orchestration.cli artifact list --prefix "reports/"
+orc artifact list --prefix "reports/"
 ```
 
 #### artifact copytree — Copy an artifact subtree into a mounted startup workspace
@@ -543,18 +552,18 @@ python -m orchestration.cli artifact list --prefix "reports/"
 ```bash
 # Copy a research subtree from source workspace artifacts into the mounted destination
 # artifacts root for a specific workstream.
-python -m orchestration.cli artifact copytree "Research/example_project" \
+orc artifact copytree "Research/example_project" \
   --workstream WORKSTREAM_ID \
   --source-base /path/to/source/workspace
 
 # Preview without writing files
-python -m orchestration.cli artifact copytree "Research/example_project" \
+orc artifact copytree "Research/example_project" \
   --workstream WORKSTREAM_ID \
   --source-base /path/to/source/workspace \
   --dry-run
 
 # Allow overwriting conflicting destination files
-python -m orchestration.cli artifact copytree "Research/example_project" \
+orc artifact copytree "Research/example_project" \
   --workstream WORKSTREAM_ID \
   --source-base /path/to/source/workspace \
   --overwrite
@@ -573,37 +582,37 @@ When working on tasks from a workstream, follow this pattern:
 
 ```bash
 # 1. Find your workstream
-python -m orchestration.cli workstream find --query "SDR"
+orc workstream find --query "SDR"
 
 # 2. List available tasks
-python -m orchestration.cli task list WORKSTREAM_ID --status "pending"
+orc task list WORKSTREAM_ID --status "pending"
 
 # 3. Lock a task before working on it
-python -m orchestration.cli lock acquire TASK_ID --agent my-agent-name
+orc lock acquire TASK_ID --agent my-agent-name
 
 # 4. Do your work...
 
 # 5. Update the task status when done
-python -m orchestration.cli task update TASK_ID --status "completed"
+orc task update TASK_ID --status "completed"
 
 # 6. Add a comment about what was done
-python -m orchestration.cli task comment TASK_ID --message "Completed outreach, got positive response"
+orc task comment TASK_ID --message "Completed outreach, got positive response"
 
 # 7. Release the lock
-python -m orchestration.cli lock release TASK_ID --agent my-agent-name
+orc lock release TASK_ID --agent my-agent-name
 ```
 
 If your work fails:
 
 ```bash
 # Update status to failed
-python -m orchestration.cli task update TASK_ID --status "failed"
+orc task update TASK_ID --status "failed"
 
 # Add a comment explaining what went wrong
-python -m orchestration.cli task comment TASK_ID --message "LinkedIn profile not found"
+orc task comment TASK_ID --message "LinkedIn profile not found"
 
 # Release the lock
-python -m orchestration.cli lock release TASK_ID --agent my-agent-name
+orc lock release TASK_ID --agent my-agent-name
 ```
 
 ### Data Storage

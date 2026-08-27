@@ -53,7 +53,7 @@ def _source_root_dir() -> str:
 def _base_env_path() -> str | None:
     """Return the lowest-precedence env file shared by orchestration runs.
 
-    By default this is the repository/foundation `.env`, even when persisted
+    By default this is the repository `.env`, even when persisted
     workstream state lives elsewhere. Set ORCHESTRATION_BASE_ENV_PATH to a
     custom file path, or to an empty string to disable this base layer.
     """
@@ -395,7 +395,7 @@ def _env_layers_for_workstream(ws_id: str, base_dir: str = ".") -> list:
     """Return env layers from root -> selected workstream.
 
     Layers include:
-    - orchestration-root `.env` from the foundation/repository root
+    - orchestration-root `.env` from the repository root
     - workstream-local `.env` files
         - working-directory root `.env` files for nodes in the lineage,
             including the selected workstream itself when it defines one

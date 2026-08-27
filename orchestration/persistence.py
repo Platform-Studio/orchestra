@@ -1,7 +1,7 @@
 """Persistence root resolution helpers.
 
 Supports URI-based persistence roots so state and artifacts can move off the
-foundation repo without changing the code workspace location.
+repository without changing the code workspace location.
 """
 
 import os

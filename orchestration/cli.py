@@ -370,8 +370,11 @@ def cmd_task_create(args):
 
 def cmd_task_read(args):
     from .tasks import read_task
-    task = read_task(args.task_id, base_dir=args.base_dir)
-    _output(task.to_dict())
+    tasks = [
+        read_task(task_id, base_dir=args.base_dir).to_dict(include_audit=args.include_audit)
+        for task_id in args.task_ids
+    ]
+    _output(tasks[0] if len(tasks) == 1 else tasks)
 
 
 def cmd_task_update(args):
@@ -789,6 +792,13 @@ def cmd_scheduler_tick(args):
     _output(result)
 
 
+# ── Workstream Manager commands ─────────────────────────────────────
+
+def cmd_worksm_start(args):
+    from workstream_manager.server import run
+    run(base_dir=args.base_dir, port=args.port)
+
+
 # ── Artifact commands ────────────────────────────────────────────────
 
 def cmd_audit_log(args):
@@ -896,7 +906,7 @@ def cmd_artifact_copytree(args):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Orchestration Framework CLI",
-        prog="orchestration",
+        prog="orc",
     )
     parser.add_argument(
         "--base-dir", default=".",
@@ -975,9 +985,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_workstream_token_usage)
 
     p = ws_sub.add_parser("migrate-artifact-root-home")
-    p.add_argument("id", help="Root workstream ID whose explicit artifact_root should move into foundation storage")
+    p.add_argument("id", help="Root workstream ID whose explicit artifact_root should move into repository storage")
     p.add_argument("--apply", action="store_true", help="Apply migration; default is dry run")
-    p.add_argument("--target-root", help="Optional new artifact root path inside the foundation repo")
+    p.add_argument("--target-root", help="Optional new artifact root path inside the repository")
     p.add_argument("--archive-conflicts", action="store_true", help="Preserve conflicting source artifacts under artifacts/_migration_conflicts/<workstream_id>/ instead of failing")
     p.set_defaults(func=cmd_workstream_migrate_artifact_root_home)
 
@@ -1031,7 +1041,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_task_create)
 
     p = task_sub.add_parser("read")
-    p.add_argument("task_id")
+    p.add_argument("task_ids", nargs="+")
+    p.add_argument("--include-audit", action="store_true", help="Include task audit history")
     p.set_defaults(func=cmd_task_read)
 
     p = task_sub.add_parser("update")
@@ -1300,6 +1311,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sched_sub.add_parser("tick", help="Execute a single scheduler tick")
     p.set_defaults(func=cmd_scheduler_tick)
+
+    # ── Workstream Manager ──────────────────────────────────────────
+    worksm_parser = subparsers.add_parser("worksm", help="Run the Workstream Manager web application")
+    worksm_sub = worksm_parser.add_subparsers(dest="method", required=True)
+
+    p = worksm_sub.add_parser("start", help="Run Workstream Manager as a foreground process")
+    p.add_argument("--port", type=int, default=8080)
+    p.set_defaults(func=cmd_worksm_start)
 
     # ── Audit ────────────────────────────────────────────────────────
     audit_parser = subparsers.add_parser("audit")

@@ -1,6 +1,6 @@
 ## Voice Generation
 
-Generate spoken audio from text using `cli/gen_voice.py` in the foundation workspace:
+Generate spoken audio from text using `cli/gen_voice.py` in the Orchestra repository:
 
 ```bash
 python3 cli/gen_voice.py --source SOURCE --text "..." --output "path/to/clip.mp3" [--voice V] [--model M] [--format F]
