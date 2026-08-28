@@ -16,6 +16,9 @@
 # Allow HTML files
 !*.html
 
+# Allow bundled audio cues.
+!audio/*.mp3
+
 # Allow .env.example for onboarding new devs
 !.env.example
 

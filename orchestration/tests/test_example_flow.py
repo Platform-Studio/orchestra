@@ -9,6 +9,21 @@ from orchestration.agents import _resolve_agent_file
 from orchestration.workstreams import list_workstreams, read_workstream
 
 EXAMPLES_ROOT = Path(__file__).resolve().parents[2] / "examples"
+EXPECTED_AUDIO_FILES = {
+    "bass_start.mp3",
+    "drum_end.mp3",
+    "drum_start.mp3",
+    "error.mp3",
+    "finish.mp3",
+    "flute_end.mp3",
+    "flute_start.mp3",
+    "oboe_end.mp3",
+    "oboe_start.mp3",
+    "start.mp3",
+    "violin_end.mp3",
+    "violin_start.mp3",
+    "workstream_startup.mp3",
+}
 
 
 def _load_example_module(name: str, script: str):
@@ -49,6 +64,7 @@ def test_fruit_and_veg_setup_installs_agents_and_triggers(tmp_path):
     assert classifier_trigger.task_selection == "first_unlocked"
     assert Path(_resolve_agent_file("fruit_vegetable_generator", str(workspace))).is_file()
     assert Path(_resolve_agent_file("fruit_vegetable_classifier", str(workspace))).is_file()
+    assert {path.name for path in (workspace / "audio").glob("*.mp3")} == EXPECTED_AUDIO_FILES
 
     repeated = _load_example_module("fruit_and_veg", "setup.py").setup_example(workspace)
     assert repeated["workstream"]["id"] == result["workstream"]["id"]
@@ -76,6 +92,7 @@ def test_xmas_movies_setup_installs_idempotent_hierarchy_and_triggers(tmp_path):
     assert triggers_by_agent["xmas_movie_judge"].on_state == "Judgement"
     assert Path(_resolve_agent_file("xmas_movie_proposer", str(workspace))).is_file()
     assert (workspace / "Agents" / "skills" / "judging_xmas_movies.md").is_file()
+    assert {path.name for path in (workspace / "audio").glob("*.mp3")} == EXPECTED_AUDIO_FILES
 
     repeated = module.setup_example(workspace, run_initial=False)
     assert repeated["workstreams"] == result["workstreams"]

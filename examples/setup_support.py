@@ -48,7 +48,7 @@ def run_cli(workspace: Path, *args: str) -> Any:
 
 
 def install_definition_files(example_dir: Path, workspace: Path) -> list[str]:
-    """Copy an example's agent and skill definitions into a workspace."""
+    """Copy an example's definitions and bundled audio into a workspace."""
     installed: list[str] = []
     for source_dir_name, target_dir_name in (
         ("agents", "Agents"),
@@ -63,6 +63,14 @@ def install_definition_files(example_dir: Path, workspace: Path) -> list[str]:
             destination = target_dir / source.name
             shutil.copyfile(source, destination)
             installed.append(str(destination))
+
+    source_audio = REPO_ROOT / "audio"
+    target_audio = workspace / "audio"
+    target_audio.mkdir(parents=True, exist_ok=True)
+    for source in sorted(source_audio.glob("*.mp3")):
+        destination = target_audio / source.name
+        shutil.copyfile(source, destination)
+        installed.append(str(destination))
     return installed
 
 

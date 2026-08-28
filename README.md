@@ -202,7 +202,7 @@ Examples are installed through `example.sh`. Run it from the Orchestra repositor
 ./example.sh xmas_movies
 ```
 
-The installer copies the example's agent and skill definitions into its workspace, then uses the public `orc` CLI to create the workstreams, states, and triggers. It prints the CLI commands as it runs. Reinstalling an example reuses matching resources instead of creating duplicates.
+The installer copies the example's agent and skill definitions and Orchestra's bundled audio cues into its workspace, then uses the public `orc` CLI to create the workstreams, states, and triggers. It prints the CLI commands as it runs. Reinstalling an example reuses matching resources instead of creating duplicates.
 
 | Example | Install command | Default workspace | What it demonstrates |
 |---|---|---|---|
