@@ -7,6 +7,9 @@
 # Allow markdown files
 !*.md
 
+# Allow README image assets.
+!docs/images/*.jpg
+
 # Allow shell scripts
 !*.sh
 

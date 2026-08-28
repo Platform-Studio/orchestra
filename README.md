@@ -10,6 +10,10 @@ Orchestra is model- and task-agnostic. It can coordinate coding, research, opera
 
 Orchestra was built for workflows in which many agents operate concurrently across different kinds of work, not only software development. It supports compound engineering: each run can leave behind structured results, audit history, and accumulated learnings that improve subsequent runs. It also supports metareview workflows in which one agent evaluates another agent's work and sends it back for revision when necessary.
 
+## Watch Orchestra in Action
+
+[![Watch Orchestra in action](docs/images/orchestra-overview.jpg)](https://www.youtube.com/watch?v=bKJKXCypJoU)
+
 ## Quick Start
 
 Requires Python 3.12+ and an authenticated `claude`, `cline`, or `copilot` CLI. (A virtual environment is recommended but not required.)
@@ -89,7 +93,7 @@ orc scheduler run
 - **Tasks** are the basic units of work. A task has a title, description, state, tags, comments, attachments, errors, progress checklist, and audit trail. In Workstream Manager, tasks appear as cards on a Kanban board.
 - **Workstreams** represent workflows. They contain tasks and define a state machine: each state becomes a board column in the Workstream Manager, and the workstream controls which transitions are allowed. Workstreams can contain child workstreams, allowing a large process to be represented as a hierarchy of smaller workflows, and for parent workflows to observe and report on the progress of child workflows.
 - **Agents** are autonomous workers defined by Markdown files with YAML frontmatter. When an agent runs, Orchestra provides its instructions together with task details, workstream context, valid transitions, attachments, requested tools, and relevant accumulated learnings.
-- **Triggers** cause work to run. A trigger can respond to a task entering a state, a schedule becoming due, or a supported external event such as inbound email. Trigger actions can start an agent or execute a configured command.
+- **Triggers** cause agents to run. A trigger can respond to a task entering a state, a schedule becoming due, or a supported external event such as inbound email. Trigger actions can start an agent or execute a configured command.
 - **Artifacts** are documents, images, and other files consumed or produced during work. Agents access them through Orchestra so artifact storage remains independent of both orchestration state and the code an agent is modifying.
 - **Workstream context** is shared operating context supplied to every agent working in that workstream. It acts like a whiteboard that agents and humans can update as understanding evolves.
 - **Agent runners** translate an agent definition plus Orchestra's task and workstream context into a process for Claude Code, Cline, GitHub Copilot CLI, or a future runtime. They capture output, enforce timeouts, track lifecycle state, and return results to Orchestra.
