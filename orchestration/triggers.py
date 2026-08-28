@@ -79,6 +79,7 @@ def execute_trigger(
     workstream_id: str,
     base_dir: str = ".",
     ignore_paused: bool = False,
+    ignore_trigger_pauses: bool = False,
 ) -> dict:
     """Execute a trigger against 0-N tasks.
 
@@ -101,7 +102,7 @@ def execute_trigger(
 
     current_trigger = _current_trigger_for_workstream(trigger, ws)
     pause_reason = trigger_pause_reason(current_trigger, ws)
-    if pause_reason:
+    if pause_reason and not ignore_trigger_pauses:
         return {
             "trigger_id": current_trigger.id,
             "status": "skipped",
@@ -310,9 +311,6 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                 continue
             if trigger.on_schedule is None and trigger.on_state is None:
                 raise ValueError("Run Now is only supported for schedule-based or state-based triggers")
-            pause_reason = trigger_pause_reason(trigger, ws)
-            if pause_reason:
-                raise RuntimeError(pause_reason)
 
             # Capture references for the background thread
             _trigger, _ws = trigger, ws
@@ -355,6 +353,7 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                                 base_dir,
                                 background=True,
                                 ignore_paused=ignore_paused,
+                                ignore_trigger_pauses=True,
                             )
                         audit_ids = manual_task_ids
                     elif _trigger.filter is None:
@@ -364,6 +363,7 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                             _ws,
                             base_dir,
                             ignore_paused=ignore_paused,
+                            ignore_trigger_pauses=True,
                         )
                     else:
                         tasks = list_tasks(_ws.id, base_dir=base_dir)
@@ -392,6 +392,7 @@ def run_trigger_now(trigger_id: str, base_dir: str = ".") -> dict:
                                 _ws,
                                 base_dir,
                                 ignore_paused=ignore_paused,
+                                ignore_trigger_pauses=True,
                             )
                     if result.get("status") not in ("dispatched",):
                         _audit_trigger(_trigger, result, _ws, base_dir, task_ids=audit_ids)

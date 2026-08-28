@@ -346,7 +346,7 @@ class TestRunTriggerNow:
             "task_ids": [],
         }
 
-    def test_run_now_rejects_paused_trigger(self, workspace, ws):
+    def test_run_now_allows_paused_trigger(self, workspace, ws, monkeypatch):
         trigger = create_trigger(
             ws.id,
             on_schedule="*/5 * * * *",
@@ -358,10 +358,30 @@ class TestRunTriggerNow:
         ws.triggers = [trigger]
         save_workstream(ws, workspace)
 
-        with pytest.raises(RuntimeError, match="paused"):
-            run_trigger_now(trigger.id, base_dir=workspace)
+        captured = {}
 
-    def test_run_now_rejects_trigger_in_paused_column(self, workspace, ws):
+        class _InlineThread:
+            def __init__(self, target=None, args=None, kwargs=None, daemon=None):
+                self._target = target
+                self._args = args or ()
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                self._target(*self._args, **self._kwargs)
+
+        def _fake_audit(_trigger, audit_result, _ws, _base_dir, task_ids=None):
+            captured["result"] = audit_result
+
+        monkeypatch.setattr("orchestration.triggers.threading.Thread", _InlineThread)
+        monkeypatch.setattr("orchestration.scheduler._audit_trigger", _fake_audit)
+
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
+        assert captured["result"]["status"] == "ok"
+        assert captured["result"]["stdout"] == "x\n"
+
+    def test_run_now_allows_trigger_in_paused_column(self, workspace, ws):
         from orchestration.workstreams import pause_workstream_states
 
         pause_workstream_states(ws.id, ["To Do"], base_dir=workspace)
@@ -373,8 +393,9 @@ class TestRunTriggerNow:
             base_dir=workspace,
         )
 
-        with pytest.raises(RuntimeError, match="Column 'To Do' is paused"):
-            run_trigger_now(trigger.id, base_dir=workspace)
+        result = run_trigger_now(trigger.id, base_dir=workspace)
+
+        assert result["status"] == "started"
 
 
 class TestExecuteTrigger:

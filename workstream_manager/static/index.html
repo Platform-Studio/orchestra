@@ -3076,7 +3076,12 @@ async function refreshSelectedBoardMeta() {
 // ── Sidebar expand/collapse persistence ─────────────────────────
 const EXPAND_KEY = 'wsm_expanded';
 function _loadExpanded() {
-  try { return JSON.parse(localStorage.getItem(EXPAND_KEY)) || {}; } catch { return {}; }
+  try {
+    const saved = localStorage.getItem(EXPAND_KEY);
+    if (saved === null) return null;
+    const parsed = JSON.parse(saved);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
 }
 function _saveExpanded(map) {
   localStorage.setItem(EXPAND_KEY, JSON.stringify(map));
@@ -3114,6 +3119,14 @@ function renderSidebar() {
     } else {
       roots.push(ws);
     }
+  }
+
+  if (expandedMap === null) {
+    expandedMap = {};
+    for (const ws of sorted) {
+      if ((childMap[ws.id] || []).length) expandedMap[ws.id] = true;
+    }
+    _saveExpanded(expandedMap);
   }
 
   let html = '';
@@ -4879,9 +4892,9 @@ function showTriggers() {
 
       const showForceRunBtn = !!selectedWs.paused && !!t.on_state;
       const runNowBtn = showForceRunBtn
-        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning || effectivelyPaused ? ' disabled' : ''}>Run Now</button>`
+        ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Run Now</button>`
         : (t.on_schedule
-          ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning || effectivelyPaused ? ' disabled' : ''}>Run Now</button>`
+          ? `<button class="run-now-btn" onclick="runTriggerNow('${t.id}', this)"${isRunning ? ' disabled' : ''}>Run Now</button>`
           : '');
       const pauseLabel = triggerPaused ? 'Resume Trigger' : 'Pause Trigger';
       const pauseBtn = `<button class="trigger-pause-btn${triggerPaused ? ' paused' : ''}" onclick="toggleTriggerPause('${t.id}', this)">${pauseLabel}</button>`;

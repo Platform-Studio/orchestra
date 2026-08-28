@@ -1,11 +1,13 @@
 import importlib.util
 import os
 from pathlib import Path
+import signal
 import subprocess
+import time
 
 import pytest
 
-from orchestration.agents import _resolve_agent_file
+from orchestration.agents import _parse_agent_md, _resolve_agent_file
 from orchestration.workstreams import list_workstreams, read_workstream
 
 EXAMPLES_ROOT = Path(__file__).resolve().parents[2] / "examples"
@@ -91,6 +93,14 @@ def test_xmas_movies_setup_installs_idempotent_hierarchy_and_triggers(tmp_path):
     assert triggers_by_agent["xmas_movie_skeptic"].on_state == "Skeptic"
     assert triggers_by_agent["xmas_movie_judge"].on_state == "Judgement"
     assert Path(_resolve_agent_file("xmas_movie_proposer", str(workspace))).is_file()
+    for agent_ref in (
+        "xmas_movie_proposer",
+        "xmas_movie_advocate",
+        "xmas_movie_skeptic",
+        "xmas_movie_judge",
+    ):
+        agent_path = _resolve_agent_file(agent_ref, str(workspace))
+        assert _parse_agent_md(agent_path)["progress_checklist_enabled"] is True
     assert (workspace / "Agents" / "skills" / "judging_xmas_movies.md").is_file()
     assert {path.name for path in (workspace / "audio").glob("*.mp3")} == EXPECTED_AUDIO_FILES
 
@@ -131,6 +141,205 @@ def test_xmas_movies_runs_initial_proposer_only_for_new_workstream(tmp_path, mon
             ),
         )
     ]
+
+
+def test_xmas_movies_initial_run_failure_explains_runtime_configuration(
+    tmp_path, monkeypatch, capsys
+):
+    workspace = tmp_path / "workspace"
+    module = _load_example_module("xmas_movies", "setup.py")
+    real_run_cli = module.run_cli
+
+    def fake_run_cli(target_workspace, *args):
+        if args[:2] == ("agent", "run"):
+            raise RuntimeError("Not logged in")
+        return real_run_cli(target_workspace, *args)
+
+    monkeypatch.setattr(module, "run_cli", fake_run_cli)
+
+    result = module.setup_example(workspace)
+
+    assert result["initial_run"] is None
+    warning = capsys.readouterr().err
+    assert any(line.startswith("WARNING:") for line in warning.splitlines())
+    assert "agent CLI is authenticated" in warning
+    assert "ORCHESTRATION_AGENT_RUNTIME to copilot or cline" in warning
+    assert ".env.example" in warning
+
+
+@pytest.mark.skipif(os.name == "nt", reason="setup.sh requires a POSIX shell")
+def test_setup_shell_summarizes_warnings_and_confirms_success(tmp_path):
+    setup_script = tmp_path / "setup.sh"
+    setup_script.write_text((EXAMPLES_ROOT.parent / "setup.sh").read_text())
+    install_script = tmp_path / "install.sh"
+    install_script.write_text("#!/bin/sh\nprintf 'WARNING: test warning\\n'\n")
+    example_script = tmp_path / "example.sh"
+    example_script.write_text("#!/bin/sh\nprintf 'example installed\\n'\n")
+    install_script.chmod(0o755)
+    example_script.chmod(0o755)
+
+    completed = subprocess.run(
+        ["sh", str(setup_script)],
+        cwd=tmp_path,
+        env={**os.environ, "VIRTUAL_ENV": str(tmp_path / "venv"), "NO_COLOR": "1"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.startswith("                 _               _\n")
+    assert completed.stdout.count("WARNING: test warning") == 2
+    assert "Warnings:" in completed.stdout
+    assert "Orchestra installed successfully." in completed.stdout
+    assert "Open the Workstream Manager with ./run-orchestra.sh" in completed.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="setup.sh requires a POSIX shell")
+def test_setup_shell_summarizes_errors_and_returns_failure(tmp_path):
+    setup_script = tmp_path / "setup.sh"
+    setup_script.write_text((EXAMPLES_ROOT.parent / "setup.sh").read_text())
+    install_script = tmp_path / "install.sh"
+    install_script.write_text("#!/bin/sh\nprintf 'install failed\\n' >&2\nexit 7\n")
+    example_script = tmp_path / "example.sh"
+    example_script.write_text("#!/bin/sh\ntouch example-ran\n")
+    install_script.chmod(0o755)
+    example_script.chmod(0o755)
+
+    completed = subprocess.run(
+        ["sh", str(setup_script)],
+        cwd=tmp_path,
+        env={**os.environ, "VIRTUAL_ENV": str(tmp_path / "venv"), "NO_COLOR": "1"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 7
+    assert "Errors:" in completed.stdout
+    assert "ERROR: Command failed with exit code 7:" in completed.stdout
+    assert "Orchestra installed successfully." not in completed.stdout
+    assert not (tmp_path / "example-ran").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="run-orchestra.sh requires a POSIX shell")
+def test_run_orchestra_shell_prints_banner_and_classifies_output(tmp_path):
+    launcher = tmp_path / "run-orchestra.sh"
+    launcher.write_text((EXAMPLES_ROOT.parent / "run-orchestra.sh").read_text())
+    fake_python = tmp_path / ".venv" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_open = tmp_path / "open"
+    run_log = tmp_path / "run.log"
+    browser_log = tmp_path / "browser.log"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >>\"$RUN_LOG\"\n"
+        "case \"$*\" in\n"
+        "  *'scheduler run'*) printf 'WARNING: scheduler warning\\n' ;;\n"
+        "  *'worksm start'*) printf 'ERROR: server test error\\n' ;;\n"
+        "esac\n"
+    )
+    fake_python.chmod(0o755)
+    fake_open.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >\"$BROWSER_LOG\"\n")
+    fake_open.chmod(0o755)
+
+    completed = subprocess.run(
+        ["sh", str(launcher), "-p", "9000"],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHON": "",
+            "VIRTUAL_ENV": "",
+            "RUN_LOG": str(run_log),
+            "BROWSER_LOG": str(browser_log),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "NO_COLOR": "1",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.startswith("                 _               _\n")
+    assert "WARNING: scheduler warning" in completed.stdout
+    assert "ERROR: server test error" in completed.stdout
+    assert "Opening Orchestra at http://localhost:9000" in completed.stdout
+    launcher_commands = run_log.read_text()
+    assert "-u -c" in launcher_commands
+    assert "urlopen(sys.argv[1], timeout=0.2).read()" in launcher_commands
+    assert "--base-dir ./xmas-movies-workspace" in launcher_commands
+    assert "worksm start --port 9000" in launcher_commands
+    assert browser_log.read_text().strip() == "http://localhost:9000"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="run-orchestra.sh requires a POSIX shell")
+def test_run_orchestra_shell_rejects_invalid_port(tmp_path):
+    completed = subprocess.run(
+        ["sh", str(EXAMPLES_ROOT.parent / "run-orchestra.sh"), "-p", "70000"],
+        cwd=tmp_path,
+        env={**os.environ, "NO_COLOR": "1"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "ERROR: Port must be an integer from 1 to 65535." in completed.stderr
+    assert "Usage:" in completed.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="run-orchestra.sh requires POSIX signals")
+def test_run_orchestra_shell_exits_after_one_interrupt(tmp_path):
+    fake_python = tmp_path / "python"
+    fake_open = tmp_path / "open"
+    browser_log = tmp_path / "browser.log"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *urlopen*) exit 0 ;;\n"
+        "  *'scheduler run'*)\n"
+        "    trap 'printf \"Scheduler stopped.\\n\"; exit 0' INT TERM\n"
+        "    printf 'Scheduler running.\\n'\n"
+        "    while :; do sleep 1; done ;;\n"
+        "  *'worksm start'*)\n"
+        "    trap 'printf \"Shutting down.\\n\"; exit 0' INT TERM\n"
+        "    printf 'Workstream Manager running.\\n'\n"
+        "    while :; do sleep 1; done ;;\n"
+        "esac\n"
+    )
+    fake_python.chmod(0o755)
+    fake_open.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >\"$BROWSER_LOG\"\n")
+    fake_open.chmod(0o755)
+
+    process = subprocess.Popen(
+        ["sh", str(EXAMPLES_ROOT.parent / "run-orchestra.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHON": str(fake_python),
+            "BROWSER_LOG": str(browser_log),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "NO_COLOR": "1",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 3
+    while not browser_log.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert browser_log.exists()
+    os.killpg(process.pid, signal.SIGINT)
+    try:
+        output, _ = process.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        pytest.fail("run-orchestra.sh did not exit after one SIGINT")
+
+    assert process.returncode == 130
+    assert "Shutting down." in output
 
 
 @pytest.mark.skipif(os.name == "nt", reason="example.sh requires a POSIX shell")

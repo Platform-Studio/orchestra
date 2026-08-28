@@ -190,6 +190,8 @@ def test_triggers_modal_includes_pause_controls_and_column_pause_badges() -> Non
     assert 'trigger-header-actions' in html
     assert 'trigger-prompt-toggle' in html
     assert 'Force Run Now' not in html
+    assert "isRunning || effectivelyPaused ? ' disabled'" not in html
+    assert "${isRunning ? ' disabled' : ''}>Run Now" in html
 
 
 def test_workstream_manager_plays_tuning_sound_on_initial_load_and_resume() -> None:
@@ -228,6 +230,15 @@ def test_global_mute_toggle_overrides_all_workstream_manager_sound_playback() ->
     assert "body: { muted: isWorkstreamManagerMuted }," in html
     assert "renderWorkstreamManagerMuteToggle();" in html
     assert "window.addEventListener('storage', (event) => {" in html
+
+
+def test_sidebar_defaults_all_parent_workstreams_to_expanded() -> None:
+    html = _index_html()
+
+    assert "if (saved === null) return null;" in html
+    assert "if (expandedMap === null) {" in html
+    assert "if ((childMap[ws.id] || []).length) expandedMap[ws.id] = true;" in html
+    assert "_saveExpanded(expandedMap);" in html
     assert "await syncWorkstreamManagerMutedPreferenceFromServer();" in html
 
 

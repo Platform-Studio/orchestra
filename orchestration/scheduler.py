@@ -541,7 +541,10 @@ def _resolve_agent_concurrency_bucket(ws, agent_ref: str, task_state: str = None
     )
 
 
-def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str, ignore_paused: bool = False) -> None:
+def _run_and_unlock(
+    trigger, locked_ids: list, ws, base_dir: str, agent_id: str,
+    ignore_paused: bool = False, ignore_trigger_pauses: bool = False,
+) -> None:
     """Execute a trigger and release locks on a background daemon thread.
 
     Lock acquisition is handled by the caller on the main scheduler thread so
@@ -549,7 +552,11 @@ def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str,
     This function owns only execution and cleanup.
     """
     try:
-        result = execute_trigger(trigger, locked_ids, ws.id, base_dir, ignore_paused=ignore_paused)
+        result = execute_trigger(
+            trigger, locked_ids, ws.id, base_dir,
+            ignore_paused=ignore_paused,
+            ignore_trigger_pauses=ignore_trigger_pauses,
+        )
         _audit_trigger(trigger, result, ws, base_dir, task_ids=locked_ids)
     except Exception as e:
         print(f"[scheduler] background trigger error: {e}", file=sys.stderr)
@@ -562,11 +569,18 @@ def _run_and_unlock(trigger, locked_ids: list, ws, base_dir: str, agent_id: str,
                 pass  # Lock may have already expired or been released
 
 
-def _run_without_lock(trigger, ws, base_dir: str, task_ids: list = None, ignore_paused: bool = False) -> None:
+def _run_without_lock(
+    trigger, ws, base_dir: str, task_ids: list = None,
+    ignore_paused: bool = False, ignore_trigger_pauses: bool = False,
+) -> None:
     """Execute a trigger with no lock lifecycle on a background daemon thread."""
     ids = task_ids or []
     try:
-        result = execute_trigger(trigger, ids, ws.id, base_dir, ignore_paused=ignore_paused)
+        result = execute_trigger(
+            trigger, ids, ws.id, base_dir,
+            ignore_paused=ignore_paused,
+            ignore_trigger_pauses=ignore_trigger_pauses,
+        )
         _audit_trigger(trigger, result, ws, base_dir, task_ids=ids)
     except Exception as e:
         print(f"[scheduler] background standalone trigger error: {e}", file=sys.stderr)
@@ -652,7 +666,10 @@ def _poll_email_trigger_events(trigger, ws, base_dir: str) -> tuple[list[dict], 
     return new_events, trigger_state
 
 
-def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: bool = False, ignore_paused: bool = False) -> dict:
+def _lock_invoke_unlock(
+    trigger, task_ids: list, ws, base_dir: str, background: bool = False,
+    ignore_paused: bool = False, ignore_trigger_pauses: bool = False,
+) -> dict:
     """Lock all task_ids, invoke the trigger, then unlock all.
 
     This is the single code path for all trigger execution. Every agent
@@ -686,7 +703,7 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
             "message": f"Workstream '{latest_ws.name}' is paused",
         }
     pause_reason = trigger_pause_reason(trigger, latest_ws)
-    if pause_reason:
+    if pause_reason and not ignore_trigger_pauses:
         return {
             "trigger_id": trigger.id,
             "status": "skipped",
@@ -756,7 +773,10 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
             thread_ids = locked_ids[:]
             t = threading.Thread(
                 target=_run_and_unlock,
-                args=(trigger, thread_ids, ws, base_dir, agent_id, ignore_paused),
+                args=(
+                    trigger, thread_ids, ws, base_dir, agent_id,
+                    ignore_paused, ignore_trigger_pauses,
+                ),
                 daemon=True,
             )
             try:
@@ -771,7 +791,11 @@ def _lock_invoke_unlock(trigger, task_ids: list, ws, base_dir: str, background: 
             return {"trigger_id": trigger.id, "status": "dispatched"}
 
         # Synchronous path: invoke then fall through to finally for unlock
-        result = execute_trigger(trigger, locked_ids, ws.id, base_dir, ignore_paused=ignore_paused)
+        result = execute_trigger(
+            trigger, locked_ids, ws.id, base_dir,
+            ignore_paused=ignore_paused,
+            ignore_trigger_pauses=ignore_trigger_pauses,
+        )
         return result
     finally:
         # Unlock tasks we still own (empty when background dispatched above)

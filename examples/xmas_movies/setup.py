@@ -85,14 +85,22 @@ def setup_example(workspace: Path, *, run_initial: bool = True) -> dict[str, obj
 
     initial_run = None
     if workstream_created and run_initial:
-        initial_run = run_cli(
-            workspace,
-            "agent",
-            "run",
-            "xmas_movie_proposer",
-            "--workstream",
-            xmas_movies["id"],
-        )
+        try:
+            initial_run = run_cli(
+                workspace,
+                "agent",
+                "run",
+                "xmas_movie_proposer",
+                "--workstream",
+                xmas_movies["id"],
+            )
+        except RuntimeError as exc:
+            print(
+                "WARNING: Initial agent run failed. Ensure your agent CLI is authenticated, "
+                "or set ORCHESTRATION_AGENT_RUNTIME to copilot or cline as shown in "
+                f".env.example: {exc}",
+                file=sys.stderr,
+            )
 
     return {
         "workstreams": {

@@ -39,6 +39,7 @@
 /*.egg-info/
 __pycache__/
 .pytest_cache/
+.venv/
 
 # Ignore example workspace directories created by setup.
 *-workspace/

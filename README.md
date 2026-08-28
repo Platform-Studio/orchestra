@@ -16,7 +16,7 @@ Orchestra was built for workflows in which many agents operate concurrently acro
 
 ## Quick Start
 
-Requires Python 3.12+ and an authenticated `claude`, `cline`, or `copilot` CLI. (A virtual environment is recommended but not required.)
+Requires Python 3.12+ and an authenticated `claude`, `cline`, or `copilot` CLI. `setup.sh` creates and uses an isolated `.venv` automatically.
 
 ```bash
 git clone https://github.com/Platform-Studio/orchestra.git
@@ -25,7 +25,7 @@ cd orchestra
 ./run-orchestra.sh
 ```
 
-Open `http://localhost:8080`. The setup script automatically installs the Xmas Movies example (more detail below).
+The Workstream Manager opens at `http://localhost:8080`. The setup script automatically installs the Xmas Movies example (more detail below).
 
 ## Why Orchestra Exists
 
@@ -46,6 +46,14 @@ We evaluated the available agent frameworks in early 2026, but none matched that
 - Filesystem-based persistence with independently configurable state and artifact roots
 - Optional per-task token and cost tracking through [Beans Proxy](https://github.com/platform-studio/beans-proxy)
 - A Kanban-style Workstream Manager for humans
+
+## When you **shouldn't** use Orchestra
+
+Orchestra is designed for complex, parallel workflows involving multiple agents and hierarchical state management. 
+
+Each time an agent runs on a task, it fires up the full copilot/claude code/cline runtime environment, and injects a prompt telling it about the current state of the task, the workstream context, and any relevant accumulated learnings. 
+
+This overhead makes Orchestra less suitable for very lightweight or high-frequency tasks where a simple script or direct LLM call would be more efficient.
 
 ## How It Fits Together
 
@@ -86,7 +94,12 @@ orc scheduler run
 
 ### run-orchestra.sh
 
-`run-orchestra.sh` is a convenience script that runs both the Workstream Manager and the scheduler in one call.
+`run-orchestra.sh` is a convenience script that runs both the Workstream Manager and the scheduler in one call. Use `-p` to select a different port, and optionally provide a workspace path:
+
+```bash
+./run-orchestra.sh -p 9000
+./run-orchestra.sh -p 9000 ./another-workspace
+```
 
 ## Core Concepts
 
