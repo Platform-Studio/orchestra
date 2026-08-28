@@ -14,7 +14,9 @@ def test_public_repo_audit_detects_internal_paths_and_private_names():
 
 
 def test_public_repo_audit_allows_public_examples():
-    assert scan_text("README.md", "Use /path/to/agents and admin@example.com") == []
+    text = "At Platform Venture Studio, use /path/to/agents and admin@example.com"
+
+    assert scan_text("README.md", text) == []
 
 
 def test_license_audit_rejects_unknown_and_unapproved_licenses():

@@ -368,7 +368,9 @@ def test_external_context_close_removes_session_and_stops_runtime():
     assert manager.pw is None
 
 
-def test_browser_disconnect_clears_sessions_and_stops_runtime():
+def test_browser_disconnect_clears_sessions_and_stops_runtime(monkeypatch):
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
     browser = _load_browser_module()
     manager = browser.BrowserManager()
     fake_context = _FakeContext()

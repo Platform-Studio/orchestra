@@ -146,6 +146,7 @@ def run_release_flow(repo: Path, baseline_ref: str) -> None:
         tutorial_source = repo / "examples" / "fruit_and_veg"
         tutorial_copy = temp / "fruit_and_veg"
         shutil.copytree(tutorial_source, tutorial_copy)
+        shutil.copy2(repo / "examples" / "setup_support.py", temp / "setup_support.py")
         tutorial_workspace = temp / "fruit-and-veg-workspace"
         tutorial = json.loads(
             run(

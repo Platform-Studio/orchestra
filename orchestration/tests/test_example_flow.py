@@ -241,6 +241,7 @@ def test_run_orchestra_shell_prints_banner_and_classifies_output(tmp_path):
     fake_python.chmod(0o755)
     fake_open.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >\"$BROWSER_LOG\"\n")
     fake_open.chmod(0o755)
+    (tmp_path / "xdg-open").symlink_to(fake_open)
 
     completed = subprocess.run(
         ["sh", str(launcher), "-p", "9000"],
@@ -309,6 +310,7 @@ def test_run_orchestra_shell_exits_after_one_interrupt(tmp_path):
     fake_python.chmod(0o755)
     fake_open.write_text("#!/bin/sh\nprintf '%s\\n' \"$1\" >\"$BROWSER_LOG\"\n")
     fake_open.chmod(0o755)
+    (tmp_path / "xdg-open").symlink_to(fake_open)
 
     process = subprocess.Popen(
         ["sh", str(EXAMPLES_ROOT.parent / "run-orchestra.sh")],

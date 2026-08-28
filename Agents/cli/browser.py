@@ -306,9 +306,9 @@ class BrowserManager:
         if self.browser is not None:
             return
 
-        from playwright.sync_api import sync_playwright
-
         if self.pw is None:
+            from playwright.sync_api import sync_playwright
+
             self.pw = sync_playwright().start()
 
         stealth_args = [

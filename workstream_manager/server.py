@@ -1306,7 +1306,6 @@ def run(base_dir: str, port: int = 8080, open_browser: bool = True) -> None:
     url = f"http://localhost:{port}"
     print(f"Workstream Manager running at {url}")
     print(f"Managing orchestration workspace: {WORKSPACE_DIR}")
-    print("Note: Start the scheduler separately via: orc scheduler run")
     if open_browser:
         print(f"Opening Workstream Manager at {url}")
         try:

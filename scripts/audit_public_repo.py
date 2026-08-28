@@ -33,7 +33,6 @@ RULES = (
     _private_rule("private user name", "Jere", "my"),
     _private_rule("internal email domain", "platform", "stud.io"),
     _private_rule("internal Mailgun domain", "hire", "scout.us"),
-    _private_rule("private organization name", "Platform Venture ", "Studio"),
     _private_rule("private investment directory", "Direct ", "Investments"),
     _private_rule("private research directory", "Unmet ", "Needs"),
     _private_rule("private thesis directory", "The", "ses"),

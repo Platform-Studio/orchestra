@@ -24,7 +24,7 @@ from orchestration.tasks import CorruptTaskError
 
 
 class TestServerStartup:
-    def test_run_opens_browser_by_default(self, tmp_path, monkeypatch):
+    def test_run_opens_browser_by_default(self, tmp_path, monkeypatch, capsys):
         opened = []
 
         class FakeServer:
@@ -44,6 +44,7 @@ class TestServerStartup:
         run(str(tmp_path), port=9090)
 
         assert opened == ["http://localhost:9090"]
+        assert "Start the scheduler separately" not in capsys.readouterr().out
 
     def test_run_can_skip_opening_browser(self, tmp_path, monkeypatch):
         class FakeServer:
