@@ -282,7 +282,7 @@ def _build_processes(py_executable: str) -> list[ManagedProc]:
         ),
         ManagedProc(
             name="web",
-            cmd=[py_executable, "-m", "workstream_manager", "--port", "8080", "--base-dir", str(orchestration_base_dir)],
+            cmd=[py_executable, "-m", "workstream_manager", "--port", "8080", "--base-dir", str(orchestration_base_dir), "--no-open"],
             log_path=log_dir / "workstream_manager.log",
         ),
     ]

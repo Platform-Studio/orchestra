@@ -95,5 +95,6 @@ def test_build_processes_uses_current_workstream_root(monkeypatch, tmp_path):
     processes = dev_servers._build_processes("/tmp/python")
 
     assert processes[0].cmd[4] == str(workstream_root)
-    assert processes[1].cmd[-1] == str(workstream_root)
+    assert processes[1].cmd[-2] == str(workstream_root)
+    assert processes[1].cmd[-1] == "--no-open"
     assert processes[0].log_path == artifact_root / "artifacts" / "logs" / "scheduler.log"

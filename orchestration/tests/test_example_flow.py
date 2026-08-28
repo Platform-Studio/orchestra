@@ -267,7 +267,7 @@ def test_run_orchestra_shell_prints_banner_and_classifies_output(tmp_path):
     assert "-u -c" in launcher_commands
     assert "urlopen(sys.argv[1], timeout=0.2).read()" in launcher_commands
     assert "--base-dir ./xmas-movies-workspace" in launcher_commands
-    assert "worksm start --port 9000" in launcher_commands
+    assert "worksm start --port 9000 --no-open" in launcher_commands
     assert browser_log.read_text().strip() == "http://localhost:9000"
 
 

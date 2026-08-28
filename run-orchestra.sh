@@ -178,7 +178,7 @@ browser_pid=$!
 colorize_output <"$server_fifo" &
 server_output_pid=$!
 server_status=0
-run_orc --base-dir "$workspace" worksm start --port "$port" >"$server_fifo" 2>&1 || server_status=$?
+run_orc --base-dir "$workspace" worksm start --port "$port" --no-open >"$server_fifo" 2>&1 || server_status=$?
 stop_output_reader "$server_output_pid"
 server_output_pid=
 if [ "$server_status" -eq 0 ]; then

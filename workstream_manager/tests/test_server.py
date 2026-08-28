@@ -22,6 +22,49 @@ from orchestration.tasks import CorruptTaskError
 
 # ── Helpers ──────────────────────────────────────────────────────
 
+
+class TestServerStartup:
+    def test_run_opens_browser_by_default(self, tmp_path, monkeypatch):
+        opened = []
+
+        class FakeServer:
+            def __init__(self, address, handler):
+                assert address == ("127.0.0.1", 9090)
+
+            def serve_forever(self):
+                raise KeyboardInterrupt
+
+            def shutdown(self):
+                pass
+
+        monkeypatch.setattr("workstream_manager.server.ThreadingHTTPServer", FakeServer)
+        monkeypatch.setattr("workstream_manager.server.webbrowser.open", lambda url: opened.append(url) or True)
+
+        from workstream_manager.server import run
+        run(str(tmp_path), port=9090)
+
+        assert opened == ["http://localhost:9090"]
+
+    def test_run_can_skip_opening_browser(self, tmp_path, monkeypatch):
+        class FakeServer:
+            def __init__(self, address, handler):
+                pass
+
+            def serve_forever(self):
+                raise KeyboardInterrupt
+
+            def shutdown(self):
+                pass
+
+        monkeypatch.setattr("workstream_manager.server.ThreadingHTTPServer", FakeServer)
+        open_browser = MagicMock()
+        monkeypatch.setattr("workstream_manager.server.webbrowser.open", open_browser)
+
+        from workstream_manager.server import run
+        run(str(tmp_path), open_browser=False)
+
+        open_browser.assert_not_called()
+
 def _fake_workstream(**kwargs):
     defaults = {
         "id": "ws-1",

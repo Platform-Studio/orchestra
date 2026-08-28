@@ -1155,7 +1155,7 @@ class TestCLIWorkstreamManager:
         calls = []
         monkeypatch.setattr(
             "workstream_manager.server.run",
-            lambda base_dir, port: calls.append((base_dir, port)),
+            lambda base_dir, port, open_browser: calls.append((base_dir, port, open_browser)),
         )
         args = build_parser().parse_args([
             "--base-dir", workspace,
@@ -1164,7 +1164,22 @@ class TestCLIWorkstreamManager:
 
         args.func(args)
 
-        assert calls == [(workspace, 9090)]
+        assert calls == [(workspace, 9090, True)]
+
+    def test_worksm_start_can_skip_opening_browser(self, workspace, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "workstream_manager.server.run",
+            lambda base_dir, port, open_browser: calls.append((base_dir, port, open_browser)),
+        )
+        args = build_parser().parse_args([
+            "--base-dir", workspace,
+            "worksm", "start", "--no-open",
+        ])
+
+        args.func(args)
+
+        assert calls == [(workspace, 8080, False)]
 
 
 class TestCLIEnv:

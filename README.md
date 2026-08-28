@@ -6,7 +6,7 @@ It combines a standalone orchestration CLI with a web-based Workstream Manager f
 
 Think of Workstream Manager as a Kanban board that you (human) and agents can both interact with to manage and track work - think "Trello for humans and agents to work together."
 
-Orchestra is model- and task-agnostic. It can coordinate coding, research, operations, marketing, sales, or any other work that can be represented as tasks moving on a Kanban board. State-based and scheduled triggers allow agents to hand work to one another, branch based on results, and repeat steps when review or revision is needed.
+Orchestra is model- and task-agnostic. It can coordinate coding, research, operations, marketing, sales, or any other work that can be represented as tasks moving on a Kanban board. State-based and scheduled triggers allow agents to hand work to one another, branch based on results, and repeat steps/loop when review or revision is needed.
 
 Orchestra was built for workflows in which many agents operate concurrently across different kinds of work, not only software development. It supports compound engineering: each run can leave behind structured results, audit history, and accumulated learnings that improve subsequent runs. It also supports metareview workflows in which one agent evaluates another agent's work and sends it back for revision when necessary.
 
@@ -51,18 +51,19 @@ We evaluated the available agent frameworks in early 2026, but none matched that
 
 Orchestra is designed for complex, parallel workflows involving multiple agents and hierarchical state management. 
 
-Each time an agent runs on a task, it fires up the full copilot/claude code/cline runtime environment, and injects a prompt telling it about the current state of the task, the workstream context, and any relevant accumulated learnings. 
+Each agent's run on each task is expected to be a multi-step process, involving reasoning, decision-making, tool usage, spawning sub-agents, etc. e.g. implementing a product feature, thoroughly researching a topic, sending multiple personalized emails to multiple targets, etc.
+
+Therefore, each time an agent runs on a task, it fires up the full copilot/claude code/cline runtime environment to do the work, and injects a prompt telling it about the current state of the task, the workstream context, and any relevant accumulated learnings. 
 
 This overhead makes Orchestra less suitable for very lightweight or high-frequency tasks where a simple script or direct LLM call would be more efficient.
 
 ## How It Fits Together
 
-Orchestra has two layers:
+Orchestra has three parts:
 
 - **Orchestration CLI:** the standalone interface used by humans, scripts, and agents to manage workstreams, tasks, triggers, locks, artifacts, and agent runs.
 - **Workstream Manager:** a visual interface on top of the Orchestration CLI. It is effectively a Kanban board for agents: humans can organize work, watch agents run, inspect progress, and review results and audit history.
-
-A scheduler process runs alongside those two layers. It continuously evaluates state-based and scheduled triggers and starts eligible agents.
+- **Scheduler:** a background process that continuously evaluates state-based and scheduled triggers and starts eligible agents.
 
 ### Orchestration CLI
 
@@ -140,14 +141,34 @@ All of these pause/resume actions can be done with one click through the Workstr
 
 ```text
 /
-|-- Agents/                 # Public agent definitions and CLI tools
-|   `-- cli/                # Agent-facing CLI tools and documentation
-|-- orchestration/          # Orchestration framework and CLI
-|-- workstream_manager/     # Workstream Manager server and web application
-|-- scripts/                # Validation and maintenance utilities
-|-- workstreams/            # Runtime state; created during setup and ignored by Git
-`-- artifacts/              # Runtime artifacts; created during setup and ignored by Git
+|-- .github/                # CI workflows and contribution templates
+|-- Agents/
+|   `-- cli/                # Public agent-facing CLI tools and documentation
+|-- audio/                  # Bundled event sounds
+|-- docs/                   # Security, release, audit, and image documentation
+|-- examples/
+|   |-- fruit_and_veg/      # Fruit and Vegetable example definitions and installer
+|   |-- install_smoke/      # Deterministic installation smoke test
+|   `-- xmas_movies/        # Xmas Movies agents, skill, and installer
+|-- orchestration/
+|   |-- templates/          # Built-in orchestration templates
+|   `-- tests/              # Core framework and CLI tests
+|-- scripts/                # Development, release, validation, and audit utilities
+|-- workstream_manager/
+|   |-- static/             # Browser application
+|   `-- tests/              # Server and browser UI tests
+|-- .env.example            # Environment configuration template
+|-- pyproject.toml          # Python package and dependency metadata
+|-- install.sh              # Editable package installer
+|-- example.sh              # Example installer dispatcher
+|-- setup.sh                # Venv, package, and default example setup
+|-- run-orchestra.sh        # Scheduler and Workstream Manager launcher
+|-- workstreams/            # Runtime workstream and task state; generated and ignored
+|-- artifacts/              # Runtime agent outputs; generated and ignored
+`-- *.md / LICENSE          # Project documentation, policies, and governance
 ```
+
+Generated virtual environments, build output, installed example workspaces, workstream state, and artifacts are ignored by Git and are not tracked repository source.
 
 ## Installation From Source
 
@@ -195,6 +216,8 @@ Or run them separately:
 orc scheduler run
 orc worksm start
 ```
+
+`orc worksm start` opens the Workstream Manager in your default browser. Use `orc worksm start --no-open` when running without a desktop browser or from a script.
 
 ## Upgrading
 
@@ -270,7 +293,7 @@ Supported headers include:
 | `x-tools` | Names of documented CLI tools requested by the agent |
 | `x-sound-start`, `x-sound-finish`, `x-sound-error` | Optional event sound names |
 
-These headers override defaults set in the environment (e.g. in your `.env` file) so they are optional and only need to be specified when you don't want the default behavior.
+The x-... headers override defaults set in the environment (e.g. in your `.env` file) so they are optional and only need to be specified when you want a specific agent to override the default behavior.
 
 ### How Orchestra Finds Agent Definitions
 
@@ -459,6 +482,8 @@ BEANS_PROXY=true
 BEANS_PROXY_HOST=127.0.0.1
 BEANS_PROXY_PORT=8000
 ```
+
+Follow the installation instructions for [Beans Proxy](https://github.com/platform-studio/beans-proxy) and run it. Orchestra will then route supported agent calls through the proxy to track token usage.
 
 ## Development
 

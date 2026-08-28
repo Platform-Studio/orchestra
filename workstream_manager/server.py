@@ -19,6 +19,7 @@ import base64
 import mimetypes
 import threading
 import time
+import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs, unquote
@@ -1299,12 +1300,20 @@ class Handler(SimpleHTTPRequestHandler):
             sys.stderr.write(f"[API] {msg}\n")
 
 
-def run(base_dir: str, port: int = 8080) -> None:
+def run(base_dir: str, port: int = 8080, open_browser: bool = True) -> None:
     set_workspace_dir(base_dir)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Workstream Manager running at http://localhost:{port}")
+    url = f"http://localhost:{port}"
+    print(f"Workstream Manager running at {url}")
     print(f"Managing orchestration workspace: {WORKSPACE_DIR}")
     print("Note: Start the scheduler separately via: orc scheduler run")
+    if open_browser:
+        print(f"Opening Workstream Manager at {url}")
+        try:
+            if not webbrowser.open(url):
+                print(f"WARNING: Could not open a browser. Open {url} manually.")
+        except Exception as exc:
+            print(f"WARNING: Could not open a browser: {exc}. Open {url} manually.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1316,13 +1325,14 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Workstream Manager server")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--no-open", action="store_true", help="Do not open a browser")
     parser.add_argument(
         "--base-dir",
         default=os.environ.get("WORKSTREAM_MANAGER_BASE_DIR", WORKSPACE_DIR),
         help="Orchestration workspace to manage (default: repository root or WORKSTREAM_MANAGER_BASE_DIR)",
     )
     args = parser.parse_args()
-    run(args.base_dir, args.port)
+    run(args.base_dir, args.port, open_browser=not args.no_open)
 
 
 if __name__ == "__main__":

@@ -796,7 +796,7 @@ def cmd_scheduler_tick(args):
 
 def cmd_worksm_start(args):
     from workstream_manager.server import run
-    run(base_dir=args.base_dir, port=args.port)
+    run(base_dir=args.base_dir, port=args.port, open_browser=not args.no_open)
 
 
 # ── Artifact commands ────────────────────────────────────────────────
@@ -1318,6 +1318,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = worksm_sub.add_parser("start", help="Run Workstream Manager as a foreground process")
     p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--no-open", action="store_true", help="Do not open a browser")
     p.set_defaults(func=cmd_worksm_start)
 
     # ── Audit ────────────────────────────────────────────────────────
