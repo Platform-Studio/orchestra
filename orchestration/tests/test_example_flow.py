@@ -273,6 +273,42 @@ def test_run_orchestra_shell_prints_banner_and_classifies_output(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="run-orchestra.sh requires a POSIX shell")
+def test_run_orchestra_shell_uses_configured_workstream_root(tmp_path):
+    launcher = tmp_path / "run-orchestra.sh"
+    launcher.write_text((EXAMPLES_ROOT.parent / "run-orchestra.sh").read_text())
+    fake_python = tmp_path / "python"
+    run_log = tmp_path / "run.log"
+    configured_root = tmp_path / "configured-workspace"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *resolve_workstream_root*) printf '%s\\n' \"$WORKSTREAM_ROOT\" ;;\n"
+        "  *) printf '%s\\n' \"$*\" >>\"$RUN_LOG\" ;;\n"
+        "esac\n"
+    )
+    fake_python.chmod(0o755)
+
+    subprocess.run(
+        ["sh", str(launcher)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHON": str(fake_python),
+            "WORKSTREAM_ROOT": str(configured_root),
+            "RUN_LOG": str(run_log),
+            "NO_COLOR": "1",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    launcher_commands = run_log.read_text()
+    assert f"--base-dir {configured_root}" in launcher_commands
+    assert "--base-dir ./xmas-movies-workspace" not in launcher_commands
+
+
+@pytest.mark.skipif(os.name == "nt", reason="run-orchestra.sh requires a POSIX shell")
 def test_run_orchestra_shell_rejects_invalid_port(tmp_path):
     completed = subprocess.run(
         ["sh", str(EXAMPLES_ROOT.parent / "run-orchestra.sh"), "-p", "70000"],

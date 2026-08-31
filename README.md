@@ -102,6 +102,8 @@ orc scheduler run
 ./run-orchestra.sh -p 9000 ./another-workspace
 ```
 
+When the workspace argument is omitted, the launcher uses `WORKSTREAM_ROOT` if it is configured; otherwise it uses `./xmas-movies-workspace`. An explicit workspace argument always takes precedence.
+
 ## Core Concepts
 
 - **Tasks** are the basic units of work. A task has a title, description, state, tags, comments, attachments, errors, progress checklist, and audit trail. In Workstream Manager, tasks appear as cards on a Kanban board.

@@ -2632,6 +2632,33 @@ def _configured_paths(env_var: str, legacy_env_var: str | None = None) -> list[s
     ]
 
 
+def _runtime_resource_paths(base_dir: str) -> dict[str, list[str]]:
+    source_agents = os.path.join(SOURCE_DIR, "Agents")
+    workspace_agents = os.path.abspath(os.path.join(base_dir, "Agents"))
+
+    def unique(paths: list[str]) -> list[str]:
+        return list(dict.fromkeys(os.path.abspath(path) for path in paths))
+
+    agent_paths = [source_agents]
+    if os.path.isdir(workspace_agents):
+        agent_paths.append(workspace_agents)
+    agent_paths.extend(_configured_paths(AGENT_PATHS_ENV_VAR, LEGACY_AGENT_PATHS_ENV_VAR))
+
+    return {
+        "agents": unique(agent_paths),
+        "skills": unique([
+            os.path.join(source_agents, "skills"),
+            *([os.path.join(workspace_agents, "skills")] if os.path.isdir(workspace_agents) else []),
+            *_configured_paths(SKILL_PATHS_ENV_VAR, LEGACY_SKILL_PATHS_ENV_VAR),
+        ]),
+        "cli": unique([
+            os.path.join(source_agents, "cli"),
+            *([os.path.join(workspace_agents, "cli")] if os.path.isdir(workspace_agents) else []),
+            *_configured_paths(CLI_PATHS_ENV_VAR, LEGACY_CLI_PATHS_ENV_VAR),
+        ]),
+    }
+
+
 def _resolve_agent_file(agent_ref: str, base_dir: str) -> str:
     """Resolve an agent reference to an absolute file path.
 
@@ -2868,7 +2895,7 @@ def _workstream_prompt_section(ws, base_dir: str) -> str:
     lines = [
         "=== WORKSTREAM ===",
         f"Path: {' > '.join(reversed(path))}",
-        f"ID: {ws.id}",
+        f"ID: {ws.id} (ORCHESTRATION_AGENT_WORKSTREAM_ID)",
         "Task state machine:",
     ]
     for state, next_states in ws.task_states.items():
@@ -2879,7 +2906,7 @@ def _workstream_prompt_section(ws, base_dir: str) -> str:
 
 def _orchestration_prompt_section(base_dir: str) -> str:
     cli = _orchestration_cli_command(base_dir)
-    cli_reference = os.path.join(_cli_dir(base_dir), "orchestration_cli.md")
+    cli_reference = os.path.join(SOURCE_DIR, "Agents", "cli", "orchestration_cli.md")
     return (
         "You are running within the Orchestra orchestration system.\n"
         f"CLI reference: {cli_reference}\n"
@@ -2896,23 +2923,37 @@ def _runtime_context_prompt_section(
     *,
     orchestration_root: str,
     workspace_root: str,
+    resource_paths: dict[str, list[str]],
     task_ids: list,
-    workstream_id: str | None,
     owned_worktree: dict | None,
 ) -> str:
     lines = [
         "=== RUNTIME CONTEXT ===",
-        f"ORCHESTRATION_ROOT={orchestration_root}",
-        f"WORKSPACE_ROOT={workspace_root}",
-        f"ORCHESTRATION_AGENT_TASK_IDS={_compact_json(task_ids)}",
-        f"ORCHESTRATION_AGENT_WORKSTREAM_ID={workstream_id or ''}",
-        "Use ORCHESTRATION_ROOT for Orchestra instructions and CLI resources. Write product code only under WORKSPACE_ROOT.",
+        f"1. ORCHESTRATION_ROOT={orchestration_root}",
+        "This is where the Orchestra orchestration system is installed and running from.",
+        "",
+        f"2. WORKSPACE_ROOT={workspace_root}",
+        "This is where you should read and write code and do your work.",
+        "",
+        f"3. SKILL_DEFINITION_PATHS={_compact_json(resource_paths['skills'])}",
+        "This is the list of places where you should look for skill definitions.",
+        "",
+        f"4. CLI_PATHS={_compact_json(resource_paths['cli'])}",
+        "This is the list of places where you should look for Command Line Interface (CLI) tools.",
+        "",
+        f"5. ORCHESTRATION_AGENT_TASK_IDS={_compact_json(task_ids)}",
+        "This is the list of task IDs, if any, that you will be working on.",
     ]
     if owned_worktree:
         lines.extend([
+            "",
             "WORKSPACE_ROOT is a temporary isolated Git worktree that the runner removes after this run. It may be detached; inspect the actual HEAD when the commit matters. Files left only in this worktree are not durable.",
             "The worktree isolates repository files and code changes only. It does not isolate environment variables, installed dependencies, running services, cloud resources, databases, migrations, or other shared runtime state.",
         ])
+    lines.extend([
+        "",
+        "Important: write product code only under WORKSPACE_ROOT.",
+    ])
     return "\n".join(lines)
 
 
@@ -3004,7 +3045,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     runtime_path = _resolve_runtime_executable(runtime)
 
     from .tasks import read_task, _save_task
-    from .workstreams import read_workstream, resolve_workstream_workspace
+    from .persistence import resolve_artifact_root, resolve_workstream_root
+    from .workstreams import read_workstream, resolve_workstream_artifact_root, resolve_workstream_workspace
 
     # Load tasks and resolve workstream context
     tasks = []
@@ -3076,15 +3118,21 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
     try:
         cli = _orchestration_cli_command(base_dir)
 
-        orchestration_root = os.path.abspath(base_dir)
-        workspace_root = orchestration_root
+        orchestration_root = SOURCE_DIR
+        workstream_root = resolve_workstream_root(base_dir)
+        artifact_root = resolve_artifact_root(base_dir)
+        workspace_root = os.path.abspath(base_dir)
+        resource_paths = _runtime_resource_paths(base_dir)
         if ws:
             try:
                 workspace_root = os.path.abspath(
                     resolve_workstream_workspace(ws.id, base_dir=base_dir)
                 )
+                artifact_root = os.path.abspath(
+                    resolve_workstream_artifact_root(ws.id, base_dir=base_dir)
+                )
             except Exception:
-                workspace_root = orchestration_root
+                workspace_root = os.path.abspath(base_dir)
         if agent_def.get("own_worktree"):
             owned_worktree = _provision_run_worktree(workspace_root, run_id, base_dir=base_dir)
             workspace_root = owned_worktree["workspace_root"]
@@ -3094,8 +3142,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             _runtime_context_prompt_section(
                 orchestration_root=orchestration_root,
                 workspace_root=workspace_root,
+                resource_paths=resource_paths,
                 task_ids=task_ids,
-                workstream_id=workstream_id,
                 owned_worktree=owned_worktree,
             ),
         ]
@@ -3201,7 +3249,12 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         env["ORCHESTRATION_AGENT_RUN_ID"] = run_id if run_id else ""
         env["ORCHESTRATION_AGENT_TASK_IDS"] = _compact_json(task_ids)
         env["ORCHESTRATION_ROOT"] = orchestration_root
+        env["WORKSTREAM_ROOT"] = workstream_root
+        env["ARTIFACT_ROOT"] = artifact_root
         env["WORKSPACE_ROOT"] = workspace_root
+        env["AGENT_DEFINITION_PATHS"] = os.pathsep.join(resource_paths["agents"])
+        env["SKILL_DEFINITION_PATHS"] = os.pathsep.join(resource_paths["skills"])
+        env["CLI_PATHS"] = os.pathsep.join(resource_paths["cli"])
         if owned_worktree:
             env["ORCHESTRATION_AGENT_WORKTREE_ROOT"] = owned_worktree["worktree_root"]
         if workstream_id:

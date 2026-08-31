@@ -56,7 +56,13 @@ shift $((OPTIND - 1))
 if [ "$#" -gt 1 ]; then
     argument_error "Only one workspace path may be provided."
 fi
-workspace=${1:-./xmas-movies-workspace}
+if [ "$#" -eq 1 ]; then
+    workspace=$1
+elif [ -n "${WORKSTREAM_ROOT:-}" ]; then
+    workspace=$("$python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orchestration.persistence import resolve_workstream_root; print(resolve_workstream_root("."))' "$script_dir")
+else
+    workspace=./xmas-movies-workspace
+fi
 
 case "$port" in
     ''|*[!0-9]*) argument_error "Port must be an integer from 1 to 65535." ;;

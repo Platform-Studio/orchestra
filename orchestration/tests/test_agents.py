@@ -1140,7 +1140,7 @@ def test_run_agent_injects_workstream_context(mock_popen, mock_which, workspace)
     assert "=== WORKSTREAM ===" in system_prompt
     assert "Path: Platform > Stage 3 > VibeSold > Product Development" in system_prompt
     assert "Name: Product Development" not in system_prompt
-    assert f"ID: {ws.id}" in system_prompt
+    assert f"ID: {ws.id} (ORCHESTRATION_AGENT_WORKSTREAM_ID)" in system_prompt
     assert "Task state machine:" in system_prompt
     assert "=== WORKSTREAM OPERATING CONTEXT ===" in system_prompt
     assert "Use message variant B" in system_prompt
@@ -1184,7 +1184,7 @@ def test_run_agent_passes_agent_body_as_system_prompt(mock_popen, mock_which, wo
     assert "never edit persisted workstream or task YAML directly" in system_prompt
     assert "attach relevant outputs to supplied tasks" in system_prompt
     assert "Store binary images as real binary content" in system_prompt
-    assert os.path.join(workspace, "Agents", "cli", "orchestration_cli.md") in system_prompt
+    assert os.path.join(agents_module.SOURCE_DIR, "Agents", "cli", "orchestration_cli.md") in system_prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
@@ -1203,8 +1203,10 @@ def test_run_agent_prompt_uses_current_python_executable(mock_popen, mock_which,
 
     system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert f"CLI command: {expected} <command>" in system_prompt
-    assert f"ORCHESTRATION_AGENT_TASK_IDS=[\"{task.id}\"]" in system_prompt
-    assert f"ORCHESTRATION_AGENT_WORKSTREAM_ID={ws.id}" in system_prompt
+    assert f"5. ORCHESTRATION_AGENT_TASK_IDS=[\"{task.id}\"]" in system_prompt
+    assert "This is the list of task IDs, if any, that you will be working on." in system_prompt
+    assert f"ID: {ws.id} (ORCHESTRATION_AGENT_WORKSTREAM_ID)" in system_prompt
+    assert f"ORCHESTRATION_AGENT_WORKSTREAM_ID={ws.id}" not in system_prompt
     assert "temporary isolated Git worktree" not in system_prompt
 
 
@@ -1271,9 +1273,15 @@ def test_run_agent_omits_learning_prompt_when_disabled(mock_popen, mock_which, w
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
-def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which, workspace):
+def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which, workspace, tmp_path, monkeypatch):
     working_root = os.path.join(workspace, "mounted_repo")
     os.makedirs(working_root, exist_ok=True)
+    external_agents = tmp_path / "external-agents"
+    external_skills = tmp_path / "external-skills"
+    external_cli = tmp_path / "external-cli"
+    monkeypatch.setenv("ORCHESTRA_AGENT_PATHS", str(external_agents))
+    monkeypatch.setenv("ORCHESTRA_SKILL_PATHS", str(external_skills))
+    monkeypatch.setenv("ORCHESTRA_CLI_PATHS", str(external_cli))
 
     parent = create_workstream(name="Mounted Parent", base_dir=workspace)
     parent.working_directory = working_root
@@ -1285,11 +1293,29 @@ def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which,
 
     cmd = mock_popen.call_args.args[0]
     system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
-    assert f"WORKSPACE_ROOT={working_root}" in system_prompt
+    source_agents = os.path.join(agents_module.SOURCE_DIR, "Agents")
+    workspace_agents = os.path.join(workspace, "Agents")
+    assert f"1. ORCHESTRATION_ROOT={agents_module.SOURCE_DIR}" in system_prompt
+    assert "This is where the Orchestra orchestration system is installed and running from." in system_prompt
+    assert f"2. WORKSPACE_ROOT={working_root}" in system_prompt
+    assert "This is where you should read and write code and do your work." in system_prompt
+    assert f'3. SKILL_DEFINITION_PATHS=["{source_agents}/skills","{workspace_agents}/skills","{external_skills}"]' in system_prompt
+    assert "This is the list of places where you should look for skill definitions." in system_prompt
+    assert f'4. CLI_PATHS=["{source_agents}/cli","{workspace_agents}/cli","{external_cli}"]' in system_prompt
+    assert "This is the list of places where you should look for Command Line Interface (CLI) tools." in system_prompt
+    assert "Important: write product code only under WORKSPACE_ROOT." in system_prompt
+    assert "WORKSTREAM_ROOT=" not in system_prompt
+    assert "ARTIFACT_ROOT=" not in system_prompt
+    assert "AGENT_DEFINITION_PATHS=" not in system_prompt
 
     popen_env = mock_popen.call_args.kwargs["env"]
     assert popen_env["WORKSPACE_ROOT"] == working_root
-    assert popen_env["ORCHESTRATION_ROOT"] == os.path.abspath(workspace)
+    assert popen_env["ORCHESTRATION_ROOT"] == agents_module.SOURCE_DIR
+    assert popen_env["WORKSTREAM_ROOT"] == workspace
+    assert popen_env["ARTIFACT_ROOT"] == workspace
+    assert popen_env["AGENT_DEFINITION_PATHS"].split(os.pathsep) == [source_agents, workspace_agents, str(external_agents)]
+    assert popen_env["SKILL_DEFINITION_PATHS"].split(os.pathsep) == [f"{source_agents}/skills", f"{workspace_agents}/skills", str(external_skills)]
+    assert popen_env["CLI_PATHS"].split(os.pathsep) == [f"{source_agents}/cli", f"{workspace_agents}/cli", str(external_cli)]
     python_paths = popen_env["PYTHONPATH"].split(os.pathsep)
     assert agents_module.SOURCE_DIR in python_paths
     assert os.path.abspath(workspace) in python_paths
