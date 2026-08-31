@@ -302,7 +302,12 @@ def status(base_dir: str = ".") -> dict:
     return result
 
 
-def _cron_matches_between(cron_expr: str, last_tick: datetime, now: datetime) -> bool:
+def _cron_matches_between(
+    cron_expr: str,
+    last_tick: datetime,
+    now: datetime,
+    timezone_name: str = None,
+) -> bool:
     """Check if a cron expression matched at any point between last_tick and now.
 
     Supports standard 5-field cron: minute hour day_of_month month day_of_week
@@ -314,9 +319,12 @@ def _cron_matches_between(cron_expr: str, last_tick: datetime, now: datetime) ->
 
     # Walk through each minute from last_tick+1min to now
     from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    schedule_timezone = ZoneInfo(timezone_name) if timezone_name else None
     check = last_tick.replace(second=0, microsecond=0) + timedelta(minutes=1)
     while check <= now:
-        if _cron_matches_time(parts, check):
+        schedule_time = check.astimezone(schedule_timezone) if schedule_timezone else check
+        if _cron_matches_time(parts, schedule_time):
             return True
         check += timedelta(minutes=1)
     return False
@@ -896,7 +904,12 @@ def tick(base_dir: str = ".") -> dict:
         for trigger in ws.triggers:
             if trigger.on_schedule is None:
                 continue
-            if not _cron_matches_between(trigger.on_schedule, last_tick, now):
+            if not _cron_matches_between(
+                trigger.on_schedule,
+                last_tick,
+                now,
+                trigger.timezone,
+            ):
                 continue
             pause_reason = trigger_pause_reason(trigger, ws)
             if pause_reason:

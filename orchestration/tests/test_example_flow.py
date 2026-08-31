@@ -234,7 +234,7 @@ def test_run_orchestra_shell_prints_banner_and_classifies_output(tmp_path):
         "#!/bin/sh\n"
         "printf '%s\\n' \"$*\" >>\"$RUN_LOG\"\n"
         "case \"$*\" in\n"
-        "  *'scheduler run'*) printf 'WARNING: scheduler warning\\n' ;;\n"
+        "  *'scheduler run'*) printf 'WARNING: scheduler warning\\n'; sleep 1 ;;\n"
         "  *'worksm start'*) printf 'ERROR: server test error\\n' ;;\n"
         "esac\n"
     )
@@ -341,7 +341,48 @@ def test_run_orchestra_shell_exits_after_one_interrupt(tmp_path):
         pytest.fail("run-orchestra.sh did not exit after one SIGINT")
 
     assert process.returncode == 130
-    assert "Shutting down." in output
+    assert "Scheduler stopped." in output
+
+
+@pytest.mark.skipif(os.name == "nt", reason="run-orchestra.sh requires POSIX signals")
+def test_run_orchestra_shell_exits_when_scheduler_stops(tmp_path):
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *urlopen*) exit 0 ;;\n"
+        "  *'scheduler run'*) printf 'Scheduler stopped.\\n'; exit 0 ;;\n"
+        "  *'worksm start'*)\n"
+        "    trap 'printf \"Shutting down.\\n\"; exit 0' INT TERM\n"
+        "    printf 'Workstream Manager running.\\n'\n"
+        "    while :; do sleep 1; done ;;\n"
+        "esac\n"
+    )
+    fake_python.chmod(0o755)
+
+    process = subprocess.Popen(
+        ["sh", str(EXAMPLES_ROOT.parent / "run-orchestra.sh")],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHON": str(fake_python),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "NO_COLOR": "1",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        output, _ = process.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        pytest.fail("run-orchestra.sh stayed running after its scheduler stopped")
+
+    assert process.returncode != 0
+    assert "ERROR: Scheduler stopped unexpectedly." in output
 
 
 @pytest.mark.skipif(os.name == "nt", reason="example.sh requires a POSIX shell")

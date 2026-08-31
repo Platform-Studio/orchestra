@@ -200,6 +200,7 @@ def create_trigger(
     action: str,
     on_state: str = None,
     on_schedule: str = None,
+    timezone: str = None,
     on_email: dict = None,
     task_selection: str = None,
     filter: dict = None,
@@ -220,6 +221,14 @@ def create_trigger(
         raise ValueError("--task-selection must be either 'first_unlocked' or 'all_unlocked'")
     if task_selection is not None and on_state is None:
         raise ValueError("--task-selection is only supported for --on-state triggers")
+    if timezone is not None:
+        if on_schedule is None:
+            raise ValueError("--timezone is only supported for --on-schedule triggers")
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown timezone: {timezone}") from exc
     if on_email is not None:
         if not isinstance(on_email, dict):
             raise ValueError("--on-email must be an object")
@@ -237,6 +246,7 @@ def create_trigger(
         action=action,
         on_state=on_state,
         on_schedule=on_schedule,
+        timezone=timezone,
         on_email=on_email,
         task_selection=task_selection,
         filter=filter,

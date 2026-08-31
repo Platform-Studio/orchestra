@@ -67,6 +67,7 @@ class Trigger:
     action: str  # "run_agent" or "run_command"
     on_state: str = None       # state-based trigger
     on_schedule: str = None    # cron expression for schedule-based trigger
+    timezone: str = None       # IANA timezone for schedule-based trigger
     on_email: dict = None      # email-based trigger config: {recipient, event}
     event_context: dict = None # transient event payload injected at execution time
     task_selection: str = None # for state triggers: first_unlocked | all_unlocked
@@ -83,6 +84,8 @@ class Trigger:
             d["on_state"] = self.on_state
         if self.on_schedule is not None:
             d["on_schedule"] = self.on_schedule
+        if self.timezone is not None:
+            d["timezone"] = self.timezone
         if self.on_email is not None:
             d["on_email"] = self.on_email
         if self.task_selection is not None:
@@ -108,6 +111,7 @@ class Trigger:
             action=data["action"],
             on_state=data.get("on_state"),
             on_schedule=data.get("on_schedule"),
+            timezone=data.get("timezone"),
             on_email=data.get("on_email"),
             task_selection=data.get("task_selection"),
             filter=data.get("filter"),

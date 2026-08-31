@@ -90,6 +90,19 @@ class TestCronMatching:
         now = datetime(2026, 4, 15, 10, 30, tzinfo=timezone.utc)
         assert _cron_matches_between("*/30 * * * *", base, now) is True
 
+    def test_matches_timezone_across_daylight_saving(self):
+        summer_base = datetime(2026, 8, 31, 0, 59, tzinfo=timezone.utc)
+        summer_now = datetime(2026, 8, 31, 1, 0, tzinfo=timezone.utc)
+        winter_base = datetime(2026, 12, 7, 1, 59, tzinfo=timezone.utc)
+        winter_now = datetime(2026, 12, 7, 2, 0, tzinfo=timezone.utc)
+
+        assert _cron_matches_between(
+            "0 18 * * 0", summer_base, summer_now, "America/Los_Angeles"
+        ) is True
+        assert _cron_matches_between(
+            "0 18 * * 0", winter_base, winter_now, "America/Los_Angeles"
+        ) is True
+
 
 # ── Task filter matching ────────────────────────────────────────────
 

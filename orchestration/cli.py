@@ -569,6 +569,8 @@ def cmd_trigger_create(args):
         kwargs["on_state"] = args.on_state
     if args.on_schedule:
         kwargs["on_schedule"] = args.on_schedule
+    if args.timezone:
+        kwargs["timezone"] = args.timezone
     if args.on_email_recipient:
         kwargs["on_email"] = {
             "recipient": args.on_email_recipient,
@@ -1176,6 +1178,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("workstream_id")
     p.add_argument("--on-state", help="State transition that fires this trigger")
     p.add_argument("--on-schedule", help="Cron expression for schedule-based trigger")
+    p.add_argument("--timezone", help="IANA timezone for schedule-based trigger (default: UTC)")
     p.add_argument("--on-email-recipient", help="Recipient address for email-based triggers")
     p.add_argument("--on-email-event", choices=["new_thread"], help="Email event type")
     p.add_argument("--task-selection", choices=["first_unlocked", "all_unlocked"], help="For state triggers, run on the first unlocked task or batch all unlocked tasks in the state")

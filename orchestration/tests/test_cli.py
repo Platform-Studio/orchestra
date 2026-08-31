@@ -868,6 +868,7 @@ class TestCLIScheduleTrigger:
 
         result = run_cli("trigger", "create", ws_id,
                          "--on-schedule", "0 9 * * 1",
+                         "--timezone", "America/Los_Angeles",
                          "--filter", '{"state": "To Do"}',
                          "--action", "run_command",
                          "--command", "echo weekly",
@@ -875,6 +876,7 @@ class TestCLIScheduleTrigger:
         assert result.returncode == 0
         data = json.loads(result.stdout)["data"]
         assert data["on_schedule"] == "0 9 * * 1"
+        assert data["timezone"] == "America/Los_Angeles"
         assert data["filter"] == {"state": "To Do"}
 
     def test_create_schedule_trigger_with_state_and_tag_filter(self, workspace):

@@ -4,6 +4,7 @@ set -eu
 port=${ORCHESTRA_PORT:-8080}
 scheduler_pid=
 scheduler_output_pid=
+server_pid=
 server_output_pid=
 browser_pid=
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -99,6 +100,10 @@ warning() {
     printf '%sWARNING: %s%s\n' "$orange" "$1" "$reset"
 }
 
+error() {
+    printf '%sERROR: %s%s\n' "$red" "$1" "$reset" >&2
+}
+
 open_url() {
     url=$1
     case "$(uname -s)" in
@@ -149,6 +154,10 @@ cleanup() {
         kill "$scheduler_pid" 2>/dev/null || true
         wait "$scheduler_pid" 2>/dev/null || true
     fi
+    if [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
     if [ -n "$scheduler_output_pid" ]; then
         stop_output_reader "$scheduler_output_pid"
     fi
@@ -177,10 +186,28 @@ open_when_ready "$url" &
 browser_pid=$!
 colorize_output <"$server_fifo" &
 server_output_pid=$!
+"$python" -u -c 'import os, sys; sys.path.insert(0, os.environ["ORCHESTRA_SOURCE"]); from orchestration.cli import main; main()' \
+    --base-dir "$workspace" worksm start --port "$port" --no-open >"$server_fifo" 2>&1 &
+server_pid=$!
+
+while kill -0 "$scheduler_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; do
+    sleep 0.1
+done
+
+if ! kill -0 "$scheduler_pid" 2>/dev/null; then
+    scheduler_status=0
+    wait "$scheduler_pid" || scheduler_status=$?
+    scheduler_pid=
+    error "Scheduler stopped unexpectedly. Shutting down Workstream Manager."
+    if [ "$scheduler_status" -eq 0 ]; then
+        scheduler_status=1
+    fi
+    exit "$scheduler_status"
+fi
+
 server_status=0
-run_orc --base-dir "$workspace" worksm start --port "$port" --no-open >"$server_fifo" 2>&1 || server_status=$?
-stop_output_reader "$server_output_pid"
-server_output_pid=
+wait "$server_pid" || server_status=$?
+server_pid=
 if [ "$server_status" -eq 0 ]; then
     wait "$browser_pid" 2>/dev/null || true
 fi

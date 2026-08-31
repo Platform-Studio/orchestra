@@ -87,6 +87,17 @@ class TestCreateTrigger:
                 base_dir=workspace,
             )
 
+    def test_schedule_trigger_rejects_unknown_timezone(self, workspace, ws):
+        with pytest.raises(ValueError, match="Unknown timezone"):
+            create_trigger(
+                ws.id,
+                on_schedule="0 9 * * 1",
+                timezone="Not/A_Timezone",
+                action="run_command",
+                command="echo x",
+                base_dir=workspace,
+            )
+
     def test_trigger_requires_exactly_one_condition(self, workspace, ws):
         with pytest.raises(ValueError, match="Exactly one trigger condition"):
             create_trigger(

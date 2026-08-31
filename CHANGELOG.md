@@ -19,6 +19,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Public examples and documentation use synthetic data and the canonical `orc` command.
 - Agent process handling supports macOS, Windows, and Linux.
 
+### Fixed
+
+- `run-orchestra.sh` now detects unexpected scheduler termination, shuts down the Workstream Manager, and exits with an error instead of leaving a partially running installation.
+
 ### Security
 
 - Added CI checks for secrets, dependency licenses, private identifiers, and internal paths.
