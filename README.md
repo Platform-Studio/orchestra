@@ -12,7 +12,7 @@ Orchestra was built for workflows in which many agents operate concurrently acro
 
 ## Watch Orchestra in Action
 
-[![Watch Orchestra in action](docs/images/orchestra-overview.jpg)](https://www.youtube.com/watch?v=bKJKXCypJoU)
+[![Watch Orchestra in action](docs/images/orchestra-overview.jpg)](https://youtu.be/wafN3sWqt6w)
 
 ## Quick Start
 
