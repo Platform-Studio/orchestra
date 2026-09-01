@@ -71,7 +71,7 @@ class TestBuildSystemPrompt:
         prompt = _build_system_prompt(agent_def, workspace)
         assert "nonexistent" not in prompt
 
-    def test_includes_configured_external_resource_paths(self, workspace, tmp_path, monkeypatch):
+    def test_keeps_configured_external_resource_paths_out_of_role_prompt(self, workspace, tmp_path, monkeypatch):
         skill_dir = tmp_path / "skills"
         cli_dir = tmp_path / "cli"
         monkeypatch.setenv("ORCHESTRA_SKILL_PATHS", str(skill_dir))
@@ -79,18 +79,10 @@ class TestBuildSystemPrompt:
 
         prompt = _build_system_prompt({"body": "Do stuff.", "tools": []}, workspace)
 
-        assert f"Additional skill definitions can be found in: {skill_dir}" in prompt
-        assert f"Additional CLI tools can be found in: {cli_dir}" in prompt
-
-    def test_omits_external_resource_guidance_when_unset(self, workspace, monkeypatch):
-        monkeypatch.delenv("ORCHESTRA_SKILL_PATHS", raising=False)
-        monkeypatch.delenv("ORCHESTRA_CLI_PATHS", raising=False)
-        monkeypatch.delenv("ORKESTRA_SKILL_PATHS", raising=False)
-        monkeypatch.delenv("ORKESTRA_CLI_PATHS", raising=False)
-
-        prompt = _build_system_prompt({"body": "Do stuff.", "tools": []}, workspace)
-
+        assert prompt == "Do stuff."
         assert "Additional Resources" not in prompt
+        assert str(skill_dir) not in prompt
+        assert str(cli_dir) not in prompt
 
 
 class TestExternalAgentPaths:

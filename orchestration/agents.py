@@ -2822,20 +2822,6 @@ def _build_system_prompt(agent_def: dict, base_dir: str) -> str:
         if tool_docs:
             parts.append("\n\n## Available CLI Tools\n" + "\n\n".join(tool_docs))
 
-    external_resources = []
-    skill_paths = _configured_paths(SKILL_PATHS_ENV_VAR, LEGACY_SKILL_PATHS_ENV_VAR)
-    if skill_paths:
-        external_resources.append(
-            f"Additional skill definitions can be found in: {os.pathsep.join(skill_paths)}"
-        )
-    cli_paths = _configured_paths(CLI_PATHS_ENV_VAR, LEGACY_CLI_PATHS_ENV_VAR)
-    if cli_paths:
-        external_resources.append(
-            f"Additional CLI tools can be found in: {os.pathsep.join(cli_paths)}"
-        )
-    if external_resources:
-        parts.append("\n\n## Additional Resources\n" + "\n".join(external_resources))
-
     return "\n".join(parts)
 
 
@@ -3195,11 +3181,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     "Review their attachment lists and read only artifacts relevant to your role and current work. Agent-specific instructions may identify mandatory artifacts."
                 )
         elif ws:
-            states = list(ws.task_states.keys())
             task_prompt = (
-                "=== WORKSTREAM RUN ===\n"
-                f"You are running standalone in workstream '{ws.name}' (ID: {ws.id}).\n"
-                f"Available states for tasks on this workstream: {states}\n\n"
                 "=== ACCESSING TASKS ===\n"
                 "1. You may inspect tasks in this workstream and decide which ones to work on.\n"
                 f"2. Before you begin work on any specific task, acquire a lock through the orchestration system: {cli} lock acquire <task_id> --agent \"<agent_name>\"\n"

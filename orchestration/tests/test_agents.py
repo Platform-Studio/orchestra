@@ -1158,7 +1158,12 @@ def test_run_agent_workstream_only_prompt_includes_task_locking_contract(mock_po
 
     cmd = mock_popen.call_args.args[0]
     prompt = cmd[cmd.index("-p") + 1]
-    assert "Available states for tasks on this workstream:" in prompt
+    assert "=== ACCESSING TASKS ===" in prompt
+    assert "=== WORKSTREAM RUN ===" not in prompt
+    assert "You are running standalone in workstream" not in prompt
+    assert "Available states for tasks on this workstream:" not in prompt
+    assert ws.name not in prompt
+    assert ws.id not in prompt
     assert "You may inspect tasks in this workstream and decide which ones to work on." in prompt
     assert " -m orchestration.cli --base-dir " in prompt
     assert " lock acquire <task_id> --agent \"<agent_name>\"" in prompt
@@ -1890,7 +1895,8 @@ def test_run_agent_can_use_cline_runtime(mock_popen, mock_which, workspace):
     assert "=== SYSTEM INSTRUCTIONS ===" not in effective_prompt
     assert effective_prompt.index("=== ORCHESTRA OPERATING CONTRACT ===") < effective_prompt.index("=== RUNTIME CONTEXT ===")
     assert effective_prompt.index("=== RUNTIME CONTEXT ===") < effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===")
-    assert effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===") < effective_prompt.index("=== WORKSTREAM RUN ===")
+    assert effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===") < effective_prompt.index("=== ACCESSING TASKS ===")
+    assert "=== WORKSTREAM RUN ===" not in effective_prompt
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/cline")
@@ -1947,7 +1953,8 @@ def test_run_agent_can_use_copilot_runtime(mock_popen, mock_which, workspace):
     assert "=== SYSTEM INSTRUCTIONS ===" not in effective_prompt
     assert effective_prompt.index("=== ORCHESTRA OPERATING CONTRACT ===") < effective_prompt.index("=== RUNTIME CONTEXT ===")
     assert effective_prompt.index("=== RUNTIME CONTEXT ===") < effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===")
-    assert effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===") < effective_prompt.index("=== WORKSTREAM RUN ===")
+    assert effective_prompt.index("=== AGENT ROLE AND OPERATING INSTRUCTIONS ===") < effective_prompt.index("=== ACCESSING TASKS ===")
+    assert "=== WORKSTREAM RUN ===" not in effective_prompt
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "auto"
     assert "--output-format" in cmd
