@@ -28,9 +28,25 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from typing import Any, Callable, Optional
 
 import yaml
+
+
+_WINDOWS_REPLACE_ATTEMPTS = 5
+
+
+def _replace_tempfile(temp_path: str, path: str) -> None:
+    """Replace a file, retrying transient Windows sharing violations."""
+    for attempt in range(_WINDOWS_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temp_path, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == _WINDOWS_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def _atomic_write(
@@ -69,7 +85,7 @@ def _atomic_write(
                 # already pushed the data to the OS; we'll accept the
                 # weaker guarantee rather than failing the whole write.
                 pass
-        os.replace(temp_path, path)
+        _replace_tempfile(temp_path, path)
     except BaseException:
         # Catch BaseException (not just Exception) so KeyboardInterrupt /
         # SystemExit still clean up. The destination is untouched because

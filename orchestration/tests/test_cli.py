@@ -34,6 +34,7 @@ def run_cli(*args, base_dir=None, cwd=None):
     env["WORKSTREAM_ROOT"] = ""
     env["ARTIFACT_ROOT"] = ""
     env["ARTICACT_ROOT"] = ""
+    env["PYTHONIOENCODING"] = "utf-8"
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
 
@@ -41,6 +42,7 @@ def run_cli(*args, base_dir=None, cwd=None):
         [sys.executable, "-m", "orchestration.cli"] + cmd_args,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         cwd=cwd or repo_root,
     )
@@ -650,7 +652,7 @@ class TestCLIArtifact:
         data = json.loads(result.stdout)["data"]
         assert data["mode"] == "text"
         assert data["content"] == "# Hello"
-        assert data["resolved_path"].endswith("/artifacts/test.md")
+        assert Path(data["resolved_path"]) == Path(workspace) / "artifacts" / "test.md"
 
         # List
         result = run_cli("artifact", "list", base_dir=workspace)
@@ -692,7 +694,7 @@ class TestCLIArtifact:
         assert data["mode"] == "binary"
         assert data["content_type"] == "image/png"
         assert data["bytes"] > 0
-        assert data["resolved_path"].endswith("/artifacts/assets/pixel.png")
+        assert Path(data["resolved_path"]) == Path(workspace) / "artifacts" / "assets" / "pixel.png"
         assert "content" not in data
 
     def test_artifact_create_rejects_text_mode_for_raster_images(self, workspace):

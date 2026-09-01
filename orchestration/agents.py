@@ -2998,7 +2998,15 @@ def _classify_run_outcome(returncode: int, timeout_expired: bool, runtime_failed
         return "completed"
 
     # Treat termination signals as killed so UI/operator intent is preserved.
-    if returncode in (-signal.SIGTERM, 128 + signal.SIGTERM, -_FORCE_KILL_SIGNAL, 128 + _FORCE_KILL_SIGNAL):
+    termination_codes = {
+        -signal.SIGTERM,
+        128 + signal.SIGTERM,
+        -_FORCE_KILL_SIGNAL,
+        128 + _FORCE_KILL_SIGNAL,
+        -9,
+        137,
+    }
+    if returncode in termination_codes:
         return "killed"
 
     return "failed"
@@ -3461,6 +3469,10 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 output_bytes = os.path.getsize(log_path)
             except OSError:
                 output_bytes = 0
+        ended_at = datetime.now(timezone.utc).isoformat()
+        if output_bytes > 0 and not stream_stats.get("first_output_at"):
+            stream_stats["first_output_at"] = ended_at
+            stream_stats["last_output_at"] = ended_at
         run_meta["output_bytes"] = output_bytes
         run_meta["first_output_at"] = stream_stats.get("first_output_at")
         run_meta["last_output_at"] = stream_stats.get("last_output_at")
@@ -3468,7 +3480,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             run_meta["output_capture_error"] = stream_stats.get("output_capture_error")
         else:
             run_meta.pop("output_capture_error", None)
-        run_meta["ended_at"] = datetime.now(timezone.utc).isoformat()
+        run_meta["ended_at"] = ended_at
         run_meta["status"] = final_status
         run_meta["exit_code"] = returncode
         task_token_usage = None

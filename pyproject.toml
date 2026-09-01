@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
+    "tzdata>=2025.1; platform_system == 'Windows'",
 ]
 
 [project.scripts]

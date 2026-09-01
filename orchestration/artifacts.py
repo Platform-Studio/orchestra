@@ -152,7 +152,7 @@ def list_artifacts(prefix: str = None, base_dir: str = ".", workstream_id: str =
     for root, _dirs, files in os.walk(artifacts_dir):
         for fname in sorted(files):
             full = os.path.join(root, fname)
-            rel = os.path.relpath(full, artifacts_dir)
+            rel = os.path.relpath(full, artifacts_dir).replace(os.sep, "/")
             if prefix is None or rel.startswith(prefix):
                 result.append(rel)
     return sorted(result)

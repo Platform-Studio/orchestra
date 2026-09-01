@@ -379,7 +379,7 @@ def test_count_active_agent_runs_kills_expired_process_lock_runs(workspace, monk
 
     count = count_active_agent_runs("ws-1", "seo_indexer", base_dir=workspace)
     assert count == 0
-    assert killed == [(424242, 9)]
+    assert killed == [(424242, agents_module._FORCE_KILL_SIGNAL)]
 
     with open(active_path, "r", encoding="utf-8") as f:
         remaining = f.read()
@@ -1201,7 +1201,7 @@ def test_run_agent_prompt_uses_current_python_executable(mock_popen, mock_which,
     run_agent("test_agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
-    expected = f"{sys.executable} -m orchestration.cli --base-dir {workspace}"
+    expected = agents_module._orchestration_cli_command(workspace)
 
     prompt = cmd[cmd.index("-p") + 1]
     assert f"Read the task details with: {expected} task read {task.id}" in prompt
@@ -1226,7 +1226,7 @@ def test_run_agent_reads_multiple_tasks_in_one_ordered_command(mock_popen, mock_
 
     cmd = mock_popen.call_args.args[0]
     prompt = cmd[cmd.index("-p") + 1]
-    expected = f"{sys.executable} -m orchestration.cli --base-dir {workspace} task read {second.id} {first.id}"
+    expected = f"{agents_module._orchestration_cli_command(workspace)} task read {second.id} {first.id}"
     assert "=== TASKS ===" in prompt
     assert expected in prompt
     assert "Task IDs file" not in prompt
@@ -1300,13 +1300,23 @@ def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which,
     system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
     source_agents = os.path.join(agents_module.SOURCE_DIR, "Agents")
     workspace_agents = os.path.join(workspace, "Agents")
+    skill_paths = [
+        os.path.join(source_agents, "skills"),
+        os.path.join(workspace_agents, "skills"),
+        str(external_skills),
+    ]
+    cli_paths = [
+        os.path.join(source_agents, "cli"),
+        os.path.join(workspace_agents, "cli"),
+        str(external_cli),
+    ]
     assert f"1. ORCHESTRATION_ROOT={agents_module.SOURCE_DIR}" in system_prompt
     assert "This is where the Orchestra orchestration system is installed and running from." in system_prompt
     assert f"2. WORKSPACE_ROOT={working_root}" in system_prompt
     assert "This is where you should read and write code and do your work." in system_prompt
-    assert f'3. SKILL_DEFINITION_PATHS=["{source_agents}/skills","{workspace_agents}/skills","{external_skills}"]' in system_prompt
+    assert f"3. SKILL_DEFINITION_PATHS={json.dumps(skill_paths, separators=(',', ':'))}" in system_prompt
     assert "This is the list of places where you should look for skill definitions." in system_prompt
-    assert f'4. CLI_PATHS=["{source_agents}/cli","{workspace_agents}/cli","{external_cli}"]' in system_prompt
+    assert f"4. CLI_PATHS={json.dumps(cli_paths, separators=(',', ':'))}" in system_prompt
     assert "This is the list of places where you should look for Command Line Interface (CLI) tools." in system_prompt
     assert "Important: write product code only under WORKSPACE_ROOT." in system_prompt
     assert "WORKSTREAM_ROOT=" not in system_prompt
@@ -1319,8 +1329,8 @@ def test_run_agent_uses_working_directory_for_descendant(mock_popen, mock_which,
     assert popen_env["WORKSTREAM_ROOT"] == workspace
     assert popen_env["ARTIFACT_ROOT"] == workspace
     assert popen_env["AGENT_DEFINITION_PATHS"].split(os.pathsep) == [source_agents, workspace_agents, str(external_agents)]
-    assert popen_env["SKILL_DEFINITION_PATHS"].split(os.pathsep) == [f"{source_agents}/skills", f"{workspace_agents}/skills", str(external_skills)]
-    assert popen_env["CLI_PATHS"].split(os.pathsep) == [f"{source_agents}/cli", f"{workspace_agents}/cli", str(external_cli)]
+    assert popen_env["SKILL_DEFINITION_PATHS"].split(os.pathsep) == skill_paths
+    assert popen_env["CLI_PATHS"].split(os.pathsep) == cli_paths
     python_paths = popen_env["PYTHONPATH"].split(os.pathsep)
     assert agents_module.SOURCE_DIR in python_paths
     assert os.path.abspath(workspace) in python_paths
@@ -1724,7 +1734,11 @@ def test_run_agent_cli_parameters_include_required_flags(mock_popen, mock_which,
     assert "--verbose" in cmd
     assert "--dangerously-skip-permissions" in cmd
     assert "--effort" not in cmd
-    assert popen_kwargs.get("start_new_session") is True
+    if os.name == "nt":
+        assert popen_kwargs.get("creationflags") == subprocess.CREATE_NEW_PROCESS_GROUP
+        assert "start_new_session" not in popen_kwargs
+    else:
+        assert popen_kwargs.get("start_new_session") is True
 
     runs = list_agent_runs(limit=5, base_dir=workspace)
     latest = runs[0]

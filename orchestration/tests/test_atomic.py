@@ -168,7 +168,7 @@ class TestAtomicWriteJson:
     def test_can_opt_into_ensure_ascii_false(self, tmp_path):
         path = str(tmp_path / "out.json")
         atomic_write_json(path, {"name": "café"}, ensure_ascii=False)
-        text = open(path).read()
+        text = open(path, encoding="utf-8").read()
         assert "café" in text
 
     def test_interrupted_write_leaves_prior_file_intact(self, tmp_path):
@@ -491,6 +491,28 @@ class TestCallSiteAgents:
 
 class TestConcurrencyAndRobustness:
     """Misc robustness checks for the helper."""
+
+    def test_windows_replace_retries_transient_permission_errors(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "retry.yaml")
+        real_replace = os.replace
+        attempts = 0
+
+        def flaky_replace(source, destination):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("simulated Windows sharing violation")
+            real_replace(source, destination)
+
+        monkeypatch.setattr(_atomic.os, "name", "nt")
+        monkeypatch.setattr(_atomic.os, "replace", flaky_replace)
+        monkeypatch.setattr(_atomic.time, "sleep", lambda _delay: None)
+
+        atomic_write_yaml(path, {"written": True})
+
+        assert attempts == 3
+        with open(path, encoding="utf-8") as handle:
+            assert yaml.safe_load(handle) == {"written": True}
 
     def test_concurrent_writes_dont_corrupt_each_other(self, tmp_path):
         # Two threads writing to the same path simultaneously should
