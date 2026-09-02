@@ -8,6 +8,7 @@ import time
 import pytest
 
 from orchestration.agents import _parse_agent_md, _resolve_agent_file
+from orchestration.tasks import list_tasks
 from orchestration.workstreams import list_workstreams, read_workstream
 
 EXAMPLES_ROOT = Path(__file__).resolve().parents[2] / "examples"
@@ -165,6 +166,151 @@ def test_xmas_movies_initial_run_failure_explains_runtime_configuration(
     assert "agent CLI is authenticated" in warning
     assert "ORCHESTRATION_AGENT_RUNTIME to copilot or cline" in warning
     assert ".env.example" in warning
+
+
+def test_product_development_setup_mounts_repository_and_installs_workflow(tmp_path):
+    workspace = tmp_path / "workspace"
+    repository = tmp_path / "product"
+    repository.mkdir()
+    module = _load_example_module("product_development", "setup.py")
+
+    result = module.setup_example(workspace, repository)
+    workstreams = list_workstreams(base_dir=str(workspace))
+    examples = next(ws for ws in workstreams if ws.id == result["workstreams"]["examples"]["id"])
+    product = next(
+        ws
+        for ws in workstreams
+        if ws.id == result["workstreams"]["product_development"]["id"]
+    )
+
+    assert result["workspace"] == str(workspace.resolve())
+    assert result["repository"] == str(repository.resolve())
+    assert examples.parent_id is None
+    assert product.parent_id == examples.id
+    assert product.working_directory == str(repository.resolve())
+    assert product.task_states == module.PRODUCT_DEVELOPMENT_STATES
+    assert list_tasks(product.id, base_dir=str(workspace)) == []
+    assert len(product.triggers) == 7
+
+    triggers_by_agent = {trigger.agent: trigger for trigger in product.triggers}
+    for state, agent in (
+        ("Implementation Plan", "implementation_planner"),
+        ("In Progress", "coder"),
+        ("Code Review", "code_reviewer"),
+        ("Integration Test", "integration_tester"),
+        ("Deploy", "devops"),
+    ):
+        trigger = triggers_by_agent[agent]
+        assert trigger.on_state == state
+        assert trigger.task_selection == "first_unlocked"
+        assert trigger.paused is False
+
+    kanban = triggers_by_agent["kanban_ninja"]
+    assert kanban.on_schedule == "0 * * * *"
+    assert kanban.timezone == "UTC"
+    assert kanban.filter == {"state": "On Deck"}
+    assert kanban.paused is True
+    unblocker = triggers_by_agent["unblocker"]
+    assert unblocker.on_schedule == "*/30 * * * *"
+    assert unblocker.timezone == "UTC"
+    assert unblocker.filter == {"state": "Blocked"}
+    assert unblocker.paused is True
+
+    for agent_ref in triggers_by_agent:
+        agent_path = _resolve_agent_file(agent_ref, str(workspace))
+        parsed = _parse_agent_md(agent_path)
+        assert parsed["progress_checklist_enabled"] is True
+    for skill_name in (
+        "product_development_handoffs.md",
+        "product_development_engineering.md",
+        "product_development_deployment.md",
+    ):
+        assert (workspace / "Agents" / "skills" / skill_name).is_file()
+
+
+def test_product_development_explicit_workspace_ignores_environment_root(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    repository = tmp_path / "product"
+    conflicting_root = tmp_path / "configured-root"
+    repository.mkdir()
+    monkeypatch.setenv("WORKSTREAM_ROOT", str(conflicting_root))
+    monkeypatch.setenv("ARTIFACT_ROOT", str(conflicting_root))
+    module = _load_example_module("product_development", "setup.py")
+
+    result = module.setup_example(workspace, repository)
+
+    assert not conflicting_root.exists()
+    monkeypatch.setenv("WORKSTREAM_ROOT", "")
+    monkeypatch.setenv("ARTIFACT_ROOT", "")
+    assert len(list_workstreams(base_dir=str(workspace))) == 2
+    assert result["workspace"] == str(workspace.resolve())
+
+
+def test_product_development_setup_is_idempotent_and_rejects_other_repository(tmp_path):
+    workspace = tmp_path / "workspace"
+    repository = tmp_path / "product"
+    other_repository = tmp_path / "other-product"
+    repository.mkdir()
+    other_repository.mkdir()
+    module = _load_example_module("product_development", "setup.py")
+
+    first = module.setup_example(workspace, repository)
+    repeated = module.setup_example(workspace, repository)
+
+    assert repeated["workstreams"] == first["workstreams"]
+    assert len(list_workstreams(base_dir=str(workspace))) == 2
+    product = read_workstream(
+        first["workstreams"]["product_development"]["id"],
+        base_dir=str(workspace),
+    )
+    assert len(product.triggers) == 7
+    assert list_tasks(product.id, base_dir=str(workspace)) == []
+
+    with pytest.raises(RuntimeError, match="uses working directory"):
+        module.setup_example(workspace, other_repository)
+
+
+def test_product_development_setup_rejects_missing_repository(tmp_path):
+    module = _load_example_module("product_development", "setup.py")
+
+    with pytest.raises(ValueError, match="not an existing directory"):
+        module.setup_example(tmp_path / "workspace", tmp_path / "missing")
+
+    assert not (tmp_path / "workspace").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="example.sh requires a POSIX shell")
+def test_product_development_example_shell_installs_relative_repository(tmp_path):
+    workspace = tmp_path / "workspace"
+    repository = tmp_path / "product"
+    repository.mkdir()
+    relative_repository = os.path.relpath(repository, EXAMPLES_ROOT.parent)
+
+    completed = subprocess.run(
+        [
+            "sh",
+            str(EXAMPLES_ROOT.parent / "example.sh"),
+            "product_development",
+            "--workspace",
+            str(workspace),
+            "--repository",
+            relative_repository,
+        ],
+        cwd=EXAMPLES_ROOT.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = __import__("json").loads(completed.stdout)
+    product = read_workstream(
+        result["workstreams"]["product_development"]["id"],
+        base_dir=str(workspace),
+    )
+    assert result["repository"] == str(repository.resolve())
+    assert product.working_directory == str(repository.resolve())
 
 
 @pytest.mark.skipif(os.name == "nt", reason="setup.sh requires a POSIX shell")

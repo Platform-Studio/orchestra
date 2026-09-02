@@ -4,3 +4,7 @@ This folder contains various templates for setting up workstreams and tasks in t
 These templates can be used as starting points for common processes and can be customized as needed.
 
 Just point your agent to the relevant process and the orchestration CLI (`/Agents/cli/orchestration.md`) and tell it to create the workstream.
+
+## Available Templates
+
+- [Product Development](product_development.md) - A compact human-agent workflow for planning, implementation, review, pre-deployment testing, deployment, blocker resolution, and revision loops.

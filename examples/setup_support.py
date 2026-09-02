@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -26,9 +27,13 @@ def run_cli(workspace: Path, *args: str) -> Any:
     ]
     display_command = ["orc", "--base-dir", str(workspace), *args]
     print(f"+ {shlex.join(display_command)}", file=sys.stderr)
+    env = os.environ.copy()
+    for key in ("WORKSTREAM_ROOT", "ARTIFACT_ROOT", "ARTICACT_ROOT"):
+        env[key] = ""
     completed = subprocess.run(
         command,
         cwd=REPO_ROOT,
+        env=env,
         check=False,
         capture_output=True,
         text=True,
@@ -82,8 +87,12 @@ def ensure_workstream(
     description: str | None = None,
     context: str | None = None,
     states: dict[str, list[str]] | None = None,
+    working_directory: Path | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Find an exact workstream or create it; reject incompatible matches."""
+    resolved_working_directory = (
+        str(working_directory.resolve()) if working_directory is not None else None
+    )
     workstreams = run_cli(workspace, "workstream", "list")
     matches = [
         workstream
@@ -101,6 +110,16 @@ def ensure_workstream(
                 f"Existing workstream {name!r} has a different state map; "
                 "remove or rename it before installing this example"
             )
+        if (
+            resolved_working_directory is not None
+            and workstream.get("working_directory") != resolved_working_directory
+        ):
+            raise RuntimeError(
+                f"Existing workstream {name!r} uses working directory "
+                f"{workstream.get('working_directory')!r}, not "
+                f"{resolved_working_directory!r}; remove or rename it before "
+                "installing this example"
+            )
         return workstream, False
 
     args = ["workstream", "create", "--name", name]
@@ -112,6 +131,8 @@ def ensure_workstream(
         args.extend(["--context", context])
     if states is not None:
         args.extend(["--states", json.dumps(states, separators=(",", ":"))])
+    if resolved_working_directory is not None:
+        args.extend(["--working-directory", resolved_working_directory])
     return run_cli(workspace, *args), True
 
 
@@ -122,7 +143,9 @@ def ensure_trigger(
     action: str,
     on_state: str | None = None,
     on_schedule: str | None = None,
+    timezone: str | None = None,
     task_selection: str | None = None,
+    filter: dict[str, Any] | None = None,
     agent: str | None = None,
     prompt: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
@@ -131,9 +154,10 @@ def ensure_trigger(
         "action": action,
         "on_state": on_state,
         "on_schedule": on_schedule,
+        "timezone": timezone,
         "on_email": None,
         "task_selection": task_selection,
-        "filter": None,
+        "filter": filter,
         "agent": agent,
         "command": None,
         "prompt": prompt,
@@ -164,7 +188,9 @@ def ensure_trigger(
     for flag, value in (
         ("--on-state", on_state),
         ("--on-schedule", on_schedule),
+        ("--timezone", timezone),
         ("--task-selection", task_selection),
+        ("--filter", json.dumps(filter, separators=(",", ":")) if filter else None),
         ("--agent", agent),
         ("--prompt", prompt),
     ):
