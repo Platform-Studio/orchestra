@@ -66,7 +66,7 @@ In Workstream Manager:
 
 The state-based triggers are active. Moving a task into `Implementation Plan`, `In Progress`, `Code Review`, `Integration Test`, or `Deploy` may invoke your configured agent runtime and incur provider costs.
 
-The hourly `kanban_ninja` and 30-minute `unblocker` schedules install paused. Enable them from Workstream Manager or with `orc trigger resume <trigger-id>` after reviewing the workflow.
+The hourly `backlog_maintainer` and 30-minute `unblocker` schedules install paused. Enable them from Workstream Manager or with `orc trigger resume <trigger-id>` after reviewing the workflow.
 
 ## Deployment Safety
 

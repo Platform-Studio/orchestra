@@ -66,7 +66,7 @@ Create each trigger with `task_selection` set to `first_unlocked`:
 
 ## Scheduled Triggers
 
-- Hourly: run `kanban_ninja`, filtered to `{"state":"On Deck"}`.
+- Hourly: run `backlog_maintainer`, filtered to `{"state":"On Deck"}`.
 - Every 30 minutes: run `unblocker`, filtered to `{"state":"Blocked"}`.
 
 Install these schedules paused so the user can review the workflow and runtime costs before enabling them.

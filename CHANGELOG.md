@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-03
+
+Orchestra has been used in production by Platform Venture Studio to coordinate the agent workflows involved in building and operating multiple companies. This beta release marks the point at which its core architecture and interfaces are considered substantially stable. Broader external use may still identify installation, compatibility, and workflow issues before 1.0.
+
 ### Added
 
 - Packaged `orc` command with `orchestra` as a compatibility alias.
@@ -28,4 +32,4 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Added CI checks for secrets, dependency licenses, private identifiers, and internal paths.
 - Documented Orchestra's local trust model and command-execution boundaries.
 
-Release links will be added when the first public package release is tagged.
+[0.5.0]: https://github.com/Platform-Studio/orchestra/releases/tag/v0.5.0

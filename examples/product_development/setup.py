@@ -67,7 +67,7 @@ TRIGGER_SPECS = [
         "on_schedule": "0 * * * *",
         "timezone": "UTC",
         "filter": {"state": "On Deck"},
-        "agent": "kanban_ninja",
+        "agent": "backlog_maintainer",
         "prompt": "Review On Deck tasks for readiness and preserve their priority order.",
         "pause_on_create": True,
     },

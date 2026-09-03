@@ -1,5 +1,5 @@
 ---
-name: Kanban Ninja
+name: Backlog Maintainer
 description: Keeps ready product work ordered and identifies incomplete tasks.
 x-role: manager
 x-progress-checklist: true

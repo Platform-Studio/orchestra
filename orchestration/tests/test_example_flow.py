@@ -205,11 +205,11 @@ def test_product_development_setup_mounts_repository_and_installs_workflow(tmp_p
         assert trigger.task_selection == "first_unlocked"
         assert trigger.paused is False
 
-    kanban = triggers_by_agent["kanban_ninja"]
-    assert kanban.on_schedule == "0 * * * *"
-    assert kanban.timezone == "UTC"
-    assert kanban.filter == {"state": "On Deck"}
-    assert kanban.paused is True
+    backlog_maintainer = triggers_by_agent["backlog_maintainer"]
+    assert backlog_maintainer.on_schedule == "0 * * * *"
+    assert backlog_maintainer.timezone == "UTC"
+    assert backlog_maintainer.filter == {"state": "On Deck"}
+    assert backlog_maintainer.paused is True
     unblocker = triggers_by_agent["unblocker"]
     assert unblocker.on_schedule == "*/30 * * * *"
     assert unblocker.timezone == "UTC"
