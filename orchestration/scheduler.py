@@ -31,6 +31,7 @@ from .triggers import execute_trigger, trigger_pause_reason
 SCHEDULER_STATE_FILE = "scheduler_state.yaml"
 TICK_INTERVAL = 60  # seconds
 DEFAULT_TICK_TIMEOUT = 600  # seconds (10 min) — soft timeout for a stuck tick
+_WINDOWS = os.name == "nt"
 
 
 def _resolve_tick_timeout() -> int:
@@ -88,12 +89,48 @@ def _save_trigger_state(ws_id: str, trigger_id: str, trigger_state: dict, base_d
     atomic_write_yaml(path, trigger_state)
 
 
+def _is_live_windows_process(pid: int) -> bool:
+    """Check a Windows PID without using os.kill(pid, 0).
+
+    Unlike POSIX, Windows treats unsupported os.kill signals as process
+    termination requests. The native query API provides a side-effect-free
+    liveness check.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    error_access_denied = 5
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == error_access_denied
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _is_live_non_zombie(pid: int) -> bool:
     """True if `pid` is alive and not a zombie (`<defunct>`) process.
 
     `os.kill(pid, 0)` returns success for zombies, so it cannot be used
     alone to decide whether the scheduler is genuinely running.
     """
+    if _WINDOWS:
+        return _is_live_windows_process(pid)
+
     try:
         os.kill(pid, 0)
     except OSError:

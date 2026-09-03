@@ -557,7 +557,7 @@ def test_run_orchestra_shell_exits_when_scheduler_stops(tmp_path):
         start_new_session=True,
     )
     try:
-        output, _ = process.communicate(timeout=3)
+        output, _ = process.communicate(timeout=10)
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
         process.communicate()

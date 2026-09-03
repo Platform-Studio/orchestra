@@ -268,6 +268,21 @@ class TestSchedulerState:
         )
         assert _is_live_non_zombie(os.getpid()) is True
 
+    def test_is_live_non_zombie_uses_safe_windows_probe(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr("orchestration.scheduler._WINDOWS", True)
+        monkeypatch.setattr(
+            "orchestration.scheduler._is_live_windows_process",
+            lambda pid: calls.append(pid) or True,
+        )
+        monkeypatch.setattr(
+            "orchestration.scheduler.os.kill",
+            lambda *args: pytest.fail("os.kill must not probe Windows processes"),
+        )
+
+        assert _is_live_non_zombie(12345) is True
+        assert calls == [12345]
+
 
 class _FakeCompletedProcess:
     """Minimal stand-in for subprocess.run().CompletedProcess."""
