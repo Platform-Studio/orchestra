@@ -746,7 +746,9 @@ class TestWorkstream:
         assert body["data"]["working_directory"] == "/tmp/workspace"
         assert body["data"]["artifact_root"] == "/tmp/artifacts"
         assert body["data"]["child_workstream_root"] == "/tmp/workstreams"
-        assert body["data"]["resolved_artifact_directory"] == "/tmp/artifact-base/artifacts"
+        assert body["data"]["resolved_artifact_directory"] == os.path.join(
+            "/tmp/artifact-base", "artifacts"
+        )
         assert body["data"]["resolved_child_workstream_root"] == "/tmp/state-base"
 
     def test_info_includes_agent_concurrency(self, api):

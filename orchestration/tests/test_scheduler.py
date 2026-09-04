@@ -254,6 +254,7 @@ class TestSchedulerState:
         # 99999999 is well outside the realistic pid range on macOS/Linux.
         assert _is_live_non_zombie(99999999) is False
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows processes do not have a zombie state")
     def test_is_live_non_zombie_returns_false_for_zombie(self, monkeypatch):
         monkeypatch.setattr(
             "orchestration.scheduler.subprocess.run",
