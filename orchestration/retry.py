@@ -14,23 +14,12 @@ import time
 from datetime import datetime, timezone, timedelta
 
 from .models import RetryConfig, now_iso
-from .locks import find_expired_locks, find_orphaned_locks, force_release_lock
+from .locks import _is_process_alive, find_expired_locks, find_orphaned_locks, force_release_lock
 from .tasks import read_task, _save_task
 from .workstreams import read_workstream
 
 DEFAULT_RETRY_CONFIG = RetryConfig(max_retries=3, backoff="exponential", base_seconds=60)
 _FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
-
-
-def _is_process_alive(pid: int) -> bool:
-    """Check if a process is alive (signal 0 = existence check)."""
-    if pid is None:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
 
 
 def _is_our_process(pid: int) -> bool:

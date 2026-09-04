@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts import dev_servers
+from orchestration import persistence
 
 
 def test_ensure_process_started_raises_with_log_tail(tmp_path):
@@ -60,6 +61,14 @@ def test_log_dir_uses_resolved_artifact_root(monkeypatch, tmp_path):
     monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
 
     assert dev_servers._log_dir() == artifact_root / "artifacts" / "logs"
+
+
+def test_resolve_file_target_accepts_windows_drive_path(monkeypatch):
+    monkeypatch.setattr(persistence.os.path, "abspath", lambda path: path)
+
+    assert persistence._resolve_file_target(
+        r"C:\orchestra\artifacts", env_name="ARTIFACT_ROOT"
+    ) == r"C:\orchestra\artifacts"
 
 
 def test_display_path_falls_back_to_absolute_for_external_paths(tmp_path, monkeypatch):

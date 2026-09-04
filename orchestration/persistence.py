@@ -5,6 +5,7 @@ repository without changing the code workspace location.
 """
 
 import os
+import ntpath
 from urllib.parse import unquote, urlparse
 
 
@@ -19,10 +20,11 @@ def _default_root(base_dir: str) -> str:
 
 def _resolve_file_target(raw: str, *, env_name: str) -> str:
     parsed = urlparse(raw)
-    if parsed.scheme not in ("", "file"):
+    windows_drive, _ = ntpath.splitdrive(raw)
+    if parsed.scheme not in ("", "file") and not windows_drive:
         raise ValueError(f"{env_name} uses unsupported URI scheme '{parsed.scheme}'")
 
-    if parsed.scheme == "":
+    if parsed.scheme == "" or windows_drive:
         candidate = raw
     else:
         if parsed.netloc not in ("", "localhost"):

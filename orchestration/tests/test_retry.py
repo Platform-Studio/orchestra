@@ -674,3 +674,35 @@ class TestProcessAlive:
 
     def test_none_pid(self):
         assert _is_process_alive(None) is False
+
+    def test_windows_probe_does_not_use_os_kill(self, monkeypatch):
+        import ctypes
+
+        monkeypatch.setattr("orchestration.locks._WINDOWS", True)
+        monkeypatch.setattr(
+            "orchestration.locks.os.kill",
+            lambda *args: pytest.fail("os.kill must not probe Windows processes"),
+        )
+        monkeypatch.setattr(ctypes, "get_last_error", lambda: 87, raising=False)
+        monkeypatch.setattr(
+            ctypes,
+            "WinDLL",
+            lambda *args, **kwargs: _MissingWindowsProcess(),
+            raising=False,
+        )
+
+        assert _is_process_alive(99999999) is False
+
+
+class _MissingWindowsFunction:
+    argtypes = None
+    restype = None
+
+    def __call__(self, *args):
+        return 0
+
+
+class _MissingWindowsProcess:
+    OpenProcess = _MissingWindowsFunction()
+    GetExitCodeProcess = _MissingWindowsFunction()
+    CloseHandle = _MissingWindowsFunction()

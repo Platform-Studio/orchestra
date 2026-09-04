@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from orchestration.progress import add_progress_items, advance_progress, current_progress, init_progress, progress_path, read_progress_summary, update_progress_item
 
 
@@ -14,7 +16,9 @@ def test_progress_init_update_and_summary(tmp_path, monkeypatch):
     assert progress["task_ids"] == ["task-1", "task-2"]
     assert progress["agent"] == "coder"
     assert progress["items"][0]["id"] == "read-context"
-    assert progress_path("run-env", base_dir=str(tmp_path)).endswith(".orchestration/agent_runs/run-env/progress.yaml")
+    assert Path(progress_path("run-env", base_dir=str(tmp_path))).relative_to(tmp_path) == Path(
+        ".orchestration", "agent_runs", "run-env", "progress.yaml"
+    )
 
     update_progress_item("read-context", "active", run_id="run-env", base_dir=str(tmp_path))
     update_progress_item("read-context", "done", run_id="run-env", base_dir=str(tmp_path))
