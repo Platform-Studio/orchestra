@@ -300,9 +300,7 @@ def stop(base_dir: str = ".") -> dict:
     pid = state.get("pid")
     if pid is None:
         return {"message": "Scheduler is not running (no pid in state file)"}
-    try:
-        os.kill(pid, 0)  # check if alive
-    except OSError:
+    if not _is_live_non_zombie(pid):
         state.pop("pid", None)
         _save_state(state, base_dir)
         return {"message": f"Scheduler pid {pid} is not running (stale)"}
@@ -325,11 +323,10 @@ def status(base_dir: str = ".") -> dict:
     # Check if the scheduler process is alive via its pid
     pid = state.get("pid")
     if pid is not None:
-        try:
-            os.kill(pid, 0)  # signal 0 = check if process exists
+        if _is_live_non_zombie(pid):
             result["running"] = True
             result["pid"] = pid
-        except OSError:
+        else:
             result["running"] = False  # stale pid
     else:
         result["running"] = False

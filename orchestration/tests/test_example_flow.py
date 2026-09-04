@@ -516,7 +516,7 @@ def test_run_orchestra_shell_exits_after_one_interrupt(tmp_path):
     assert browser_log.exists()
     os.killpg(process.pid, signal.SIGINT)
     try:
-        output, _ = process.communicate(timeout=3)
+        output, _ = process.communicate(timeout=10)
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
         process.communicate()

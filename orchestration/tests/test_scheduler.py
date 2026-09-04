@@ -283,6 +283,17 @@ class TestSchedulerState:
         assert _is_live_non_zombie(12345) is True
         assert calls == [12345]
 
+    def test_status_uses_shared_liveness_probe(self, workspace, monkeypatch):
+        _save_state({"pid": 12345}, workspace)
+        calls = []
+        monkeypatch.setattr(
+            "orchestration.scheduler._is_live_non_zombie",
+            lambda pid: calls.append(pid) or True,
+        )
+
+        assert status(workspace) == {"running": True, "pid": 12345}
+        assert calls == [12345]
+
 
 class _FakeCompletedProcess:
     """Minimal stand-in for subprocess.run().CompletedProcess."""
