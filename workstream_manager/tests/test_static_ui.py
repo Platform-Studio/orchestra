@@ -273,6 +273,17 @@ def test_board_agent_run_chips_include_model_metadata() -> None:
     assert 'runMeta.summaryText' in html
 
 
+def test_board_agent_run_chips_show_name_and_wrapping_external_path() -> None:
+    html = _index_html()
+
+    assert "agent_display_name: run.agent_display_name || ''" in html
+    assert "agent_definition_dir: run.agent_definition_dir || ''" in html
+    assert "run.agent_display_name || run.agent || run.agent_ref" in html
+    assert 'class="card-agent-details"' in html
+    assert 'class="card-agent-path"' in html
+    assert "overflow-wrap: anywhere;" in html
+
+
 def test_board_cards_prefer_cost_footer_with_token_fallback() -> None:
     html = _index_html()
 

@@ -1209,6 +1209,40 @@ class TestScheduler:
 
 
 class TestAgent:
+    def test_agent_display_details_show_external_definition_directory(self, tmp_path, monkeypatch):
+        import workstream_manager.server as server
+
+        orchestra_root = tmp_path / "orchestra"
+        external_agents = tmp_path / "foundation" / "Agents"
+        orchestra_root.mkdir()
+        external_agents.mkdir(parents=True)
+        definition = external_agents / "funding_researcher.md"
+        definition.write_text("---\nname: Funding Researcher\n---\n", encoding="utf-8")
+        monkeypatch.setattr(server, "SOURCE_DIR", str(orchestra_root))
+
+        name, definition_dir = server._agent_display_details({
+            "agent": "Funding Researcher",
+            "agent_ref": str(definition),
+        })
+
+        assert name == "Funding Researcher"
+        assert definition_dir == str(external_agents) + os.sep
+
+    def test_agent_display_details_hide_internal_path_and_fall_back_to_filename(self, tmp_path, monkeypatch):
+        import workstream_manager.server as server
+
+        orchestra_root = tmp_path / "orchestra"
+        internal_agents = orchestra_root / "Agents"
+        internal_agents.mkdir(parents=True)
+        definition = internal_agents / "funding_researcher.md"
+        definition.write_text("# Funding Researcher\n", encoding="utf-8")
+        monkeypatch.setattr(server, "SOURCE_DIR", str(orchestra_root))
+
+        name, definition_dir = server._agent_display_details({"agent_ref": str(definition)})
+
+        assert name == "funding_researcher.md"
+        assert definition_dir is None
+
     def test_runs_summary_is_sorted_running_first(self, api):
         api.mocks["list_agent_runs"].return_value = [
             {
@@ -1251,6 +1285,8 @@ class TestAgent:
         assert code == 200
         assert [run["run_id"] for run in body["data"]] == ["run-running", "run-completed"]
         assert body["data"][0]["status"] == "running"
+        assert body["data"][0]["agent_display_name"] == "Running Agent"
+        assert body["data"][0]["agent_definition_dir"] is None
         assert "task_ids" in body["data"][0]
         assert "prompt" not in body["data"][0]
         assert "system_prompt" not in body["data"][0]

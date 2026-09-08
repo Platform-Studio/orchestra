@@ -90,7 +90,7 @@ from orchestration.locks import (
 from orchestration.triggers import create_trigger, list_triggers, delete_trigger, pause_trigger, resume_trigger, run_trigger_now, get_active_triggers
 from orchestration.scheduler import status as scheduler_status
 from orchestration.artifacts import read_artifact, _resolve_artifact_root, _validate_path
-from orchestration.agents import get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, read_agent_run_context_file, retry_agent_run, set_global_sound_mute, tail_active_agent
+from orchestration.agents import _resolve_agent_file, get_agent_run, get_global_sound_mute, kill_agent_run, list_active_agents, list_agent_runs, read_agent_run_context_file, retry_agent_run, set_global_sound_mute, tail_active_agent
 from orchestration.progress import read_progress_summary
 
 
@@ -369,11 +369,43 @@ def _sort_agent_runs_for_display(runs: list[dict]) -> list[dict]:
     return ordered
 
 
+def _agent_display_details(run: dict) -> tuple[str, str | None]:
+    agent_ref = str((run or {}).get("agent_ref") or "").strip()
+    display_name = str((run or {}).get("agent") or "").strip()
+    resolved_path = None
+
+    if agent_ref:
+        try:
+            resolved_path = _resolve_agent_file(agent_ref, WORKSPACE_DIR)
+        except FileNotFoundError:
+            if os.path.isabs(agent_ref):
+                resolved_path = os.path.abspath(os.path.expanduser(agent_ref))
+
+    if not display_name:
+        fallback_ref = resolved_path or agent_ref
+        display_name = os.path.basename(fallback_ref) if fallback_ref else "unknown"
+
+    definition_dir = None
+    if resolved_path:
+        resolved_path = os.path.abspath(resolved_path)
+        try:
+            is_external = os.path.commonpath([SOURCE_DIR, resolved_path]) != SOURCE_DIR
+        except ValueError:
+            is_external = True
+        if is_external:
+            definition_dir = os.path.dirname(resolved_path) + os.sep
+
+    return display_name, definition_dir
+
+
 def _serialize_agent_run_summary(run: dict) -> dict:
+    display_name, definition_dir = _agent_display_details(run)
     summary = {
         "run_id": run.get("run_id"),
         "agent": run.get("agent"),
         "agent_ref": run.get("agent_ref"),
+        "agent_display_name": display_name,
+        "agent_definition_dir": definition_dir,
         "workstream_id": run.get("workstream_id"),
         "workstream_path": run.get("workstream_path"),
         "task_ids": run.get("task_ids", []) or [],

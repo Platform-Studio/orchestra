@@ -763,7 +763,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .card-token-usage {
   margin-top: 6px;
   padding-top: 5px;
@@ -788,8 +788,33 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Sego
   padding: 0;
   cursor: pointer;
   text-decoration: none;
+  max-width: 100%;
+  align-items: flex-start;
+  text-align: left;
 }
 .card-agent-link:hover { color: #a5d6ff; text-decoration: underline; }
+.card-agent-details {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.card-agent-summary {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.card-agent-path {
+  max-width: 100%;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .card-agent-model {
   color: #8b949e;
   font-weight: 500;
@@ -3444,6 +3469,8 @@ function normalizeBoardRun(run) {
     run_id: run.run_id || '',
     agent: run.agent || '',
     agent_ref: run.agent_ref || '',
+    agent_display_name: run.agent_display_name || '',
+    agent_definition_dir: run.agent_definition_dir || '',
     task_ids: taskRunIds(run),
     started_at: run.started_at || '',
     ended_at: run.ended_at || '',
@@ -3795,11 +3822,15 @@ function renderCard(task, lock, state) {
   let meta = '';
   if (lock && lock.locked) {
     const run = cardRun;
-    const agentLabel = lock.agent_id || (run && (run.agent || run.agent_ref)) || 'agent';
+    const lockAgentRef = String(lock.agent_id || '');
+    const fallbackAgentLabel = lockAgentRef.split(/[\\/]/).pop() || 'agent';
+    const agentLabel = (run && (run.agent_display_name || run.agent || run.agent_ref)) || fallbackAgentLabel;
+    const agentDefinitionDir = run && run.agent_definition_dir;
     if (run && run.run_id) {
       const duration = formatRunDuration(run.started_at, run.ended_at);
       const runMeta = formatRunModelMetadata(run);
-      meta += `<button type="button" class="card-lock card-agent-link" data-agent-run-id="${esc(run.run_id)}" title="Open ${esc(agentLabel)} run · ${esc(runMeta.summaryText)}">${ICON_AGENT} ${esc(agentLabel)} <span class="card-agent-model">· ${esc(runMeta.cardChipText)}</span> <span class="card-agent-duration" data-started-at="${esc(run.started_at || '')}" data-ended-at="${esc(run.ended_at || '')}">${esc(duration)}</span></button>`;
+      const definitionPathHtml = agentDefinitionDir ? `<span class="card-agent-path">${esc(agentDefinitionDir)}</span>` : '';
+      meta += `<button type="button" class="card-lock card-agent-link" data-agent-run-id="${esc(run.run_id)}" title="Open ${esc(agentLabel)} run · ${esc(runMeta.summaryText)}">${ICON_AGENT}<span class="card-agent-details"><span class="card-agent-summary">${esc(agentLabel)} <span class="card-agent-model">· ${esc(runMeta.cardChipText)}</span> <span class="card-agent-duration" data-started-at="${esc(run.started_at || '')}" data-ended-at="${esc(run.ended_at || '')}">${esc(duration)}</span></span>${definitionPathHtml}</span></button>`;
     } else {
       meta += `<span class="card-lock">${ICON_AGENT} ${esc(agentLabel)}</span>`;
     }
