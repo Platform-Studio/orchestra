@@ -151,7 +151,6 @@ All of these pause/resume actions can be done with one click through the Workstr
 |-- examples/
 |   |-- fruit_and_veg/      # Fruit and Vegetable example definitions and installer
 |   |-- install_smoke/      # Deterministic installation smoke test
-|   |-- product_development/ # Repository-mounted product delivery workflow
 |   `-- xmas_movies/        # Xmas Movies agents, skill, and installer
 |-- orchestration/
 |   |-- templates/          # Built-in orchestration templates
@@ -242,7 +241,6 @@ Examples are installed through `example.sh`. Run it from the Orchestra repositor
 
 ```bash
 ./example.sh fruit_and_veg
-./example.sh product_development --repository ../my-product
 ./example.sh xmas_movies
 ```
 
@@ -251,12 +249,9 @@ The installer copies the example's agent and skill definitions and Orchestra's b
 | Example | Install command | Default workspace | What it demonstrates |
 |---|---|---|---|
 | [Fruit and Vegetable Sorter](examples/fruit_and_veg/README.md) | `./example.sh fruit_and_veg` | `./fruit-and-veg-workspace` | Scheduled generation, state-based classification, comments, tags, and state transitions |
-| [Product Development](examples/product_development/README.md) | `./example.sh product_development --repository ../my-product` | `./product-development-workspace` | Humans and agents collaborating across planning, implementation, review, pre-deployment testing, deployment, blocker resolution, and revision loops |
 | [Xmas Movies](examples/xmas_movies/README.md) | `./example.sh xmas_movies` | `./xmas-movies-workspace` | Hierarchical workstreams, a branching state machine, a reusable skill, and four collaborating agents |
 
-These examples use your configured Claude Code, Cline, or GitHub Copilot CLI runtime. The runtime must be authenticated, and running agents will use tokens!
-
-The Product Development example requires an existing product repository. Its `--workspace` directory stores Orchestra state, while `--repository` mounts the code directory as the workstream's `working_directory`. Installation creates no tasks and runs no agents. Add your own cards to `Backlog`, move ready work to `On Deck`, then move a card to `Implementation Plan` to begin the state-triggered flow. State triggers install active; the hourly queue-maintenance and 30-minute unblocker schedules install paused. Moving cards through active lanes may incur provider costs, and moving a card to `Deploy` can change a real environment when the repository provides deployment instructions and access.
+Both examples use your configured Claude Code, Cline, or GitHub Copilot CLI runtime. The runtime must be authenticated, and running agents will use tokens!
 
 ### Agent Definitions
 
