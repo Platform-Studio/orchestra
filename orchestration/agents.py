@@ -931,7 +931,7 @@ def _candidate_context_roots(runtime: str) -> list[dict]:
         claude_home = os.path.abspath(os.path.expanduser(claude_home))
         roots.extend([
             {"provider": "claude-code", "kind": "claude_projects", "root": os.path.join(claude_home, "projects")},
-            {"provider": "claude-code", "kind": "claude_home", "root": claude_home},
+            {"provider": "claude-code", "kind": "claude_home", "root": claude_home, "exclude": ["projects"]},
         ])
         return roots
 
@@ -954,14 +954,24 @@ def _candidate_context_roots(runtime: str) -> list[dict]:
     return roots
 
 
-def _context_file_snapshot(root: str) -> dict:
-    """Return a lightweight file snapshot for a provider context root."""
+def _context_file_snapshot(root: str, exclude: list[str] | None = None) -> dict:
+    """Return a lightweight file snapshot for a provider context root.
+
+    `exclude` holds paths relative to `root` (e.g. a subdirectory already
+    captured by another registered source) that should be skipped entirely.
+    """
     snapshot = {}
     if not root or not os.path.isdir(root):
         return snapshot
 
+    excluded_abs = {os.path.abspath(os.path.join(root, rel)) for rel in (exclude or [])}
+
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in {"node_modules", ".git", "__pycache__"}]
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in {"node_modules", ".git", "__pycache__"}
+            and os.path.abspath(os.path.join(dirpath, d)) not in excluded_abs
+        ]
         for filename in filenames:
             path = os.path.join(dirpath, filename)
             try:
@@ -986,7 +996,7 @@ def _snapshot_provider_context(runtime: str) -> dict:
         sources.append({
             **source,
             "exists": exists,
-            "files": _context_file_snapshot(root) if exists else {},
+            "files": _context_file_snapshot(root, exclude=source.get("exclude")) if exists else {},
         })
     return {
         "runtime": _normalize_agent_runtime(runtime),
@@ -999,7 +1009,7 @@ def _changed_context_files(source: dict) -> list[str]:
     """Return files that appeared or changed after the pre-run snapshot."""
     root = source.get("root")
     before = source.get("files") or {}
-    after = _context_file_snapshot(root)
+    after = _context_file_snapshot(root, exclude=source.get("exclude"))
     changed = []
     for path, stat in after.items():
         previous = before.get(path)

@@ -606,6 +606,41 @@ def test_capture_provider_context_missing_roots_warns_without_failure(workspace,
     assert details["manifest"]["storage"]["central"] is True
 
 
+def test_capture_provider_context_claude_home_excludes_projects_subtree(workspace, tmp_path, monkeypatch):
+    claude_home = tmp_path / ".claude"
+    project_dir = claude_home / "projects" / "my-project"
+    project_dir.mkdir(parents=True)
+    monkeypatch.setenv("ORCHESTRATION_CLAUDE_CONFIG_DIR", str(claude_home))
+
+    snapshot = agents_module._snapshot_provider_context("claude-code")
+
+    session_path = project_dir / "session.jsonl"
+    session_path.write_text(json.dumps({"role": "user", "content": "hello"}) + "\n", encoding="utf-8")
+    settings_path = claude_home / "settings.json"
+    settings_path.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+
+    capture = agents_module._capture_provider_context(workspace, "run-claude-dedup", "claude-code", snapshot)
+
+    assert capture["file_count"] == 2
+    details = get_agent_run_context("run-claude-dedup", base_dir=workspace)
+    files = details["files"]
+    assert len(files) == 2
+
+    original_paths = {f["original_path"] for f in files}
+    assert len(original_paths) == 2
+
+    session_abs = os.path.abspath(str(session_path))
+    settings_abs = os.path.abspath(str(settings_path))
+
+    session_entries = [f for f in files if f["original_path"] == session_abs]
+    assert len(session_entries) == 1
+    assert session_entries[0]["kind"] == "claude_projects"
+
+    settings_entries = [f for f in files if f["original_path"] == settings_abs]
+    assert len(settings_entries) == 1
+    assert settings_entries[0]["kind"] == "claude_home"
+
+
 def test_read_agent_run_context_file_blocks_path_traversal(workspace):
     context_dir = agents_module._agent_run_context_dir(workspace, "run-traversal")
     os.makedirs(context_dir, exist_ok=True)
