@@ -1185,6 +1185,36 @@ class TestCLIWorkstreamManager:
 
         assert calls == [(workspace, 8080, False)]
 
+    def test_worksm_stop_passes_workspace(self, workspace, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "workstream_manager.server.stop",
+            lambda base_dir: calls.append(base_dir) or {"message": "stopped"},
+        )
+        args = build_parser().parse_args([
+            "--base-dir", workspace,
+            "worksm", "stop",
+        ])
+
+        args.func(args)
+
+        assert calls == [workspace]
+
+    def test_worksm_status_passes_workspace(self, workspace, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "workstream_manager.server.status",
+            lambda base_dir: calls.append(base_dir) or {"running": False},
+        )
+        args = build_parser().parse_args([
+            "--base-dir", workspace,
+            "worksm", "status",
+        ])
+
+        args.func(args)
+
+        assert calls == [workspace]
+
 
 class TestCLIEnv:
     def test_set_get_list_local(self, workspace):

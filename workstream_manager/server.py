@@ -13,6 +13,7 @@ Usage:
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import base64
@@ -20,6 +21,7 @@ import mimetypes
 import threading
 import time
 import webbrowser
+import yaml
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs, unquote
@@ -47,6 +49,62 @@ if SOURCE_DIR not in sys.path:
     sys.path.insert(0, SOURCE_DIR)
 
 from orchestration.persistence import resolve_workstream_root
+from orchestration._atomic import atomic_write_yaml
+from orchestration.scheduler import _is_live_non_zombie
+
+
+WORKSTREAM_MANAGER_STATE_FILE = "workstream_manager_state.yaml"
+
+
+def _state_path(base_dir: str) -> str:
+    return os.path.join(resolve_workstream_root(base_dir), WORKSTREAM_MANAGER_STATE_FILE)
+
+
+def _load_state(base_dir: str) -> dict:
+    path = _state_path(base_dir)
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def _save_state(state: dict, base_dir: str) -> None:
+    atomic_write_yaml(_state_path(base_dir), state)
+
+
+def _existing_running_pid(base_dir: str):
+    state = _load_state(base_dir)
+    pid = state.get("pid")
+    if pid is None:
+        return None
+    if _is_live_non_zombie(pid):
+        return pid
+    state.pop("pid", None)
+    state.pop("port", None)
+    _save_state(state, base_dir)
+    return None
+
+
+def stop(base_dir: str = ".") -> dict:
+    state = _load_state(base_dir)
+    pid = state.get("pid")
+    if pid is None:
+        return {"message": "Workstream Manager is not running (no pid in state file)"}
+    if not _is_live_non_zombie(pid):
+        state.pop("pid", None)
+        state.pop("port", None)
+        _save_state(state, base_dir)
+        return {"message": f"Workstream Manager pid {pid} is not running (stale)"}
+    os.kill(pid, signal.SIGTERM)
+    return {"message": f"Sent SIGTERM to Workstream Manager (pid={pid})"}
+
+
+def status(base_dir: str = ".") -> dict:
+    state = _load_state(base_dir)
+    pid = _existing_running_pid(base_dir)
+    if pid is None:
+        return {"running": False}
+    return {"running": True, "pid": pid, "port": state.get("port")}
 
 
 def _resolve_workspace_dir_default() -> str:
@@ -1334,7 +1392,23 @@ class Handler(SimpleHTTPRequestHandler):
 
 def run(base_dir: str, port: int = 8080, open_browser: bool = True) -> None:
     set_workspace_dir(base_dir)
+    abs_dir = os.path.abspath(base_dir)
+    existing_pid = _existing_running_pid(abs_dir)
+    if existing_pid is not None and existing_pid != os.getpid():
+        raise RuntimeError(
+            f"Workstream Manager is already running for this workspace (pid={existing_pid}). "
+            "Stop it first via `python -m orchestration.cli worksm stop`."
+        )
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    state = _load_state(abs_dir)
+    state.update({"pid": os.getpid(), "port": port})
+    _save_state(state, abs_dir)
+
+    def handle_signal(sig, frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    previous_sigterm = signal.signal(signal.SIGTERM, handle_signal)
+    previous_sigint = signal.signal(signal.SIGINT, handle_signal)
     url = f"http://localhost:{port}"
     print(f"Workstream Manager running at {url}")
     print(f"Managing orchestration workspace: {WORKSPACE_DIR}")
@@ -1350,6 +1424,16 @@ def run(base_dir: str, port: int = 8080, open_browser: bool = True) -> None:
     except KeyboardInterrupt:
         print("\nShutting down.")
         server.shutdown()
+    finally:
+        server.server_close()
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGINT, previous_sigint)
+        state = _load_state(abs_dir)
+        if state.get("pid") == os.getpid():
+            state.pop("pid", None)
+            state.pop("port", None)
+            _save_state(state, abs_dir)
+        print("Workstream Manager stopped.")
 
 
 def main():

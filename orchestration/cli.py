@@ -801,6 +801,16 @@ def cmd_worksm_start(args):
     run(base_dir=args.base_dir, port=args.port, open_browser=not args.no_open)
 
 
+def cmd_worksm_stop(args):
+    from workstream_manager.server import stop
+    _output(stop(base_dir=args.base_dir))
+
+
+def cmd_worksm_status(args):
+    from workstream_manager.server import status
+    _output(status(base_dir=args.base_dir))
+
+
 # ── Artifact commands ────────────────────────────────────────────────
 
 def cmd_audit_log(args):
@@ -1323,6 +1333,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--no-open", action="store_true", help="Do not open a browser")
     p.set_defaults(func=cmd_worksm_start)
+
+    p = worksm_sub.add_parser("stop", help="Stop a running Workstream Manager process")
+    p.set_defaults(func=cmd_worksm_stop)
+
+    p = worksm_sub.add_parser("status", help="Show Workstream Manager process status")
+    p.set_defaults(func=cmd_worksm_status)
 
     # ── Audit ────────────────────────────────────────────────────────
     audit_parser = subparsers.add_parser("audit")

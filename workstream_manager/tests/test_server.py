@@ -37,6 +37,9 @@ class TestServerStartup:
             def shutdown(self):
                 pass
 
+            def server_close(self):
+                pass
+
         monkeypatch.setattr("workstream_manager.server.ThreadingHTTPServer", FakeServer)
         monkeypatch.setattr("workstream_manager.server.webbrowser.open", lambda url: opened.append(url) or True)
 
@@ -55,6 +58,9 @@ class TestServerStartup:
                 raise KeyboardInterrupt
 
             def shutdown(self):
+                pass
+
+            def server_close(self):
                 pass
 
         monkeypatch.setattr("workstream_manager.server.ThreadingHTTPServer", FakeServer)
