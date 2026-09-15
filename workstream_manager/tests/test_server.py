@@ -1219,7 +1219,7 @@ class TestAgent:
         import workstream_manager.server as server
 
         orchestra_root = tmp_path / "orchestra"
-        external_agents = tmp_path / "foundation" / "Agents"
+        external_agents = tmp_path / "external-workspace" / "Agents"
         orchestra_root.mkdir()
         external_agents.mkdir(parents=True)
         definition = external_agents / "funding_researcher.md"
