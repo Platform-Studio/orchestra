@@ -3156,6 +3156,11 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
         system_prompt = "\n\n".join(system_sections)
 
         if tasks and ws:
+            assigned_task_lock_note = (
+                "The orchestration system has already locked any tasks it has provided you with, "
+                "and will release those locks when you complete your work. Do NOT attempt to lock "
+                "or unlock tasks yourself."
+            )
             if len(tasks) == 1:
                 task = tasks[0]
                 task_prompt = (
@@ -3165,7 +3170,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     f"Valid next states: {ws.task_states.get(task.status, [])}\n\n"
                     "=== ACCESSING YOUR TASK ===\n"
                     f"Read the task details with: {cli} task read {task.id}\n"
-                    "Review its attachment list and read only artifacts relevant to your role and current work. Agent-specific instructions may identify mandatory artifacts."
+                    "Review its attachment list and read only artifacts relevant to your role and current work. Agent-specific instructions may identify mandatory artifacts.\n"
+                    f"{assigned_task_lock_note}"
                 )
             else:
                 task_lines = []
@@ -3186,7 +3192,8 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                     "=== ACCESSING YOUR TASKS ===\n"
                     f"Read all assigned task details with: {cli} task read "
                     + " ".join(shlex.quote(t.id) for t in tasks) + "\n"
-                    "Review their attachment lists and read only artifacts relevant to your role and current work. Agent-specific instructions may identify mandatory artifacts."
+                    "Review their attachment lists and read only artifacts relevant to your role and current work. Agent-specific instructions may identify mandatory artifacts.\n"
+                    f"{assigned_task_lock_note}"
                 )
         elif ws:
             task_prompt = (

@@ -1205,6 +1205,12 @@ def test_run_agent_prompt_uses_current_python_executable(mock_popen, mock_which,
 
     prompt = cmd[cmd.index("-p") + 1]
     assert f"Read the task details with: {expected} task read {task.id}" in prompt
+    lock_note = (
+        "The orchestration system has already locked any tasks it has provided you with, "
+        "and will release those locks when you complete your work. Do NOT attempt to lock "
+        "or unlock tasks yourself."
+    )
+    assert prompt.count(lock_note) == 1
 
     system_prompt = cmd[cmd.index("--append-system-prompt") + 1]
     assert f"CLI command: {expected} <command>" in system_prompt
@@ -1233,6 +1239,12 @@ def test_run_agent_reads_multiple_tasks_in_one_ordered_command(mock_popen, mock_
     assert prompt.count("valid next:") == 0
     assert prompt.count("Valid next states for assigned task statuses:") == 1
     assert prompt.count(f"{first.status} ->") == 1
+    lock_note = (
+        "The orchestration system has already locked any tasks it has provided you with, "
+        "and will release those locks when you complete your work. Do NOT attempt to lock "
+        "or unlock tasks yourself."
+    )
+    assert prompt.count(lock_note) == 1
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/claude")
