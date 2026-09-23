@@ -60,6 +60,8 @@ BEANS_PROXY_PORT_ENV_VAR = "BEANS_PROXY_PORT"
 COPILOT_PROVIDER_BASE_URL_ENV_VAR = "COPILOT_PROVIDER_BASE_URL"
 COPILOT_PROVIDER_TYPE_ENV_VAR = "COPILOT_PROVIDER_TYPE"
 COPILOT_PROVIDER_API_KEY_ENV_VAR = "COPILOT_PROVIDER_API_KEY"
+OLLAMA_LOCAL_URL_ENV_VAR = "OLLAMA_LOCAL_URL"
+OLLAMA_DEFAULT_MODEL_ENV_VAR = "OLLAMA_DEFAULT_MODEL"
 CLINE_DATA_DIR_ENV_VAR = "CLINE_DATA_DIR"
 GLOBAL_SOUND_MUTE_FILENAME = "global_sound_muted"
 AGENTS_DIR_ENV_VAR = "ORCHESTRATION_AGENTS_DIR"
@@ -2148,10 +2150,19 @@ def _model_from_level(level: str, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
 
 
 def _resolve_agent_model(agent_def: dict, runtime: str = DEFAULT_AGENT_RUNTIME) -> str:
-    """Resolve model with precedence: x-model > x-model-level > runtime default."""
+    """Resolve model with precedence: x-model > provider default > model level > runtime default."""
     explicit_model = _normalize_model_name(agent_def.get("model"))
     if explicit_model:
         return explicit_model
+
+    provider = _normalize_agent_provider(agent_def.get("provider"))
+    if provider == "ollama":
+        model = _normalize_model_name(os.getenv(OLLAMA_DEFAULT_MODEL_ENV_VAR))
+        if not model:
+            raise ValueError(
+                f"x-provider 'ollama' requires x-model or env var {OLLAMA_DEFAULT_MODEL_ENV_VAR}"
+            )
+        return model
 
     level = agent_def.get("model_level")
     if str(level or "").strip():
@@ -2252,17 +2263,52 @@ def _normalize_agent_runtime(raw: str) -> str:
     )
 
 
+def _normalize_agent_provider(raw: str) -> str | None:
+    """Normalize optional model provider identifiers."""
+    provider = str(raw or "").strip().lower()
+    if not provider:
+        return None
+    if provider == "ollama":
+        return provider
+    raise ValueError(f"Invalid x-provider '{raw}'. Expected: ollama")
+
+
+def _resolve_agent_provider(agent_def: dict) -> str | None:
+    """Resolve the optional provider selected by agent frontmatter."""
+    return _normalize_agent_provider(agent_def.get("provider"))
+
+
 def _resolve_agent_runtime(agent_def: dict) -> str:
-    """Resolve runtime with precedence: x-runtime > ORCHESTRATION_AGENT_RUNTIME > default."""
+    """Resolve runtime with precedence: x-runtime > provider default > env > default."""
     explicit_runtime = str(agent_def.get("runtime") or "").strip()
     if explicit_runtime:
         return _normalize_agent_runtime(explicit_runtime)
+
+    if _resolve_agent_provider(agent_def) == "ollama":
+        return "copilot"
 
     env_runtime = str(os.getenv(AGENT_RUNTIME_ENV_VAR, "") or "").strip()
     if env_runtime:
         return _normalize_agent_runtime(env_runtime)
 
     return DEFAULT_AGENT_RUNTIME
+
+
+def _configure_agent_provider(provider: str | None, runtime: str, env: dict, model: str) -> None:
+    """Configure provider-specific settings in the runtime child environment."""
+    if provider != "ollama":
+        return
+    if _normalize_agent_runtime(runtime) != "copilot":
+        raise ValueError("x-provider 'ollama' currently supports only x-runtime 'copilot'")
+
+    local_url = str(env.get(OLLAMA_LOCAL_URL_ENV_VAR) or "").strip()
+    if not local_url:
+        raise ValueError(f"x-provider 'ollama' requires env var {OLLAMA_LOCAL_URL_ENV_VAR}")
+
+    env[COPILOT_PROVIDER_BASE_URL_ENV_VAR] = local_url
+    env[COPILOT_PROVIDER_TYPE_ENV_VAR] = "openai"
+    env[COPILOT_PROVIDER_API_KEY_ENV_VAR] = "ollama"
+    env[COPILOT_DEFAULT_MODEL_ENV_VAR] = model
 
 
 def _resolve_runtime_executable(runtime: str) -> str:
@@ -2750,6 +2796,7 @@ def _parse_agent_md(path: str) -> dict:
         "model_level": header.get("x-model-level"),
         "effort": header.get("x-effort"),
         "runtime": header.get("x-runtime"),
+        "provider": header.get("x-provider"),
         "sound_start": header.get("x-sound-start"),
         "sound_start_defined": "x-sound-start" in header,
         "sound_finish": header.get("x-sound-finish"),
@@ -3035,6 +3082,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
     agent_file = _resolve_agent_file(agent_name, base_dir)
     agent_def = _parse_agent_md(agent_file)
+    provider = _resolve_agent_provider(agent_def)
     runtime = _resolve_agent_runtime(agent_def)
     runtime_path = _resolve_runtime_executable(runtime)
 
@@ -3260,6 +3308,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             # Copilot CLI authenticates with GitHub tokens/session state. Do not
             # forward an ambient OpenAI key into the child process.
             env.pop("OPENAI_API_KEY", None)
+        _configure_agent_provider(provider, runtime, env, model)
         abs_base = os.path.abspath(base_dir)
         existing_pythonpath = str(env.get("PYTHONPATH", "") or "")
         python_paths = [SOURCE_DIR, abs_base]
@@ -3273,6 +3322,7 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
             "agent": agent_def["name"],
             "agent_ref": agent_name,
             "runtime": runtime,
+            "provider": provider,
             "model": model,
             "effort": effort,
             "workstream_id": workstream_id,
@@ -3300,14 +3350,17 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
 
         process_cwd = workspace_root if owned_worktree else abs_base
         task_cwd = workspace_root if runtime == "cline" else process_cwd
-        proxy_context = _configure_runtime_proxy(
-            runtime,
-            runtime_path,
-            env,
-            list(task_ids),
-            model,
-            process_cwd,
-        )
+        if provider == "ollama":
+            proxy_context = {"enabled": False}
+        else:
+            proxy_context = _configure_runtime_proxy(
+                runtime,
+                runtime_path,
+                env,
+                list(task_ids),
+                model,
+                process_cwd,
+            )
         if proxy_context.get("enabled"):
             run_meta["beans_proxy"] = {
                 "proxy_url": proxy_context.get("proxy_url"),

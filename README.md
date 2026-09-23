@@ -301,6 +301,7 @@ Supported headers include:
 | `name` | Human-readable agent name |
 | `description` | Short description used in listings |
 | `x-role` | `worker`, `manager`, `director`, or `executive`; `exec` is accepted as an alias |
+| `x-provider` | Optional model provider; `ollama` runs locally through Copilot CLI |
 | `x-runtime` | `claude-code`, `cline`, or `copilot`; `claude` aliases `claude-code` |
 | `x-model` | Exact model identifier; overrides `x-model-level` |
 | `x-model-level` | Logical `high`, `medium`, `low`, or `coding` model tier |
@@ -417,14 +418,16 @@ The runner contract turns an agent definition plus task/workstream context into 
 Runtime selection precedence is:
 
 1. Agent `x-runtime`
-2. `ORCHESTRATION_AGENT_RUNTIME`
-3. `claude-code`
+2. Provider default (`copilot` for `x-provider: ollama`)
+3. `ORCHESTRATION_AGENT_RUNTIME`
+4. `claude-code`
 
 Model selection precedence is:
 
 1. Agent `x-model`
-2. Agent `x-model-level` mapped through runtime-specific environment settings
-3. Runtime default
+2. Provider default (`OLLAMA_DEFAULT_MODEL` for `x-provider: ollama`)
+3. Agent `x-model-level` mapped through runtime-specific environment settings
+4. Runtime default
 
 Effort selection precedence is:
 
@@ -503,6 +506,15 @@ BEANS_PROXY_PORT=8000
 ```
 
 Install and run [Beans Proxy](https://github.com/platform-studio/beans-proxy) according to its instructions. Orchestra will then route supported agent calls through the proxy to track token usage.
+
+Agents with `x-provider: ollama` bypass Beans Proxy and run locally through Copilot CLI. Configure the local OpenAI-compatible endpoint and default model with:
+
+```dotenv
+OLLAMA_LOCAL_URL=http://127.0.0.1:11434/v1
+OLLAMA_DEFAULT_MODEL=gemma4:latest
+```
+
+`x-model` overrides `OLLAMA_DEFAULT_MODEL`. `x-runtime` is optional and currently must be `copilot` when specified for the Ollama provider.
 
 ## Development
 
