@@ -39,6 +39,7 @@ We evaluated the available agent frameworks in early 2026, but none matched that
 - State-based and scheduled agent triggers
 - Configurable agent concurrency and task locking
 - Agent execution through Claude Code, Cline, or GitHub Copilot CLI
+- Support for local models with Ollama
 - Markdown agent definitions with YAML frontmatter
 - Per-workstream context shared across agent runs
 - Optional accumulated learnings that improve future runs
@@ -505,9 +506,11 @@ BEANS_PROXY_HOST=127.0.0.1
 BEANS_PROXY_PORT=8000
 ```
 
-Install and run [Beans Proxy](https://github.com/platform-studio/beans-proxy) according to its instructions. Orchestra will then route supported agent calls through the proxy to track token usage.
+## Using Local Models with Ollama
 
-Agents with `x-provider: ollama` bypass Beans Proxy and run locally through Copilot CLI. Configure the local OpenAI-compatible endpoint and default model with:
+Use `x-provider: ollama` in your agent definition to run agents against local models in Ollama.
+
+Configure in your `.env` file:
 
 ```dotenv
 OLLAMA_LOCAL_URL=http://127.0.0.1:11434/v1
@@ -515,6 +518,14 @@ OLLAMA_DEFAULT_MODEL=gemma4:latest
 ```
 
 `x-model` overrides `OLLAMA_DEFAULT_MODEL`. `x-runtime` is optional and currently must be `copilot` when specified for the Ollama provider.
+
+IMPORTANT: Ollama defaults to a 4K context window, which is too small for Copilot's agent instructions and tool definitions. Configure at least 32K before starting Ollama. For the macOS app:
+
+```bash
+launchctl setenv OLLAMA_CONTEXT_LENGTH 32768
+```
+
+Restart Ollama after changing this setting. Verify the loaded context after making one model request with `curl http://127.0.0.1:11434/api/ps`; the model's `context_length` should be at least `32768`.
 
 ## Development
 

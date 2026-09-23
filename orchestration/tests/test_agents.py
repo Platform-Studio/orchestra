@@ -547,6 +547,19 @@ class _FakeCopilotFatalProc(_FakeProc):
         return ("", "")
 
 
+class _FakeCopilotOutputProc(_FakeProc):
+    def __init__(self, stdout_handle, message="done"):
+        super().__init__()
+        self._stdout_handle = stdout_handle
+        self._message = message
+
+    def communicate(self, timeout=None):
+        self.communicate_timeouts.append(timeout)
+        self._stdout_handle.write(f"{self._message}\n")
+        self._stdout_handle.flush()
+        return ("", "")
+
+
 def test_capture_provider_context_copies_cline_task_files_to_central_store(workspace, tmp_path, monkeypatch):
     cline_home = tmp_path / ".cline"
     tasks_dir = cline_home / "data" / "tasks"
@@ -2000,7 +2013,7 @@ def test_run_agent_can_use_copilot_runtime(mock_popen, mock_which, workspace):
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
-@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+@patch("orchestration.agents.subprocess.Popen")
 def test_run_agent_routes_ollama_provider_through_copilot(mock_popen, mock_which, workspace, monkeypatch):
     monkeypatch.setenv("OLLAMA_LOCAL_URL", "http://127.0.0.1:11434/v1")
     monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "gemma4:latest")
@@ -2020,6 +2033,7 @@ def test_run_agent_routes_ollama_provider_through_copilot(mock_popen, mock_which
 
     ws = create_workstream(name="Local WS", base_dir=workspace)
     task = create_task(ws.id, title="Run Locally", base_dir=workspace)
+    mock_popen.side_effect = lambda *args, **kwargs: _FakeCopilotOutputProc(kwargs["stdout"])
 
     run_agent("Ollama Agent", task_ids=[task.id], workstream_id=ws.id, base_dir=workspace)
 
@@ -2040,7 +2054,7 @@ def test_run_agent_routes_ollama_provider_through_copilot(mock_popen, mock_which
 
 
 @patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
-@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+@patch("orchestration.agents.subprocess.Popen")
 def test_run_agent_ollama_provider_allows_model_override(mock_popen, mock_which, workspace, monkeypatch):
     monkeypatch.setenv("OLLAMA_LOCAL_URL", "http://127.0.0.1:11434/v1")
     monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "default-local-model")
@@ -2058,10 +2072,36 @@ def test_run_agent_ollama_provider_allows_model_override(mock_popen, mock_which,
         )
 
     ws = create_workstream(name="Local WS", base_dir=workspace)
+    mock_popen.side_effect = lambda *args, **kwargs: _FakeCopilotOutputProc(kwargs["stdout"])
     run_agent("Ollama Override Agent", workstream_id=ws.id, base_dir=workspace)
 
     cmd = mock_popen.call_args.args[0]
     assert cmd[cmd.index("--model") + 1] == "gemma4:latest"
+
+
+@patch("orchestration.agents.shutil.which", return_value="/usr/bin/copilot")
+@patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())
+def test_run_agent_ollama_provider_rejects_empty_output(mock_popen, mock_which, workspace, monkeypatch):
+    monkeypatch.setenv("OLLAMA_LOCAL_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "gemma4:latest")
+
+    agents_dir = os.path.join(workspace, "Agents")
+    with open(os.path.join(agents_dir, "ollama_agent.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "name: Ollama Agent\n"
+            "x-provider: ollama\n"
+            "---\n"
+            "You are provider-aware.\n"
+        )
+
+    ws = create_workstream(name="Local WS", base_dir=workspace)
+    with pytest.raises(RuntimeError, match=r"failed \(exit 0\)"):
+        run_agent("Ollama Agent", workstream_id=ws.id, base_dir=workspace)
+
+    latest = list_agent_runs(limit=1, base_dir=workspace)[0]
+    assert latest["status"] == "failed"
+    assert latest["output_bytes"] == 0
 
 
 @patch("orchestration.agents.subprocess.Popen", return_value=_FakeProc())

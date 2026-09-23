@@ -3035,11 +3035,16 @@ def _should_inline_attachments(ws) -> bool:
 DEFAULT_AGENT_TIMEOUT = 1800
 
 
-def _classify_run_outcome(returncode: int, timeout_expired: bool, runtime_failed: bool = False) -> str:
+def _classify_run_outcome(
+    returncode: int,
+    timeout_expired: bool,
+    runtime_failed: bool = False,
+    empty_output: bool = False,
+) -> str:
     """Map subprocess result to persisted run status."""
     if timeout_expired:
         return "timeout"
-    if runtime_failed:
+    if runtime_failed or empty_output:
         return "failed"
     if returncode == 0:
         return "completed"
@@ -3518,17 +3523,18 @@ def run_agent(agent_name: str, task_ids: list = None, workstream_id: str = None,
                 "retried_from_run_id": retried_from_run_id,
                 "retried_to_run_ids": [],
             }
-        final_status = _classify_run_outcome(
-            returncode,
-            timeout_expired or _runtime_reported_timeout(runtime, output, returncode),
-            runtime_failed=_runtime_reported_failure(runtime, output),
-        )
         output_bytes = int(stream_stats.get("output_bytes") or 0)
         if output_bytes == 0:
             try:
                 output_bytes = os.path.getsize(log_path)
             except OSError:
                 output_bytes = 0
+        final_status = _classify_run_outcome(
+            returncode,
+            timeout_expired or _runtime_reported_timeout(runtime, output, returncode),
+            runtime_failed=_runtime_reported_failure(runtime, output),
+            empty_output=provider == "ollama" and output_bytes == 0,
+        )
         ended_at = datetime.now(timezone.utc).isoformat()
         if output_bytes > 0 and not stream_stats.get("first_output_at"):
             stream_stats["first_output_at"] = ended_at
