@@ -483,6 +483,7 @@ class TestCLITask:
         result = run_cli("task", "update", task_id, "--status", "Done", base_dir=workspace)
         assert result.returncode == 0
         assert json.loads(result.stdout)["data"]["status"] == "Done"
+        assert json.loads(result.stdout)["data"]["title"] == "My Task"
 
         # Comment
         result = run_cli("task", "comment", task_id, "--message", "Hello", base_dir=workspace)
@@ -497,6 +498,61 @@ class TestCLITask:
         # Archive
         result = run_cli("task", "archive", task_id, base_dir=workspace)
         assert result.returncode == 0
+
+    @pytest.mark.parametrize("with_status", [False, True])
+    def test_update_title_persists_and_records_audit(self, workspace, with_status):
+        result = run_cli(
+            "workstream", "create", "--name", "WS",
+            "--states", json.dumps({"Open": ["Closed"], "Closed": []}),
+            base_dir=workspace,
+        )
+        ws_id = json.loads(result.stdout)["data"]["id"]
+        result = run_cli("task", "create", ws_id, "--title", "Original", base_dir=workspace)
+        task_id = json.loads(result.stdout)["data"]["id"]
+        title = "Example Market - 2026-10-28 - Score: 3.0"
+        extra_args = ["--status", "Closed"] if with_status else []
+
+        result = run_cli(
+            "task", "update", task_id, "--title", f"  {title}  ",
+            *extra_args, base_dir=workspace,
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["status"] == "ok"
+        assert data["data"]["title"] == title
+        assert data["data"]["status"] == ("Closed" if with_status else "Open")
+
+        result = run_cli("task", "read", task_id, "--include-audit", base_dir=workspace)
+        assert result.returncode == 0, result.stderr
+        task = json.loads(result.stdout)["data"]
+        assert task["title"] == title
+        assert task["status"] == ("Closed" if with_status else "Open")
+        assert "Title updated" in json.dumps(task["audit"])
+
+    @pytest.mark.parametrize("title", ["", "   "])
+    def test_update_rejects_blank_title_without_changing_task(self, workspace, title):
+        result = run_cli(
+            "workstream", "create", "--name", "WS",
+            "--states", json.dumps({"Open": ["Closed"], "Closed": []}),
+            base_dir=workspace,
+        )
+        ws_id = json.loads(result.stdout)["data"]["id"]
+        result = run_cli("task", "create", ws_id, "--title", "Original", base_dir=workspace)
+        task_id = json.loads(result.stdout)["data"]["id"]
+        before = json.loads(run_cli(
+            "task", "read", task_id, "--include-audit", base_dir=workspace,
+        ).stdout)["data"]
+
+        result = run_cli(
+            "task", "update", task_id, "--title", title, "--status", "Closed",
+            base_dir=workspace,
+        )
+        assert result.returncode != 0
+        assert "Task title cannot be empty" in json.loads(result.stderr)["message"]
+
+        result = run_cli("task", "read", task_id, "--include-audit", base_dir=workspace)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["data"] == before
 
     def test_read_multiple_tasks_preserves_requested_order(self, workspace):
         result = run_cli("workstream", "create", "--name", "WS", base_dir=workspace)

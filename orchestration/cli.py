@@ -380,6 +380,8 @@ def cmd_task_read(args):
 def cmd_task_update(args):
     from .tasks import update_task
     kwargs = {"task_id": args.task_id, "base_dir": args.base_dir}
+    if args.title is not None:
+        kwargs["title"] = args.title
     if args.status:
         kwargs["status"] = args.status
     if args.description:
@@ -1059,6 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = task_sub.add_parser("update")
     p.add_argument("task_id")
+    p.add_argument("--title", help="Update the task title")
     p.add_argument("--status")
     p.add_argument("--description")
     p.add_argument("--tags")

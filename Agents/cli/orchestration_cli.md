@@ -206,9 +206,12 @@ orc task read TASK_ID --include-audit
 
 Tasks are found by ID across all workstreams — you don't need to specify the workstream. A single ID returns one object; multiple IDs return an array in the same order as the arguments.
 
-#### task update — Update a task's status, description, or tags
+#### task update — Update a task's title, status, description, or tags
 
 ```bash
+# Update title
+orc task update TASK_ID --title "Market research - 2026-10-28 - Score: 3.0"
+
 # Change status (validated against workstream's state transition map)
 orc task update TASK_ID --status "In Progress"
 
@@ -218,6 +221,8 @@ orc task update TASK_ID --description "Updated scope"
 # Update tags
 orc task update TASK_ID --tags "high-priority,q2"
 ```
+
+Options can be combined in one command. Titles are trimmed of leading and trailing whitespace; empty or whitespace-only titles are rejected. Omitting `--title` preserves the existing title.
 
 **Important:** Status transitions are validated. If you try an invalid transition (e.g. jumping from "To Do" directly to "Done" when only "To Do" → "In Progress" is allowed), the command will fail with code `INVALID_TRANSITION`.
 
